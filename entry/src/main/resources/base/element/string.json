@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "NAS 文件工作台"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "安全连接 NAS 并浏览文件"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "NAS 工作台"
+    }
+  ]
+}

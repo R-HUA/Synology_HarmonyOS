@@ -1,0 +1,12 @@
+{
+  "success": true,
+  "data": {
+    "SYNO.API.Auth": { "minVersion": 1, "maxVersion": 7, "path": "entry.cgi" },
+    "SYNO.FileStation.List": { "minVersion": 1, "maxVersion": 2, "path": "entry.cgi", "requestFormat": "JSON" },
+    "SYNO.FileStation.Info": { "minVersion": 1, "maxVersion": 2, "path": "entry.cgi", "requestFormat": "JSON" },
+    "SYNO.FileStation.Upload": { "minVersion": 2, "maxVersion": 3, "path": "entry.cgi", "requestFormat": "JSON" },
+    "SYNO.FileStation.Download": { "minVersion": 1, "maxVersion": 2, "path": "entry.cgi", "requestFormat": "JSON" },
+    "SYNO.Foto.Browse.Item": { "minVersion": 1, "maxVersion": 7, "path": "entry.cgi", "requestFormat": "JSON" },
+    "SYNO.FotoTeam.Browse.Item": { "minVersion": 1, "maxVersion": 7, "path": "entry.cgi", "requestFormat": "JSON" }
+  }
+}
