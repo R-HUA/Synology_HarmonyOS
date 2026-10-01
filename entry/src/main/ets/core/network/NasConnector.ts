@@ -1,8 +1,10 @@
 import { decodeCapabilities, decodeNasFileInfo, decodeNasFilePage, decodeNasResponse, decodeNasSession, encodeNasForm,
-  NasApiDescriptor, NasErrorKind, NasFailure, NasFileInfo, NasFilePage, NasFormField, NasLoginSession,
+  nasString, NasApiDescriptor, NasErrorKind, NasFailure, NasFileInfo, NasFilePage, NasFormField, NasLoginSession,
   normalizeNasOrigin, selectNasApi, validateLogicalPath } from '../domain/DsmProtocol';
+import { decodePhotosPage, decodeSharedAlbumPage, NasPhotoPage, NasSharedAlbum, NasSharedAlbumPage, PhotosSpace } from '../domain/PhotosProtocol';
 
 export interface NasHttpReply { status: number; text: string; }
+export interface NasEnvironment { model: string; dsmVersion: string; fileStationVersion: string; photosVersion: string; administrator: boolean; }
 export interface NasTransferPlan { address: string; fields: NasFormField[]; session: NasLoginSession; }
 export interface NasTransport {
   post(address: string, body: string, session?: NasLoginSession): Promise<NasHttpReply>;
@@ -10,7 +12,8 @@ export interface NasTransport {
 }
 
 export const NAS_DISCOVERY_QUERY = 'SYNO.API.Auth,SYNO.FileStation.List,SYNO.FileStation.Info,' +
-  'SYNO.FileStation.Upload,SYNO.FileStation.Download,SYNO.Foto.Browse.Item,SYNO.FotoTeam.Browse.Item';
+  'SYNO.FileStation.Upload,SYNO.FileStation.Download,SYNO.Foto.Browse.Item,SYNO.FotoTeam.Browse.Item,' +
+  'SYNO.DSM.Info,SYNO.Core.Package,SYNO.Foto.Sharing.Misc';
 
 export class NasConnector {
   private origin: string = '';
@@ -82,6 +85,104 @@ export class NasConnector {
     return decodeNasFileInfo(data, path);
   }
 
+  async isFileManager(): Promise<boolean> {
+    this.requireSession();
+    const data = await this.call('SYNO.FileStation.Info', 2, 'get', []);
+    if (typeof data['is_manager'] !== 'boolean') {
+      throw new NasFailure(NasErrorKind.Protocol, '文件权限响应格式不符合预期。');
+    }
+    return data['is_manager'] === true;
+  }
+
+  async environment(): Promise<NasEnvironment> {
+    this.requireSession();
+    const administrator = await this.isFileManager();
+    const info = await this.call('SYNO.DSM.Info', 2, 'getinfo', []);
+    const model = this.metadataText(info['model']);
+    const dsmVersion = this.metadataText(info['version_string']);
+    const fileStationVersion = await this.packageVersion('FileStation');
+    const photosVersion = await this.packageVersion('SynologyPhotos');
+    return { model: model, dsmVersion: dsmVersion, fileStationVersion: fileStationVersion,
+      photosVersion: photosVersion, administrator: administrator };
+  }
+
+  private async packageVersion(id: string): Promise<string> {
+    const api = selectNasApi(this.capabilities, 'SYNO.Core.Package', [1]);
+    const data = await this.call(api.name, 1, 'get', [
+      { name: 'id', content: api.jsonParameters ? JSON.stringify(id) : id },
+      { name: 'additional', content: '[]' }
+    ]);
+    if (data['id'] !== id) { throw new NasFailure(NasErrorKind.Protocol, '套件信息与请求不匹配。'); }
+    return this.metadataText(data['version']);
+  }
+
+  private metadataText(value: Object | undefined): string {
+    const text = nasString(value);
+    if (!/^[A-Za-z0-9. +_-]{1,96}$/.test(text)) { throw new NasFailure(NasErrorKind.Protocol, '设备版本信息格式不符合预期。'); }
+    return text;
+  }
+
+  async photos(space: PhotosSpace, offset: number = 0): Promise<NasPhotoPage> {
+    this.requireSession();
+    if (![PhotosSpace.Personal, PhotosSpace.Shared].includes(space) || !Number.isSafeInteger(offset) || offset < 0 ||
+      !Number.isSafeInteger(offset + 20)) {
+      throw new NasFailure(NasErrorKind.InvalidInput, '照片空间或分页位置不正确。');
+    }
+    const api = space === PhotosSpace.Personal ? 'SYNO.Foto.Browse.Item' : 'SYNO.FotoTeam.Browse.Item';
+    try {
+      const data = await this.call(api, 1, 'list', [
+        { name: 'offset', content: offset.toString() }, { name: 'limit', content: '20' }
+      ], false);
+      return decodePhotosPage(data, space, offset, 20);
+    } catch (error) {
+      if (error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) {
+        // 私有套件拒绝会话时先验证基础读取，避免把套件不兼容误报为全局登出。
+        await this.list('', 0);
+        throw new NasFailure(NasErrorKind.Unsupported, '当前 Photos 不接受此会话，文件浏览仍可使用。', error.code);
+      }
+      throw error;
+    }
+  }
+
+  async sharedAlbums(offset: number = 0): Promise<NasSharedAlbumPage> {
+    this.validatePhotosOffset(offset);
+    const data = await this.photosCall('SYNO.Foto.Sharing.Misc', 'list_shared_with_me_album', [
+      { name: 'offset', content: offset.toString() }, { name: 'limit', content: '20' },
+      { name: 'additional', content: JSON.stringify(['sharing_info']) }
+    ]);
+    return decodeSharedAlbumPage(data, offset, 20);
+  }
+
+  async sharedAlbumPhotos(album: NasSharedAlbum, offset: number = 0): Promise<NasPhotoPage> {
+    this.validatePhotosOffset(offset);
+    if (!Number.isSafeInteger(album.id) || album.id < 0) { throw new NasFailure(NasErrorKind.InvalidInput, '相册标识不正确。'); }
+    const api = selectNasApi(this.capabilities, 'SYNO.Foto.Browse.Item', [1]);
+    const fields: NasFormField[] = [ { name: 'offset', content: offset.toString() }, { name: 'limit', content: '20' } ];
+    if (album.passphrase !== undefined && album.passphrase.length > 0) {
+      fields.push({ name: 'passphrase', content: api.jsonParameters ? JSON.stringify(album.passphrase) : album.passphrase });
+    } else { fields.push({ name: 'album_id', content: album.id.toString() }); }
+    return decodePhotosPage(await this.photosCall(api.name, 'list', fields), PhotosSpace.WithMe, offset, 20);
+  }
+
+  private validatePhotosOffset(offset: number): void {
+    this.requireSession();
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(offset + 20)) {
+      throw new NasFailure(NasErrorKind.InvalidInput, '照片分页位置不正确。');
+    }
+  }
+
+  private async photosCall(api: string, method: string, fields: NasFormField[]): Promise<Record<string, Object>> {
+    this.requireSession();
+    try { return await this.call(api, 1, method, fields, false); }
+    catch (error) {
+      if (error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) {
+        await this.list('', 0);
+        throw new NasFailure(NasErrorKind.Unsupported, '当前 Photos 不接受此会话，文件浏览仍可使用。', error.code);
+      }
+      throw error;
+    }
+  }
+
   /** 文件字段由传输层追加在末尾；不提供覆盖参数，重名交由 DSM 明确拒绝。 */
   transferUploadPlan(directory: string): NasTransferPlan {
     const session = this.requireSession();
@@ -147,7 +248,7 @@ export class NasConnector {
     this.transport.close();
   }
 
-  private async call(name: string, version: number, method: string, parameters: NasFormField[]): Promise<Record<string, Object>> {
+  private async call(name: string, version: number, method: string, parameters: NasFormField[], invalidateExpired: boolean = true): Promise<Record<string, Object>> {
     this.ensureOpen();
     const ticket = this.generation;
     const api = selectNasApi(this.capabilities, name, [version]);
@@ -161,7 +262,7 @@ export class NasConnector {
     this.ensureCurrent(ticket);
     try { return decodeNasResponse(name, reply.status, reply.text); }
     catch (error) {
-      if (error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) {
+      if (invalidateExpired && error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) {
         this.session = undefined;
         this.generation++;
       }

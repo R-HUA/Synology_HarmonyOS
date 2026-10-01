@@ -1,6 +1,7 @@
 import { NasFileEntry } from '../core/domain/DsmProtocol';
 import { ConnectionViewModel } from '../features/connection/ConnectionViewModel';
 import { common } from '@kit.AbilityKit';
+import { NasPhotoItem, NasSharedAlbum, PhotosSpace } from '../core/domain/PhotosProtocol';
 
 @Entry
 @ComponentV2
@@ -60,8 +61,20 @@ struct Index {
     Column({ space: 12 }) {
       Row({ space: 12 }) {
         Text('文件').fontSize(26).fontWeight(FontWeight.Bold).layoutWeight(1)
+        Button('照片').enabled(!this.model.busy).onClick((): void => { this.model.openPhotos(); })
         Button('刷新').enabled(!this.model.busy).onClick((): void => { this.model.refresh(); })
-        Button('登出').enabled(!this.model.busy).onClick((): void => { this.model.disconnect(); })
+        Button('更多').enabled(!this.model.busy).onClick((): void => {
+          this.getUIContext().showAlertDialog({ title: '连接', message: '', buttons: [
+            { value: '设备信息', action: (): void => {
+              this.model.serverInfo().then((info: string): void => {
+                if (info.length > 0) { this.getUIContext().showAlertDialog({ title: '设备信息', message: info,
+                  confirm: { value: '确定', action: (): void => {} } }); }
+              });
+            } },
+            { value: '登出', action: (): void => { this.model.disconnect(); } },
+            { value: '取消', action: (): void => {} }
+          ] });
+        })
       }.width('100%')
       Text(this.model.directory.length === 0 ? '共享文件夹' : this.model.directory)
         .fontSize(14).width('100%').fontColor($r('sys.color.font_secondary'))
@@ -73,8 +86,11 @@ struct Index {
               this.getUIContext().showAlertDialog({
                 title: '验证上传下载',
                 message: '将在 ' + this.model.directory + ' 新增一个测试文件，完成后保留。',
-                primaryButton: { value: '取消', action: (): void => {} },
-                secondaryButton: { value: '开始', action: (): void => { this.model.verifyTransfer(); } }
+                buttons: [
+                  { value: '小文件', action: (): void => { this.model.verifyTransfer(); } },
+                  { value: '64 MB 文件', action: (): void => { this.model.verifyTransfer(false, true); } },
+                  { value: '取消', action: (): void => {} }
+                ]
               });
             })
         }.width('100%')
@@ -82,6 +98,9 @@ struct Index {
       if (this.model.transfer.available) {
         Row({ space: 12 }) {
           Text(this.model.transfer.status).fontSize(14).layoutWeight(1)
+          if (this.model.transfer.stoppable) {
+            Button('停止').onClick((): void => { this.model.stopTransfer(); })
+          }
           Button('重新检查').enabled(!this.model.busy)
             .backgroundColor(Color.Transparent).fontColor($r('sys.color.font_secondary'))
             .onClick((): void => { this.model.verifyTransfer(true); })
@@ -133,9 +152,72 @@ struct Index {
     }.layoutWeight(1).width('100%').alignItems(HorizontalAlign.Start)
   }
 
+  @Builder
+  photosView() {
+    Column({ space: 12 }) {
+      Row({ space: 12 }) {
+        Text('照片').fontSize(26).fontWeight(FontWeight.Bold).layoutWeight(1)
+        Button('文件').enabled(!this.model.busy).onClick((): void => { this.model.closePhotos(); })
+        Button('刷新').enabled(!this.model.busy)
+          .onClick((): void => { this.model.openPhotos(this.model.photosSpace, 0); })
+      }.width('100%')
+      Row({ space: 12 }) {
+        Button('个人空间').enabled(!this.model.busy && this.model.photosSpace !== PhotosSpace.Personal)
+          .onClick((): void => { this.model.openPhotos(PhotosSpace.Personal); })
+        Button('与我共享').enabled(!this.model.busy && this.model.photosSpace !== PhotosSpace.WithMe)
+          .onClick((): void => { this.model.openPhotos(PhotosSpace.WithMe); })
+      }.width('100%')
+      if (this.model.selectedAlbum !== undefined) {
+        Row({ space: 12 }) {
+          Button('相册列表').enabled(!this.model.busy).onClick((): void => { this.model.backToAlbums(); })
+          Text(this.model.selectedAlbum.name).fontSize(16).layoutWeight(1)
+        }.width('100%')
+      }
+      if (this.model.busy && !this.model.media.running) { Text('正在读取…').fontSize(14) }
+      else if (this.model.photosPageCount() === 0 && this.model.errorText.length === 0) {
+        Text('当前账号没有可见的项目。').fontColor($r('sys.color.font_secondary'))
+      }
+      List({ space: 8 }) {
+        ForEach(this.model.sharedAlbums, (album: NasSharedAlbum): void => {
+          ListItem() {
+            Row({ space: 12 }) {
+              Text(album.name).fontSize(16).layoutWeight(1)
+              Text(album.itemCount.toString() + ' 项').fontSize(12)
+              Text('›').fontSize(24)
+            }.width('100%').padding(16).borderRadius(16)
+              .backgroundColor($r('sys.color.comp_background_secondary'))
+          }.enabled(!this.model.busy).onClick((): void => { this.model.openSharedAlbum(album); })
+        }, (album: NasSharedAlbum): string => this.model.address + ':' + this.model.account + ':' + album.id.toString())
+        ForEach(this.model.photoItems, (item: NasPhotoItem): void => {
+          ListItem() {
+            Row({ space: 12 }) {
+              Text(item.mediaType === 'video' ? '视频' : item.mediaType === 'live' ? '动态照片' : '照片').fontSize(12)
+              Text(item.filename).fontSize(16).layoutWeight(1)
+              Text(item.bytes.toString() + ' B').fontSize(12)
+            }.width('100%').padding(16).borderRadius(16)
+              .backgroundColor($r('sys.color.comp_background_secondary'))
+          }
+        }, (item: NasPhotoItem): string => this.model.address + ':' + this.model.account + ':' + item.space.toString() + ':' + item.id.toString())
+      }.layoutWeight(1).width('100%')
+      Row({ space: 12 }) {
+        Button('上一页').enabled(!this.model.busy && this.model.photosOffset > 0)
+          .onClick((): void => { this.model.previousPhotos(); })
+        Text(this.model.errorText.length > 0 ? '未读取' : this.model.photosPageCount().toString() + ' 项')
+          .layoutWeight(1).textAlign(TextAlign.Center).fontSize(12)
+        Button('下一页').enabled(!this.model.busy && this.model.photosMore)
+          .onClick((): void => { this.model.openPhotos(this.model.photosSpace, this.model.photosOffset + this.model.photosPageCount()); })
+      }.width('100%')
+      Button('选择照片').enabled(!this.model.busy).onClick((): void => { this.model.selectMedia(); })
+      if (this.model.media.status.length > 0) { Text(this.model.media.status).fontSize(14) }
+    }.layoutWeight(1).width('100%').alignItems(HorizontalAlign.Start)
+  }
+
   build() {
     Column({ space: 12 }) {
-      if (this.model.authenticated) { this.filesView() }
+      if (this.model.authenticated) {
+        if (this.model.photosOpened) { this.photosView() }
+        else { this.filesView() }
+      }
       else { Scroll() { this.connectionForm() }.align(Alignment.TopStart).layoutWeight(1).width('100%') }
       if (this.model.errorText.length > 0) {
         Text(this.model.errorText).fontSize(14).fontColor($r('sys.color.font_primary')).width('100%')

@@ -5,6 +5,8 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { NasSessionStore, NasSessionStoreFailure } from './NasSessionStore';
 import { common } from '@kit.AbilityKit';
 import { TransferProbe } from './TransferProbe';
+import { NasPhotoItem, NasSharedAlbum, PhotosSpace } from '../../core/domain/PhotosProtocol';
+import { MediaSelection } from './MediaSelection';
 
 @ObservedV2
 export class ConnectionViewModel {
@@ -24,6 +26,15 @@ export class ConnectionViewModel {
   @Trace pageOffset: number = 0;
   @Trace total: number = 0;
   readonly transfer: TransferProbe = new TransferProbe();
+  readonly media: MediaSelection = new MediaSelection();
+  @Trace photosOpened: boolean = false;
+  @Trace photosSpace: PhotosSpace = PhotosSpace.Personal;
+  @Trace photoItems: NasPhotoItem[] = [];
+  @Trace sharedAlbums: NasSharedAlbum[] = [];
+  @Trace selectedAlbum: NasSharedAlbum | undefined = undefined;
+  @Trace photosOffset: number = 0;
+  @Trace photosMore: boolean = false;
+  private photoHistory: number[] = [];
   private connector: NasConnector | undefined = undefined;
   private generation: number = 0;
   private history: string[] = [];
@@ -37,6 +48,7 @@ export class ConnectionViewModel {
     const ticket = ++this.generation;
     this.busy = true;
     this.errorText = '';
+    let reconcile = false;
     try {
       const saved = await this.store.load();
       if (ticket !== this.generation || saved === undefined) { return; }
@@ -56,7 +68,7 @@ export class ConnectionViewModel {
       this.connected = true;
       this.authenticated = true;
       hilog.info(0x0000, 'NasConnection', 'operation=restore result=success');
-      await this.inspectTransfer();
+      reconcile = await this.inspectTransfer();
     } catch (error) {
       if (ticket === this.generation) {
         this.connector?.close();
@@ -66,6 +78,7 @@ export class ConnectionViewModel {
         await this.showFailure(error as Error, 'restore');
       }
     } finally { if (ticket === this.generation) { this.busy = false; } }
+    if (reconcile && ticket === this.generation && this.authenticated) { await this.verifyTransfer(true); }
   }
 
   async connect(): Promise<void> {
@@ -192,7 +205,7 @@ export class ConnectionViewModel {
       }
     } finally { if (ticket === this.generation) { this.busy = false; } }
   }
-  async verifyTransfer(recheck: boolean = false): Promise<void> {
+  async verifyTransfer(recheck: boolean = false, large: boolean = false): Promise<void> {
     const connector = this.connector;
     const context = this.context;
     if (this.busy || !this.authenticated || connector === undefined || context === undefined) { return; }
@@ -203,7 +216,7 @@ export class ConnectionViewModel {
     try {
       const current = (): boolean => ticket === this.generation;
       if (recheck) { await this.transfer.reconcile(context, connector, this.address, this.account, current); }
-      else { await this.transfer.run(context, connector, this.address, this.account, this.directory, current); }
+      else { await this.transfer.run(context, connector, this.address, this.account, this.directory, current, large); }
       verified = true;
     } catch (error) { if (ticket === this.generation) { await this.showFailure(error as Error, 'transfer'); } }
     finally { if (ticket === this.generation) { this.busy = false; } }
@@ -218,14 +231,96 @@ export class ConnectionViewModel {
     catch (error) { if (ticket === this.generation) { await this.showFailure(error as Error, 'cancel-transfer'); } }
     finally { if (ticket === this.generation) { this.busy = false; } }
   }
-  private async inspectTransfer(): Promise<void> {
-    if (this.context === undefined) { return; }
+  async openPhotos(space: PhotosSpace = PhotosSpace.Personal, offset: number = 0): Promise<void> {
+    const connector = this.connector;
+    if (this.busy || !this.authenticated || connector === undefined) { return; }
     const ticket = this.generation;
-    try { await this.transfer.inspectSaved(this.context, this.address, this.account); }
+    this.busy = true;
+    this.errorText = '';
+    const oldOffset = this.photosOffset;
+    const oldSpace = this.photosSpace;
+    this.photosOpened = true;
+    this.photosSpace = space;
+    if (oldSpace !== space || offset === 0) {
+      this.photoHistory = [];
+      this.photosOffset = 0;
+      this.photoItems = [];
+      this.sharedAlbums = [];
+      this.photosMore = false;
+    }
+    if (oldSpace !== space) { this.selectedAlbum = undefined; }
+    try {
+      const album = this.selectedAlbum;
+      const page = space === PhotosSpace.WithMe ?
+        album === undefined ? await connector.sharedAlbums(offset) : await connector.sharedAlbumPhotos(album, offset) :
+        await connector.photos(space, offset);
+      if (ticket !== this.generation) { return; }
+      if (space === PhotosSpace.WithMe && album === undefined) { this.sharedAlbums = page.items as NasSharedAlbum[]; }
+      else { this.photoItems = page.items as NasPhotoItem[]; }
+      this.photosOffset = page.offset;
+      this.photosMore = page.hasMore;
+      if (offset === 0 || oldSpace !== space) { this.photoHistory = []; }
+      else if (offset > oldOffset) { this.photoHistory.push(oldOffset); }
+      else if (offset < oldOffset) { this.photoHistory.pop(); }
+      hilog.info(0x0000, 'NasPhotos', 'operation=list space=%{public}d count=%{public}d offset=%{public}d', space, page.items.length, offset);
+    } catch (error) { if (ticket === this.generation) { await this.showFailure(error as Error, 'photos'); } }
+    finally { if (ticket === this.generation) { this.busy = false; } }
+  }
+  async previousPhotos(): Promise<void> {
+    if (this.photoHistory.length > 0) { await this.openPhotos(this.photosSpace, this.photoHistory[this.photoHistory.length - 1]); }
+  }
+  async openSharedAlbum(album: NasSharedAlbum): Promise<void> {
+    if (this.busy) { return; }
+    this.selectedAlbum = album;
+    await this.openPhotos(PhotosSpace.WithMe);
+  }
+  async backToAlbums(): Promise<void> {
+    if (this.busy) { return; }
+    this.selectedAlbum = undefined;
+    await this.openPhotos(PhotosSpace.WithMe);
+  }
+  photosPageCount(): number { return this.photosSpace === PhotosSpace.WithMe && this.selectedAlbum === undefined ? this.sharedAlbums.length : this.photoItems.length; }
+  closePhotos(): void { if (!this.busy) { this.photosOpened = false; this.errorText = ''; } }
+  async selectMedia(): Promise<void> {
+    if (this.busy || this.context === undefined) { return; }
+    const ticket = this.generation;
+    this.busy = true;
+    this.errorText = '';
+    try { await this.media.verify(this.context); }
+    catch (error) { if (ticket === this.generation) { await this.showFailure(error as Error, 'media'); } }
+    finally { if (ticket === this.generation) { this.busy = false; } }
+  }
+  async stopTransfer(): Promise<void> {
+    const ticket = this.generation;
+    try { await this.transfer.stop(); }
+    catch (error) { if (ticket === this.generation) { await this.showFailure(error as Error, 'stop-transfer'); } }
+  }
+  async serverInfo(): Promise<string> {
+    const connector = this.connector;
+    if (this.busy || connector === undefined || !this.authenticated) { return ''; }
+    const ticket = this.generation;
+    this.busy = true;
+    this.errorText = '';
+    try {
+      const info = await connector.environment();
+      if (ticket !== this.generation) { return ''; }
+      hilog.info(0x0000, 'NasEnvironment', 'model=%{public}s dsm=%{public}s fileStation=%{public}s photos=%{public}s administrator=%{public}d',
+        info.model, info.dsmVersion, info.fileStationVersion, info.photosVersion, info.administrator ? 1 : 0);
+      return info.model + '\n' + info.dsmVersion + '\nFile Station ' + info.fileStationVersion + '\nPhotos ' + info.photosVersion +
+        '\n' + (info.administrator ? '管理员' : '普通用户');
+    } catch (error) { if (ticket === this.generation) { await this.showFailure(error as Error, 'environment'); } return ''; }
+    finally { if (ticket === this.generation) { this.busy = false; } }
+  }
+  private async inspectTransfer(): Promise<boolean> {
+    if (this.context === undefined) { return false; }
+    const ticket = this.generation;
+    try { return await this.transfer.inspectSaved(this.context, this.address, this.account); }
     catch (error) { if (ticket === this.generation) { await this.showFailure(error as Error, 'read-transfer-record'); } }
+    return false;
   }
   dispose(): void {
     this.generation++;
+    this.transfer.detach();
     this.connector?.close();
     this.connector = undefined;
     this.clearAccount();
@@ -256,6 +351,13 @@ export class ConnectionViewModel {
     this.total = page.total;
   }
   private clearAccount(): void {
+    this.photosOpened = false;
+    this.photoItems = [];
+    this.sharedAlbums = [];
+    this.selectedAlbum = undefined;
+    this.photosOffset = 0;
+    this.photosMore = false;
+    this.photoHistory = [];
     this.authenticated = false;
     this.password = '';
     this.otp = '';

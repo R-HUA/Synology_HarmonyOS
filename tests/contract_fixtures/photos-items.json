@@ -1,0 +1,20 @@
+{
+  "provenance": {
+    "kind": "synthetic-contract-example",
+    "note": "依据社区原始协议和测试样本构造的静态脱敏数据；不是 NAS 或 Photos 1.9.1 真机返回。",
+    "sources": [
+      "https://github.com/N4S4/synology-photos-api/blob/master/API/SYNO.Foto/SYNO.Foto.Browse.Item.list.md",
+      "https://github.com/mib1185/py-synologydsm-api/blob/master/tests/api_data/dsm_7/photos/const_7_photo.py"
+    ]
+  },
+  "response": {
+    "success": true,
+    "data": {
+      "list": [
+        { "id": 101, "filename": "示例照片.jpg", "filesize": 2048, "type": "photo", "additional": { "thumbnail": { "sm": "ready", "cache_key": "sample-101" } } },
+        { "id": 102, "filename": "示例视频.mp4", "filesize": 4096, "type": "video" },
+        { "id": 103, "filename": "示例实况照片.heic", "filesize": 0, "type": "live" }
+      ]
+    }
+  }
+}

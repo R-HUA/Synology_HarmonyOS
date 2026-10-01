@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const protocol = require('../../work/core-build/domain/DsmProtocol.js');
 const { NasConnector } = require('../../work/core-build/network/NasConnector.js');
 const { NasFailure, NasErrorKind: K } = protocol;
+const { PhotosSpace } = require('../../work/core-build/domain/PhotosProtocol.js');
 const fixture = JSON.parse(fs.readFileSync('tests/contract_fixtures/nas-capabilities.json', 'utf8'));
 const ok = data => ({ status: 200, text: JSON.stringify({ success: true, data }) });
 const fail = code => ({ status: 200, text: JSON.stringify({ success: false, error: { code } }) });
@@ -24,7 +25,11 @@ class FakeTransport {
 
 async function connected() {
   const transport = new FakeTransport();
-  transport.replies.push(ok(fixture.data));
+  const capabilities = structuredClone(fixture.data);
+  for (const name of ['SYNO.Foto.Sharing.Misc']) {
+    capabilities[name] = { path: 'entry.cgi', minVersion: 1, maxVersion: 1, requestFormat: 'JSON' };
+  }
+  transport.replies.push(ok(capabilities));
   const connector = new NasConnector(transport);
   await connector.discover('https://nas.example.test:5001');
   return { connector, transport };
@@ -36,6 +41,83 @@ async function loggedIn() {
   await context.connector.login('reader', 'private &+=密码', '');
   return context;
 }
+
+test('Photos connector reads independent personal and shared pages without invented totals', async () => {
+  const { connector, transport } = await loggedIn();
+  const item = { id: 1, filename: 'sample.jpg', filesize: 7, type: 'photo' };
+  transport.replies.push(ok({ list: [item] }), ok({ list: [item] }));
+  assert.equal((await connector.photos(PhotosSpace.Personal, 20)).items[0].space, PhotosSpace.Personal);
+  assert.equal(transport.calls.at(-1).body.get('api'), 'SYNO.Foto.Browse.Item');
+  assert.equal(transport.calls.at(-1).body.get('offset'), '20');
+  assert.equal(transport.calls.at(-1).body.get('limit'), '20');
+  assert.equal((await connector.photos(PhotosSpace.Shared)).items[0].space, PhotosSpace.Shared);
+  assert.equal(transport.calls.at(-1).body.get('api'), 'SYNO.FotoTeam.Browse.Item');
+  assert.equal(transport.calls.at(-1).body.get('version'), '1');
+  assert.equal(transport.calls.at(-1).body.has('_sid'), false);
+});
+
+test('Photos rejection checks File Station before declaring the saved login expired', async () => {
+  const { connector, transport } = await loggedIn();
+  transport.replies.push(fail(119), ok({ shares: [], offset: 0, total: 0 }));
+  await assert.rejects(connector.photos(PhotosSpace.Personal), isKind(K.Unsupported));
+  assert.equal(connector.sessionSnapshot().sid, 'test-sid');
+  transport.replies.push(fail(119), fail(119));
+  await assert.rejects(connector.photos(PhotosSpace.Personal), isKind(K.SessionExpired));
+  assert.equal(connector.sessionSnapshot(), undefined);
+});
+
+test('received albums use personal sharing APIs and keep access tokens in authenticated POST fields', async () => {
+  const { connector, transport } = await loggedIn();
+  transport.replies.push(ok({ list: [{ id: 3, name: 'Shared sample', item_count: 1, sharing_info: { passphrase: 'synthetic &+token' } }] }),
+    ok({ list: [{ id: 5, filename: 'sample.jpg', filesize: 7, type: 'photo' }] }), ok({ list: [] }));
+  const album = (await connector.sharedAlbums()).items[0];
+  assert.equal(transport.calls.at(-1).body.get('method'), 'list_shared_with_me_album');
+  assert.equal(transport.calls.at(-1).body.get('api'), 'SYNO.Foto.Sharing.Misc');
+  assert.equal((await connector.sharedAlbumPhotos(album)).items[0].space, PhotosSpace.WithMe);
+  const call = transport.calls.at(-1);
+  assert.equal(call.body.get('api'), 'SYNO.Foto.Browse.Item');
+  assert.equal(JSON.parse(call.body.get('passphrase')), 'synthetic &+token');
+  assert.equal(call.body.has('album_id'), false);
+  assert.equal(call.address.includes('?'), false);
+  assert.deepEqual(call.authorization, { sid: 'test-sid', synoToken: 'test-token' });
+  await connector.sharedAlbumPhotos({ id: 9, name: 'sample', itemCount: 0 });
+  assert.equal(transport.calls.at(-1).body.get('album_id'), '9');
+  assert.equal(transport.calls.at(-1).body.has('passphrase'), false);
+  transport.replies.push(fail(119), ok({ shares: [], offset: 0, total: 0 }));
+  await assert.rejects(connector.sharedAlbums(), isKind(K.Unsupported));
+  assert.ok(connector.sessionSnapshot());
+});
+
+test('Photos business errors and invalid pagination do not create an empty success', async () => {
+  const { connector, transport } = await loggedIn();
+  transport.replies.push(fail(801));
+  await assert.rejects(connector.photos(PhotosSpace.Shared), error => error.code === 801);
+  const calls = transport.calls.length;
+  await assert.rejects(connector.photos(9), isKind(K.InvalidInput));
+  await assert.rejects(connector.photos(PhotosSpace.Personal, Number.MAX_SAFE_INTEGER), isKind(K.InvalidInput));
+  assert.equal(transport.calls.length, calls);
+});
+
+test('environment requests preserve exact package identity and full DSM patch version', async () => {
+  const capabilities = structuredClone(fixture.data);
+  capabilities['SYNO.DSM.Info'] = { path: 'entry.cgi', minVersion: 1, maxVersion: 2 };
+  capabilities['SYNO.Core.Package'] = { path: 'entry.cgi', minVersion: 1, maxVersion: 2, requestFormat: 'JSON' };
+  const transport = new FakeTransport();
+  transport.replies.push(ok(capabilities), ok({ sid: 'sid' }), ok({ is_manager: false }),
+    ok({ model: 'DS3622xs+', version_string: 'DSM 7.2.1-69057 Update 5' }),
+    ok({ id: 'FileStation', version: '1.0.0-1' }), ok({ id: 'SynologyPhotos', version: '1.9.1-10928' }));
+  const connector = new NasConnector(transport);
+  await connector.discover('https://nas.example.test');
+  await connector.login('reader', 'password', '');
+  const info = await connector.environment();
+  assert.equal(info.administrator, false);
+  assert.equal(info.dsmVersion, 'DSM 7.2.1-69057 Update 5');
+  assert.equal(info.photosVersion, '1.9.1-10928');
+  assert.equal(transport.calls.at(-1).body.get('id'), '"SynologyPhotos"');
+  assert.equal(transport.calls.at(-1).body.get('additional'), '[]');
+  transport.replies.push(ok({ is_manager: true }), ok({ model: 'model', version_string: 'DSM 1-1' }), ok({ id: 'WrongPackage', version: '1' }));
+  await assert.rejects(connector.environment(), isKind(K.Protocol));
+});
 
 test('HTTPS origin rejects credential, downgrade, path and URL escape inputs', () => {
   assert.equal(protocol.normalizeNasOrigin(' HTTPS://nas.test ' .toLowerCase()), 'https://nas.test');
