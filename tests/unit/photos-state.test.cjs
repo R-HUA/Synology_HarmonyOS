@@ -21,8 +21,10 @@ const dsm = load('core/domain/DsmProtocol.ts');
 const photos = load('core/domain/PhotosProtocol.ts', { './DsmProtocol': dsm });
 const operations = load('core/domain/FileOperations.ts', { './DsmProtocol': dsm });
 const queueState = load('core/domain/TransferQueueState.ts', { './DsmProtocol': dsm });
+const control = load('core/domain/SystemControl.ts', { './DsmProtocol': dsm });
 const connectorModule = load('core/network/NasConnector.ts', { '../domain/DsmProtocol': dsm,
-  '../domain/PhotosProtocol': photos, '../domain/FileOperations': operations, '../domain/TransferQueueState': queueState });
+  '../domain/PhotosProtocol': photos, '../domain/FileOperations': operations, '../domain/TransferQueueState': queueState,
+  '../domain/SystemControl': control });
 const { NasFailure, NasErrorKind: K } = dsm;
 const { PhotosSpace: S } = photos;
 const isKind = kind => error => error instanceof NasFailure && error.kind === kind;

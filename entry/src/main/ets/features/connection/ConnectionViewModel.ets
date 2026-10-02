@@ -11,6 +11,10 @@ import { SharedUploadFile, SharedUploadInbox, sharedUploadInbox } from '../shari
 import { FileTaskStore } from './FileTaskStore';
 import { util } from '@kit.ArkTS';
 import { PhotoLibrary } from '../photos/PhotoLibrary';
+import { TelemetryMonitor } from '../telemetry/TelemetryMonitor';
+import { ConnectionAddressBook } from './ConnectionAddressBook';
+import { SystemControlModel } from '../control/SystemControlModel';
+import type { NasConnectionAddress } from '../../core/domain/ConnectionRoutes';
 
 export { FileEditResult, FileTaskItem } from '../../core/domain/FileOperations';
 
@@ -41,6 +45,10 @@ export class ConnectionViewModel {
   readonly queue: TransferQueue = new TransferQueue();
   readonly sharedInbox: SharedUploadInbox = sharedUploadInbox;
   readonly photoLibrary: PhotoLibrary = new PhotoLibrary();
+  readonly telemetry: TelemetryMonitor = new TelemetryMonitor();
+  readonly addressBook: ConnectionAddressBook = new ConnectionAddressBook();
+  readonly systemControl: SystemControlModel = new SystemControlModel();
+  @Trace deviceCheckText: string = '尚未登记设备身份';
   @Trace photosOpened: boolean = false;
   get photosErrorText(): string { return this.photoLibrary.errorText; }
   get photosSpace(): PhotosSpace { return this.photoLibrary.space; }
@@ -65,6 +73,9 @@ export class ConnectionViewModel {
     this.busy = true;
     this.errorText = '';
     try {
+      if (this.context !== undefined && !this.addressBook.ready && !await this.addressBook.load(this.context)) {
+        throw new NasFailure(NasErrorKind.Protocol, this.addressBook.errorText);
+      }
       const saved = await this.store.load();
       if (ticket !== this.generation || saved === undefined) { return; }
       this.savedSession = true;
@@ -77,6 +88,8 @@ export class ConnectionViewModel {
       if (ticket !== this.generation) { return; }
       this.capabilities = capabilities;
       connector.restoreSession({ sid: saved.sid, synoToken: saved.synoToken });
+      await this.verifyDevice(connector, saved.origin, saved.account);
+      if (ticket !== this.generation) { return; }
       const page = await connector.list('', 0);
       if (ticket !== this.generation) { return; }
       this.applyPage('', page);
@@ -97,6 +110,7 @@ export class ConnectionViewModel {
 
   async connect(): Promise<void> {
     if (this.busy || this.connected) { return; }
+    if (!this.addressBook.ready) { this.errorText = '请先在连接地址中成功读取配置，再建立连接。'; return; }
     const ticket = ++this.generation;
     this.busy = true;
     this.errorText = '';
@@ -124,15 +138,30 @@ export class ConnectionViewModel {
     const ticket = this.generation;
     this.busy = true;
     this.errorText = '';
+    let authorized = false;
     try {
       await connector.login(this.account, this.password, this.otp);
+      authorized = true;
       if (ticket !== this.generation) { return; }
       this.password = '';
       this.otp = '';
       this.needsOtp = false;
+      await this.verifyDevice(connector, this.address, this.account);
+      if (ticket !== this.generation) { return; }
       this.authenticated = true;
       hilog.info(0x0000, 'NasConnection', 'operation=login result=success');
-    } catch (error) { if (ticket === this.generation) { await this.showFailure(error as Error, 'login'); } }
+    } catch (error) {
+      if (ticket === this.generation) {
+        if (authorized) {
+          connector.close();
+          this.connector = undefined;
+          this.connected = false;
+          this.capabilities = [];
+          this.clearAccount();
+        }
+        await this.showFailure(error as Error, 'login');
+      }
+    }
     finally { if (ticket === this.generation) { this.busy = false; } }
     if (this.authenticated && ticket === this.generation && await this.load('', 0)) {
       if (ticket !== this.generation) { return; }
@@ -159,6 +188,83 @@ export class ConnectionViewModel {
       this.history.push(oldPath);
       this.pageHistory = [];
     }
+  }
+
+  async reloadAddressBook(): Promise<void> {
+    if (this.context !== undefined && !this.busy) { await this.addressBook.load(this.context); }
+  }
+
+  async useSavedAddress(origin: string): Promise<boolean> {
+    if (this.busy || this.queue.busy || this.addressBook.busy || !this.addressBook.ready) { return false; }
+    let normalized: string;
+    try { normalized = normalizeNasOrigin(origin); }
+    catch (error) { await this.showFailure(error as Error, 'select-address'); return false; }
+    if (!this.addressBook.addresses.some((address: NasConnectionAddress): boolean => address.origin === normalized)) {
+      this.errorText = '请先保存并确认该连接地址。';
+      return false;
+    }
+    if (this.authenticated && this.address === normalized) { return true; }
+    this.addressBook.cancelProbe();
+    const previousGeneration = this.generation;
+    await this.disconnect();
+    if (this.generation !== previousGeneration + 1 || this.busy || this.authenticated || this.savedSession) { return false; }
+    const previousNotice = this.errorText;
+    this.address = normalized;
+    this.account = '';
+    this.password = '';
+    this.otp = '';
+    this.actionNotice = previousNotice;
+    await this.connect();
+    return this.connected;
+  }
+
+  async saveCurrentAddress(): Promise<void> {
+    const connector = this.connector;
+    if (connector === undefined || !this.authenticated || this.busy || this.addressBook.busy || this.addressBook.probing) { return; }
+    const ticket = this.generation;
+    this.busy = true;
+    try {
+      const saved = await this.addressBook.saveCurrent(connector, this.address, this.account);
+      if (saved && ticket === this.generation) { this.deviceCheckText = this.addressBook.notice; }
+    } catch (error) { if (ticket === this.generation) { await this.showFailure(error as Error, 'register-device'); } }
+    finally { if (ticket === this.generation) { this.busy = false; } }
+  }
+
+  private async verifyDevice(connector: NasConnector, origin: string, account: string): Promise<void> {
+    const ticket = this.generation;
+    const model = await this.addressBook.verifyExpectedDevice(connector, origin, account);
+    if (ticket !== this.generation) { return; }
+    this.deviceCheckText = model === undefined ? '当前账号未登记设备身份；地址间不合并登录和任务。' :
+      '设备身份已核验 · ' + model;
+  }
+
+  async openSystemControl(): Promise<void> {
+    const connector = this.connector;
+    const context = this.context;
+    if (this.busy || !this.authenticated || connector === undefined || context === undefined) { return; }
+    const ticket = this.generation;
+    const error = await this.systemControl.open(context, connector, this.address, (): void => {
+      if (ticket !== this.generation || connector !== this.connector || !this.authenticated) {
+        throw new NasFailure(NasErrorKind.Cancelled, '当前 NAS 连接已变化，请重新进入系统控制。');
+      }
+      if (!this.queue.ready || !this.fileTasksReady) {
+        throw new NasFailure(NasErrorKind.InvalidInput, '请先在任务页成功读取传输和文件操作记录，再进行系统控制。');
+      }
+      if (this.queue.busy || this.queue.items.some((item): boolean =>
+        !['completed', 'cancelled', 'failed', 'closed'].includes(item.state)) ||
+        this.fileTasks.some((item: FileTaskItem): boolean => !['completed', 'failed'].includes(item.state))) {
+        throw new NasFailure(NasErrorKind.InvalidInput, '仍有进行中或结果待核对的传输、文件操作，请先处理任务；不会为系统控制自动停止或重试它们。');
+      }
+    });
+    if (ticket === this.generation && error !== undefined) { await this.showFailure(error as Error, 'control-device-info'); }
+  }
+
+  async submitSystemControl(): Promise<void> {
+    if (this.busy || !this.authenticated) { return; }
+    const ticket = this.generation;
+    this.busy = true;
+    try { await this.systemControl.submit(); }
+    finally { if (ticket === this.generation) { this.busy = false; } }
   }
   async goBack(): Promise<void> {
     if (this.busy || this.history.length === 0) { return; }
@@ -402,6 +508,10 @@ export class ConnectionViewModel {
   }
 
   private async attachQueue(connector: NasConnector): Promise<void> {
+    const telemetryTicket = this.generation;
+    this.telemetry.attach(connector, async (error: NasFailure): Promise<void> => {
+      if (telemetryTicket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'telemetry'); }
+    });
     const photoTicket = this.generation;
     this.photoLibrary.attach(connector, this.context, async (error: NasFailure): Promise<void> => {
       if (photoTicket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'photos'); }
@@ -549,11 +659,12 @@ export class ConnectionViewModel {
       hilog.info(0x0000, 'NasEnvironment', 'model=%{public}s dsm=%{public}s fileStation=%{public}s photos=%{public}s administrator=%{public}d',
         info.model, info.dsmVersion, info.fileStationVersion, info.photosVersion, info.administrator ? 1 : 0);
       return info.model + '\n' + info.dsmVersion + '\nFile Station ' + info.fileStationVersion + '\nPhotos ' + info.photosVersion +
-        '\n' + (info.administrator ? '管理员' : '普通用户');
+        '\n' + (info.administrator ? '具有 File Station 管理权限' : '无 File Station 管理权限');
     } catch (error) { if (ticket === this.generation) { await this.showFailure(error as Error, 'environment'); } return ''; }
     finally { if (ticket === this.generation) { this.busy = false; } }
   }
   dispose(): void {
+    this.addressBook.dispose();
     this.generation++;
     this.queue.detach();
 
@@ -597,6 +708,9 @@ export class ConnectionViewModel {
     this.total = page.total;
   }
   private clearAccount(): void {
+    this.systemControl.deactivate();
+    this.deviceCheckText = '尚未登记设备身份';
+    this.telemetry.detach();
     this.queue.detach();
     this.fileSort = 'name';
     this.sortDescending = false;

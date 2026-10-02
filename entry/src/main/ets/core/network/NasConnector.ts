@@ -2,6 +2,8 @@ import { decodeCapabilities, decodeNasFileInfo, decodeNasFilePage, decodeNasResp
   nasString, NasErrorKind, NasFailure,
   normalizeNasOrigin, selectNasApi, validateLogicalPath } from '../domain/DsmProtocol';
 import type { NasApiDescriptor, NasFileEntry, NasFileInfo, NasFilePage, NasFormField, NasLoginSession } from '../domain/DsmProtocol';
+import { assertNasControlAccepted, validateNasControlAction } from '../domain/SystemControl';
+import type { NasControlAction } from '../domain/SystemControl';
 import { decodePhotosPage, decodeSharedAlbumPage, decodePhotoAlbumPage, decodePhotoDetail, validatePhotoIdentity,
   photoMediaSource, PhotosSpace } from '../domain/PhotosProtocol';
 import type { NasPhotoMediaAccess, NasPhotoItem, NasPhotoAlbum, NasPhotoAlbumPage, NasPhotoPage,
@@ -26,7 +28,8 @@ export const NAS_DISCOVERY_QUERY = 'SYNO.API.Auth,SYNO.FileStation.List,SYNO.Fil
   'SYNO.FileStation.Upload,SYNO.FileStation.Download,SYNO.Foto.Browse.Item,SYNO.FotoTeam.Browse.Item,' +
   'SYNO.DSM.Info,SYNO.Core.Package,SYNO.Foto.Sharing.Misc,' +
   'SYNO.Foto.Browse.Album,SYNO.FotoTeam.Browse.Album,SYNO.Foto.Thumbnail,SYNO.FotoTeam.Thumbnail,SYNO.Foto.Download,SYNO.FotoTeam.Download,' +
-  'SYNO.FileStation.CreateFolder,SYNO.FileStation.Rename,SYNO.FileStation.Delete,SYNO.FileStation.CopyMove,SYNO.FileStation.MD5';
+  'SYNO.FileStation.CreateFolder,SYNO.FileStation.Rename,SYNO.FileStation.Delete,SYNO.FileStation.CopyMove,SYNO.FileStation.MD5,' +
+  'SYNO.Core.System,SYNO.Core.System.Utilization,SYNO.Storage.CGI.Storage';
 
 export class NasConnector {
   private origin: string = '';
@@ -35,7 +38,7 @@ export class NasConnector {
   private generation: number = 0;
   private disposed: boolean = false;
   private authenticating: boolean = false;
-  constructor(private transport: NasTransport) {}
+  constructor(private transport: NasTransport, private sessionName: 'FileStation' | 'NasControl' = 'FileStation') {}
 
   async discover(address: string): Promise<NasApiDescriptor[]> {
     this.ensureOpen();
@@ -60,7 +63,7 @@ export class NasConnector {
     if (this.authenticating || this.session !== undefined) { throw new NasFailure(NasErrorKind.InvalidInput, '当前正在登录或已经登录。'); }
     const fields: NasFormField[] = [
       { name: 'account', content: account.trim() }, { name: 'passwd', content: password },
-      { name: 'session', content: 'FileStation' }, { name: 'format', content: 'sid' },
+      { name: 'session', content: this.sessionName }, { name: 'format', content: 'sid' },
       { name: 'enable_syno_token', content: 'yes' }
     ];
     if (otp.length > 0) { fields.push({ name: 'otp_code', content: otp }); }
@@ -230,6 +233,21 @@ export class NasConnector {
       throw new NasFailure(NasErrorKind.Protocol, '文件权限响应格式不符合预期。');
     }
     return data['is_manager'] === true;
+  }
+
+  async telemetrySystem(): Promise<Record<string, Object>> {
+    this.requireSession();
+    return this.call('SYNO.Core.System', 1, 'info', []);
+  }
+
+  async telemetryUtilization(): Promise<Record<string, Object>> {
+    this.requireSession();
+    return this.call('SYNO.Core.System.Utilization', 1, 'get', []);
+  }
+
+  async telemetryStorage(): Promise<Record<string, Object>> {
+    this.requireSession();
+    return this.call('SYNO.Storage.CGI.Storage', 1, 'load_info', []);
   }
 
   async environment(): Promise<NasEnvironment> {
@@ -479,7 +497,7 @@ export class NasConnector {
       const api = selectNasApi(this.capabilities, 'SYNO.API.Auth', [6]);
       const fields: NasFormField[] = [
         { name: 'api', content: api.name }, { name: 'version', content: '6' },
-        { name: 'method', content: 'logout' }, { name: 'session', content: 'FileStation' }
+        { name: 'method', content: 'logout' }, { name: 'session', content: this.sessionName }
       ];
       const reply = await this.transport.post(this.origin + '/webapi/' + api.path, encodeNasForm(fields), oldSession);
       decodeNasResponse(api.name, reply.status, reply.text);
@@ -493,6 +511,23 @@ export class NasConnector {
     this.session = undefined;
     this.capabilities = [];
     this.transport.close();
+  }
+
+  async systemControl(action: NasControlAction): Promise<void> {
+    this.requireSession();
+    if (this.sessionName !== 'NasControl') {
+      throw new NasFailure(NasErrorKind.Permission, '系统控制需要单独登录授权，不能使用文件会话。');
+    }
+    const method = validateNasControlAction(action);
+    const api = selectNasApi(this.capabilities, 'SYNO.Core.System', [1]);
+    const ticket = this.generation;
+    const fields: NasFormField[] = [
+      { name: 'api', content: api.name }, { name: 'version', content: '1' }, { name: 'method', content: method }
+    ];
+    if (method === 'shutdown') { fields.push({ name: 'local', content: 'true' }); }
+    const reply = await this.transport.post(this.origin + '/webapi/' + api.path, encodeNasForm(fields), this.session);
+    this.ensureCurrent(ticket);
+    assertNasControlAccepted(reply.status, reply.text);
   }
 
   private async call(name: string, version: number, method: string, parameters: NasFormField[], invalidateExpired: boolean = true): Promise<Record<string, Object>> {

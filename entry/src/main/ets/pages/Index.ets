@@ -9,6 +9,10 @@ import { PhotoBackup } from '../features/backup/PhotoBackup';
 import { TransferUploadSource } from '../features/transfers/TransferQueue';
 import { TransferQueueItem } from '../core/domain/TransferQueueState';
 import { ConnectionViewModel, FileTaskItem } from '../features/connection/ConnectionViewModel';
+import { NasConnectionAddressPage } from '../features/connection/ConnectionAddressPage';
+import { NasConnectionAddress } from '../core/domain/ConnectionRoutes';
+import { NasSystemControlPage } from '../features/control/SystemControlPage';
+import { NasTelemetrySummary, NasTelemetryDashboard } from '../features/telemetry/TelemetryDashboard';
 import { WorkbenchBreadcrumb, PhotoTimelineRow, photoGridColumns, photoTimelineRows, photoTakenDate, photoMediaLabel, workbenchBreadcrumbs, workbenchBytes,
   workbenchCanUseDestination } from '../features/workbench/WorkbenchPresentation';
 
@@ -20,6 +24,20 @@ struct Index {
   @Local private navigationInset: number = 0;
   private mainWindow: window.Window | undefined = undefined;
   private pageActive: boolean = false;
+  private foreground: boolean = true;
+  private abilityContext: common.UIAbilityContext | undefined = undefined;
+  @Local private telemetryOpened: boolean = false;
+  @Local private addressBookOpened: boolean = false;
+  @Local private systemControlOpened: boolean = false;
+  private telemetryScroller: Scroller = new Scroller();
+  private addressBookScroller: Scroller = new Scroller();
+  private systemControlScroller: Scroller = new Scroller();
+  private foregroundChanged = (foreground: boolean): void => {
+    this.foreground = foreground;
+    if (!foreground) { this.model.addressBook.cancelProbe(); this.model.systemControl.deactivate(); }
+    else if (this.systemControlOpened) { this.model.openSystemControl(); }
+    this.updateTelemetryMode();
+  };
   private navigationAreaChanged = (options: window.AvoidAreaOptions): void => {
     if (options.type === window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR) {
       this.navigationInset = this.getUIContext().px2vp(options.area.bottomRect.height);
@@ -52,6 +70,9 @@ struct Index {
   aboutToAppear(): void {
     this.pageActive = true;
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    this.abilityContext = context;
+    context.eventHub.on('nas-foreground-change', this.foregroundChanged);
+    this.updateTelemetryMode();
     this.model.restore(context);
     window.getLastWindow(context).then((mainWindow: window.Window): void => {
       if (!this.pageActive) { return; }
@@ -62,6 +83,9 @@ struct Index {
   }
   aboutToDisappear(): void {
     this.pageActive = false;
+    this.updateTelemetryMode();
+    this.abilityContext?.eventHub.off('nas-foreground-change', this.foregroundChanged);
+    this.abilityContext = undefined;
     this.mainWindow?.off('avoidAreaChange', this.navigationAreaChanged);
     this.mainWindow = undefined;
     this.backup.reset();
@@ -91,6 +115,7 @@ struct Index {
 
   @Monitor('model.authenticated')
   private authenticationChanged(): void {
+    this.updateTelemetryMode();
     if (!this.model.authenticated) {
       this.backup.reset();
       this.choosingBackupTarget = false;
@@ -116,6 +141,16 @@ struct Index {
 
   private pageTitle(): string {
     return this.model.authenticated ? ['首页', '文件', '相册', '任务'][this.activeTab] : 'NAS 工作台';
+  }
+
+  @Monitor('activeTab')
+  private activeTabChanged(): void {
+    this.updateTelemetryMode();
+  }
+
+  private updateTelemetryMode(): void {
+    this.model.telemetry.setMode(!this.pageActive || !this.foreground || !this.model.authenticated || this.addressBookOpened || this.systemControlOpened ? 'hidden' :
+      this.telemetryOpened ? 'detail' : this.activeTab === 0 ? 'home' : 'hidden');
   }
 
   private ensurePhotosOpen(): void {
@@ -177,6 +212,30 @@ struct Index {
       message: '将结束当前账号的连接并停止该账号的传输任务。',
       primaryButton: { value: '取消', action: (): void => {} },
       secondaryButton: { value: '登出', action: (): void => { this.model.disconnect(); } } });
+  }
+
+  private openConnectionAddresses(): void {
+    if (this.model.busy) { return; }
+    const saved = this.model.addressBook.addresses.find((address: NasConnectionAddress): boolean => address.origin === this.model.address);
+    this.model.addressBook.setDraftOrigin(this.model.address);
+    this.model.addressBook.draftName = saved?.name ?? (this.model.authenticated ? '我的 NAS' : '');
+    this.model.addressBook.draftKind = saved?.kind ?? 'lan';
+    this.navStack.pushPath({ name: 'connection-addresses' });
+  }
+
+  private confirmUseAddress(address: NasConnectionAddress): void {
+    if (this.model.busy || this.model.addressBook.busy || this.model.addressBook.probing) { return; }
+    const apply = (): void => {
+      this.model.useSavedAddress(address.origin).then((applied: boolean): void => {
+        if (applied) { this.navStack.clear(); }
+      });
+    };
+    if (!this.model.authenticated && !this.model.savedSession && !this.model.connected) { apply(); return; }
+    if (this.model.authenticated && this.model.address === address.origin) { this.navStack.pop(); return; }
+    this.getUIContext().showAlertDialog({ title: '切换连接地址',
+      message: '切换会停止本机传输并清除当前登录。上传结果不确定时将保留待核对状态。新地址需要重新登录，文件和任务记录不会迁移。',
+      primaryButton: { value: '取消', action: (): void => {} },
+      secondaryButton: { value: '切换', action: apply } });
   }
 
   private openForm(kind: string, entry?: NasFileEntry): void {
@@ -340,6 +399,8 @@ struct Index {
           Button('更换设备').width('100%').height(48).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
             .onClick((): void => { this.model.disconnect(); })
         }
+        Button('连接地址').width('100%').height(48).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
+          .onClick((): void => { this.openConnectionAddresses(); })
         this.notices()
       }.width('100%').constraintSize({ maxWidth: 560 }).padding(24).alignItems(HorizontalAlign.Start)
     }.width('100%').layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Auto)
@@ -381,11 +442,18 @@ struct Index {
             Button('设备与账号').height(48).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
               .onClick((): void => { this.showDeviceInfo(); })
           }.width('100%')
+          Button('连接地址').width('100%').height(48).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
+            .onClick((): void => { this.openConnectionAddresses(); })
+          if (this.model.supports('SYNO.Core.System')) {
+            Button('系统控制').width('100%').height(48).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
+              .onClick((): void => { this.navStack.pushPath({ name: 'system-control' }); })
+          }
         }.width('100%').padding(20).borderRadius(24).alignItems(HorizontalAlign.Start)
           .backgroundColor($r('sys.color.comp_background_secondary'))
         this.quickAction($r('sys.symbol.arrow_down_circle'), '任务进展', this.model.queue.ready ?
           this.model.queue.items.filter((item: TransferQueueItem): boolean => !['completed', 'cancelled', 'failed', 'closed', 'clearing'].includes(item.state)).length.toString() + ' 项需要继续处理' :
           '任务记录尚未加载，点此处理', (): void => { this.switchTab(3); })
+        NasTelemetrySummary({ monitor: this.model.telemetry, onOpen: (): void => { this.navStack.pushPath({ name: 'telemetry' }); } })
         Column({ space: 12 }) {
           Text('常用功能').fontSize(18).fontWeight(FontWeight.Bold).fontColor($r('sys.color.font_primary')).width('100%')
           this.quickAction($r('sys.symbol.folder'), '浏览文件', '整理目录，上传和下载文件', (): void => { this.switchTab(1); })
@@ -815,7 +883,44 @@ struct Index {
 
   @Builder
   destinationBuilder(name: string, parameter: Object) {
-    if (name === 'photo-detail') {
+    if (name === 'telemetry') {
+      HdsNavDestination() { NasTelemetryDashboard({ monitor: this.model.telemetry, scroller: this.telemetryScroller }) }
+        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: '运行状态' } } })
+        .bindToScrollable([this.telemetryScroller])
+        .onShown((): void => { this.telemetryOpened = true; this.updateTelemetryMode(); })
+        .onHidden((): void => { this.telemetryOpened = false; this.updateTelemetryMode(); })
+    } else if (name === 'connection-addresses') {
+      HdsNavDestination() {
+        NasConnectionAddressPage({ model: this.model, scroller: this.addressBookScroller,
+          onUseAddress: (address: NasConnectionAddress): void => { this.confirmUseAddress(address); } })
+      }
+        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: '连接地址' } } })
+        .bindToScrollable([this.addressBookScroller])
+        .onShown((): void => { this.addressBookOpened = true; this.updateTelemetryMode(); })
+        .onHidden((): void => {
+          this.addressBookOpened = false;
+          this.model.addressBook.cancelProbe();
+          this.updateTelemetryMode();
+        })
+    } else if (name === 'system-control') {
+      HdsNavDestination() {
+        NasSystemControlPage({ control: this.model.systemControl, scroller: this.systemControlScroller,
+          onRefresh: (): void => { this.model.openSystemControl(); },
+          onSubmit: (): void => { this.model.submitSystemControl(); } })
+      }
+        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: '系统控制' } } })
+        .bindToScrollable([this.systemControlScroller])
+        .onShown((): void => {
+          this.systemControlOpened = true;
+          this.updateTelemetryMode();
+          this.model.openSystemControl();
+        })
+        .onHidden((): void => {
+          this.systemControlOpened = false;
+          this.model.systemControl.deactivate();
+          this.updateTelemetryMode();
+        })
+    } else if (name === 'photo-detail') {
       HdsNavDestination() { this.photoDetailView() }
         .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: '照片详情' } } })
         .bindToScrollable([this.detailScroller])
