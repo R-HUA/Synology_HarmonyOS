@@ -87,6 +87,66 @@ export function nasInteger(input: Object | undefined): number {
   return input as number;
 }
 
+/** 来源：File Station 官方指南的公共错误码与各整理接口错误表。 */
+function fileStationFailureMessage(api: string, code: number): string | undefined {
+  switch (code) {
+    case 105: case 403: case 404: case 405: case 407:
+      return '当前账号没有执行此操作的权限。';
+    case 400: return '文件操作参数不正确。';
+    case 401: return 'NAS 执行文件操作时发生未知错误。';
+    case 402: return 'NAS 当前繁忙，暂时无法执行文件操作。';
+    case 406: return 'NAS 无法获取账号或用户组信息。';
+    case 408: return '文件或文件夹不存在，请刷新目录后确认。';
+    case 409: return '当前文件系统不支持此操作。';
+    case 410: return 'NAS 无法连接远程文件系统。';
+    case 411: return '当前文件系统为只读，无法修改文件。';
+    case 412: return '文件名称过长，请缩短名称。';
+    case 413: return '文件名称超过加密文件系统的长度限制，请缩短名称。';
+    case 414: return '已存在同名文件或文件夹，请更换名称。';
+    case 415: return '已超过磁盘配额，无法完成文件操作。';
+    case 416: return '存储空间不足，无法完成文件操作。';
+    case 417: return 'NAS 读写文件失败，请检查存储设备状态。';
+    case 418: return '文件名称或路径不符合 NAS 的要求。';
+    case 419: return '文件名称不符合 NAS 的要求。';
+    case 420: return '文件名称不符合目标 FAT 文件系统的要求。';
+    case 421: return '设备或文件资源正在使用中，暂时无法完成操作。';
+    case 599: return '文件操作任务不存在，无法查询或停止，请刷新目录确认结果。';
+  }
+  if (api === 'SYNO.FileStation.Delete' && code === 900) {
+    return '删除未全部完成，请刷新目录确认结果。';
+  }
+  if (api === 'SYNO.FileStation.CopyMove') {
+    switch (code) {
+      case 1000: return '复制未全部完成，请刷新目标目录确认结果。';
+      case 1001: return '移动未全部完成，请刷新源目录和目标目录确认结果。';
+      case 1002: return '目标目录发生错误，无法完成复制或移动。';
+      case 1003: return '目标目录已存在同名文件或文件夹，请更换名称或目标目录。';
+      case 1004: return '目标位置存在同名但类型不同的文件或文件夹，无法覆盖。';
+      case 1006: return '目标 FAT32 文件系统不支持所选文件或文件夹名称中的字符。';
+      case 1007: return '目标 FAT32 文件系统不支持超过 4 GB 的文件。';
+    }
+  }
+  if (api === 'SYNO.FileStation.CreateFolder') {
+    if (code === 1100) { return '文件夹创建失败。'; }
+    if (code === 1101) { return '新建后该目录内的文件夹数量将超过系统限制，无法创建。'; }
+  }
+  if (api === 'SYNO.FileStation.Rename' && code === 1200) { return '重命名失败，请刷新目录确认结果。'; }
+  return undefined;
+}
+
+function fileStationFailureDetail(api: string, errors: Object | undefined): string | undefined {
+  if (!Array.isArray(errors)) { return undefined; }
+  // 详情仅补充已知原因；缺失或不合规的详情不能掩盖已确认的主错误。
+  for (const raw of errors as Object[]) {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) { continue; }
+    const code = (raw as Record<string, Object>)['code'];
+    if (typeof code !== 'number' || !Number.isSafeInteger(code) || code < 0) { continue; }
+    const message = fileStationFailureMessage(api, code);
+    if (message !== undefined) { return message; }
+  }
+  return undefined;
+}
+
 export function dsmFailure(api: string, code: number): NasFailure {
   if (code === 150) { return new NasFailure(NasErrorKind.SessionExpired, '网络地址已变化，请重新登录 NAS。', code); }
   if ([106, 107, 119].includes(code)) { return new NasFailure(NasErrorKind.SessionExpired, '登录已失效，请重新登录。', code); }
@@ -101,12 +161,13 @@ export function dsmFailure(api: string, code: number): NasFailure {
         return new NasFailure(NasErrorKind.Credentials, '密码已到期或需要修改，请先在 DSM 网页处理。', code);
     }
   }
+  const fileMessage = api.startsWith('SYNO.FileStation.') ? fileStationFailureMessage(api, code) : undefined;
   if (code === 105 || code === 402 && api === 'SYNO.API.Auth' ||
     api.startsWith('SYNO.FileStation.') && [403, 404, 405, 407, 411].includes(code)) {
-    return new NasFailure(NasErrorKind.Permission, '当前账号没有执行此操作的权限。', code);
+    return new NasFailure(NasErrorKind.Permission, fileMessage === undefined ? '当前账号没有执行此操作的权限。' : fileMessage, code);
   }
   if ([102, 103, 104].includes(code)) { return new NasFailure(NasErrorKind.Unsupported, '当前 DSM 不支持所需的接口或版本。', code); }
-  return new NasFailure(NasErrorKind.Server, 'DSM 未完成请求（错误码 ' + code.toString() + '）。', code);
+  return new NasFailure(NasErrorKind.Server, fileMessage === undefined ? 'DSM 未完成请求（错误码 ' + code.toString() + '）。' : fileMessage, code);
 }
 
 /** HTTP 成功与业务成功分别校验；不向 UI 传播原始响应或敏感数据。 */
@@ -117,7 +178,15 @@ export function decodeNasResponse(api: string, status: number, text: string): Re
   try { parsed = JSON.parse(text) as Object; } catch { throw protocolError(); }
   const envelope = nasRecord(parsed);
   if (typeof envelope['success'] !== 'boolean') { throw protocolError(); }
-  if (envelope['success'] === false) { throw dsmFailure(api, nasInteger(nasRecord(envelope['error'])['code'])); }
+  if (envelope['success'] === false) {
+    const error = nasRecord(envelope['error']);
+    const failure = dsmFailure(api, nasInteger(error['code']));
+    if (api.startsWith('SYNO.FileStation.') && [900, 1000, 1001, 1002, 1100, 1200].includes(failure.code)) {
+      const detail = fileStationFailureDetail(api, error['errors']);
+      if (detail !== undefined && detail !== failure.message) { failure.message += ' 原因：' + detail; }
+    }
+    throw failure;
+  }
   // 登出和上传的空 success 响应是公开合同的一部分。
   return envelope['data'] === undefined ? {} : nasRecord(envelope['data']);
 }

@@ -4,9 +4,15 @@ import { RcpNasTransport } from '../../core/network/RcpNasTransport';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { NasSessionStore, NasSessionStoreFailure } from './NasSessionStore';
 import { common } from '@kit.AbilityKit';
-import { TransferProbe } from './TransferProbe';
-import { NasPhotoItem, NasSharedAlbum, PhotosSpace } from '../../core/domain/PhotosProtocol';
-import { MediaSelection } from './MediaSelection';
+import { NasPhotoAlbum, NasPhotoItem, NasSharedAlbum, PhotosSpace } from '../../core/domain/PhotosProtocol';
+import { TransferQueue, TransferUploadSource } from '../transfers/TransferQueue';
+import { FileEditResult, FileTaskItem, FileTaskState, NasFileSortBy, NasFileSortDirection, NasFileTask } from '../../core/domain/FileOperations';
+import { SharedUploadFile, SharedUploadInbox, sharedUploadInbox } from '../sharing/SharedUploadInbox';
+import { FileTaskStore } from './FileTaskStore';
+import { util } from '@kit.ArkTS';
+import { PhotoLibrary } from '../photos/PhotoLibrary';
+
+export { FileEditResult, FileTaskItem } from '../../core/domain/FileOperations';
 
 @ObservedV2
 export class ConnectionViewModel {
@@ -25,22 +31,32 @@ export class ConnectionViewModel {
   @Trace directory: string = '';
   @Trace pageOffset: number = 0;
   @Trace total: number = 0;
-  readonly transfer: TransferProbe = new TransferProbe();
-  readonly media: MediaSelection = new MediaSelection();
+  @Trace fileSort: string = 'name';
+  @Trace sortDescending: boolean = false;
+  @Trace actionNotice: string = '';
+  @Trace fileTasks: FileTaskItem[] = [];
+  @Trace fileTasksReady: boolean = false;
+  @Trace fileTasksErrorText: string = '';
+  @Trace directoryErrorText: string = '';
+  readonly queue: TransferQueue = new TransferQueue();
+  readonly sharedInbox: SharedUploadInbox = sharedUploadInbox;
+  readonly photoLibrary: PhotoLibrary = new PhotoLibrary();
   @Trace photosOpened: boolean = false;
-  @Trace photosSpace: PhotosSpace = PhotosSpace.Personal;
-  @Trace photoItems: NasPhotoItem[] = [];
-  @Trace sharedAlbums: NasSharedAlbum[] = [];
-  @Trace selectedAlbum: NasSharedAlbum | undefined = undefined;
-  @Trace photosOffset: number = 0;
-  @Trace photosMore: boolean = false;
-  private photoHistory: number[] = [];
+  get photosErrorText(): string { return this.photoLibrary.errorText; }
+  get photosSpace(): PhotosSpace { return this.photoLibrary.space; }
+  get photoItems(): NasPhotoItem[] { return this.photoLibrary.items; }
+  get sharedAlbums(): NasSharedAlbum[] { return this.photoLibrary.albums; }
+  get selectedAlbum(): NasSharedAlbum | undefined { return this.photoLibrary.selectedAlbum; }
+  get photosOffset(): number { return this.photosPageCount(); }
+  get photosMore(): boolean { return this.photoLibrary.hasMore; }
   private connector: NasConnector | undefined = undefined;
   private generation: number = 0;
   private history: string[] = [];
   private pageHistory: number[] = [];
   private store: NasSessionStore = new NasSessionStore();
+  private fileTaskStore: FileTaskStore = new FileTaskStore();
   private context: common.UIAbilityContext | undefined = undefined;
+  private submittedShares: string[] = [];
 
   async restore(context?: common.UIAbilityContext): Promise<void> {
     if (context !== undefined) { this.context = context; }
@@ -48,7 +64,6 @@ export class ConnectionViewModel {
     const ticket = ++this.generation;
     this.busy = true;
     this.errorText = '';
-    let reconcile = false;
     try {
       const saved = await this.store.load();
       if (ticket !== this.generation || saved === undefined) { return; }
@@ -67,8 +82,8 @@ export class ConnectionViewModel {
       this.applyPage('', page);
       this.connected = true;
       this.authenticated = true;
+      await this.attachQueue(connector);
       hilog.info(0x0000, 'NasConnection', 'operation=restore result=success');
-      reconcile = await this.inspectTransfer();
     } catch (error) {
       if (ticket === this.generation) {
         this.connector?.close();
@@ -78,7 +93,6 @@ export class ConnectionViewModel {
         await this.showFailure(error as Error, 'restore');
       }
     } finally { if (ticket === this.generation) { this.busy = false; } }
-    if (reconcile && ticket === this.generation && this.authenticated) { await this.verifyTransfer(true); }
   }
 
   async connect(): Promise<void> {
@@ -122,6 +136,8 @@ export class ConnectionViewModel {
     finally { if (ticket === this.generation) { this.busy = false; } }
     if (this.authenticated && ticket === this.generation && await this.load('', 0)) {
       if (ticket !== this.generation) { return; }
+      await this.attachQueue(connector);
+      if (ticket !== this.generation) { return; }
       const session = connector.sessionSnapshot();
       if (session === undefined || ticket !== this.generation) { return; }
       this.busy = true;
@@ -130,7 +146,6 @@ export class ConnectionViewModel {
         if (ticket === this.generation) {
           this.savedSession = true;
           hilog.info(0x0000, 'NasConnection', 'operation=save-session result=success');
-          await this.inspectTransfer();
         }
       } catch (error) { if (ticket === this.generation) { await this.showFailure(error as Error, 'save-session'); } }
       finally { if (ticket === this.generation) { this.busy = false; } }
@@ -166,8 +181,308 @@ export class ConnectionViewModel {
     if (await this.load(this.directory, this.pageHistory[this.pageHistory.length - 1])) { this.pageHistory.pop(); }
   }
 
-  async disconnect(): Promise<void> {
+  supports(apiName: string): boolean {
+    const version = apiName === 'SYNO.FileStation.CopyMove' ? 3 :
+      apiName.startsWith('SYNO.FileStation.') ? 2 : 1;
+    return this.capabilities.some((api: NasApiDescriptor): boolean =>
+      api.name === apiName && api.minVersion <= version && api.maxVersion >= version);
+  }
+
+  async setSort(sort: 'name' | 'size' | 'mtime', descending: boolean): Promise<void> {
     if (this.busy) { return; }
+    const previousSort = this.fileSort;
+    const previousDescending = this.sortDescending;
+    this.fileSort = sort;
+    this.sortDescending = descending;
+    if (await this.load(this.directory, 0)) { this.pageHistory = []; }
+    else { this.fileSort = previousSort; this.sortDescending = previousDescending; }
+  }
+
+  async createFolder(name: string): Promise<FileEditResult> {
+    const connector = this.connector;
+    const directory = this.directory;
+    if (connector === undefined || directory.length === 0) { return 'failed'; }
+    return this.editFiles(async (): Promise<FileEditResult> => { await connector.createFolder(directory, name); return 'completed'; }, '文件夹已创建');
+  }
+
+  async renameEntry(entry: NasFileEntry, name: string): Promise<FileEditResult> {
+    const connector = this.connector;
+    if (connector === undefined || this.directory.length === 0) { return 'failed'; }
+    return this.editFiles(async (): Promise<FileEditResult> => { await connector.renameFile(entry.path, name); return 'completed'; }, '名称已更新');
+  }
+
+  async deleteEntry(entry: NasFileEntry): Promise<FileEditResult> {
+    const connector = this.connector;
+    if (connector === undefined || this.directory.length === 0 || !this.canStartFileTask()) { return 'failed'; }
+    return this.editFiles(async (): Promise<FileEditResult> =>
+      this.startFileTask(connector, (): Promise<NasFileTask> => connector.deleteFiles([entry.path]), '删除 ' + entry.name), '删除已完成');
+  }
+
+  async copyEntry(entry: NasFileEntry, directory: string): Promise<FileEditResult> {
+    const connector = this.connector;
+    if (connector === undefined || !this.canStartFileTask()) { return 'failed'; }
+    return this.editFiles(async (): Promise<FileEditResult> =>
+      this.startFileTask(connector, (): Promise<NasFileTask> => connector.copyFiles([entry.path], directory), '复制 ' + entry.name), '复制已完成');
+  }
+
+  async moveEntry(entry: NasFileEntry, directory: string): Promise<FileEditResult> {
+    const connector = this.connector;
+    if (connector === undefined || !this.canStartFileTask()) { return 'failed'; }
+    return this.editFiles(async (): Promise<FileEditResult> =>
+      this.startFileTask(connector, (): Promise<NasFileTask> => connector.moveFiles([entry.path], directory), '移动 ' + entry.name), '移动已完成');
+  }
+
+  private canStartFileTask(): boolean {
+    if (this.busy || !this.authenticated) { return false; }
+    if (!this.fileTasksReady) {
+      this.errorText = this.fileTasksErrorText || '尚未读取文件操作记录，请在任务页重试读取后再操作。';
+      return false;
+    }
+    if (this.fileTasks.length >= 1000 && !this.fileTasks.some((item: FileTaskItem): boolean =>
+      item.state === 'completed' || item.state === 'failed')) {
+      this.errorText = '待核对的文件操作任务已达保存上限，请先查询已有任务。';
+      return false;
+    }
+    return true;
+  }
+
+  private async startFileTask(connector: NasConnector, start: () => Promise<NasFileTask>, label: string): Promise<FileEditResult> {
+    const ticket = this.generation;
+    const store = this.fileTaskStore;
+    const expired = this.fileTasks.length < 1000 ? -1 : this.fileTasks.findIndex((item: FileTaskItem): boolean =>
+      item.state === 'completed' || item.state === 'failed');
+    const previous = this.fileTasks.filter((_item: FileTaskItem, index: number): boolean => index !== expired);
+    const task = await start();
+    const item: FileTaskItem = { id: util.generateRandomUUID(true), task: task, label: label, state: 'pending', errorText: '' };
+    // start 已被 NAS 接受，立即保留标识；后续查询、存储错误均不得重发 start。
+    const records = previous.concat([item]);
+    if (ticket === this.generation) { this.fileTasks = records; }
+    await this.saveFileTasks(store, records, ticket);
+    if (ticket !== this.generation) { return 'failed'; }
+    return this.waitFileTask(connector, item, store, ticket);
+  }
+
+  private async waitFileTask(connector: NasConnector, item: FileTaskItem, store: FileTaskStore, ticket: number): Promise<FileEditResult> {
+    const deadline = Date.now() + 15000;
+    while (Date.now() < deadline) {
+      const result = await this.queryFileTask(connector, item, store, ticket);
+      if (result !== 'pending' || this.fileTasks.some((task: FileTaskItem): boolean => task.id === item.id && task.state === 'unknown')) {
+        return result;
+      }
+      if (Date.now() >= deadline) { break; }
+      await new Promise<void>((resolve): void => { setTimeout(resolve, 500); });
+    }
+    if (ticket !== this.generation) { return 'failed'; }
+    await this.updateFileTask(item.id, 'pending', '服务器仍在处理，可在任务页继续查询结果。', store, ticket);
+    return 'pending';
+  }
+
+  /** 只查询已保存的 taskId，不重新提交复制、移动或删除。 */
+  async checkFileTask(id: string): Promise<void> {
+    const connector = this.connector;
+    const item = this.fileTasks.find((task: FileTaskItem): boolean => task.id === id);
+    if (this.busy || !this.authenticated || connector === undefined || item === undefined ||
+      item.state === 'completed' || item.state === 'failed') { return; }
+    const ticket = this.generation;
+    this.busy = true;
+    let result: FileEditResult = 'failed';
+    try { result = await this.queryFileTask(connector, item, this.fileTaskStore, ticket); }
+    finally { if (ticket === this.generation) { this.busy = false; } }
+    if (ticket === this.generation && result === 'completed') {
+      this.actionNotice = item.label + '已完成';
+      await this.refreshAfterFileEdit();
+    }
+  }
+
+  private async queryFileTask(connector: NasConnector, item: FileTaskItem, store: FileTaskStore, ticket: number): Promise<FileEditResult> {
+    if (ticket !== this.generation) { return 'failed'; }
+    try {
+      const status = await connector.fileTaskStatus(item.task);
+      if (ticket !== this.generation) { return 'failed'; }
+      if (!status.finished) {
+        const current = this.fileTasks.find((task: FileTaskItem): boolean => task.id === item.id);
+        if (current !== undefined && (current.state !== 'pending' || current.errorText.length > 0)) {
+          await this.updateFileTask(item.id, 'pending', '服务器仍在处理，可稍后继续查询结果。', store, ticket);
+        }
+        return 'pending';
+      }
+      await this.updateFileTask(item.id, 'completed', '', store, ticket);
+      return ticket === this.generation ? 'completed' : 'failed';
+    } catch (error) {
+      if (ticket !== this.generation) { return 'failed'; }
+      const failure = error as Error;
+      // 查询被拒绝或服务器繁忙不能证明已经启动的写操作失败，仍保留查询入口。
+      const rejectedQuery = error instanceof NasFailure &&
+        (error.kind === NasErrorKind.Permission || error.kind === NasErrorKind.Server && error.code === 402);
+      const unknown = !(error instanceof NasFailure) ||
+        [NasErrorKind.Network, NasErrorKind.Http, NasErrorKind.Protocol, NasErrorKind.SessionExpired, NasErrorKind.Cancelled].includes(error.kind) || error.code === 599;
+      const stateUnknown = unknown || rejectedQuery;
+      const text = (error instanceof NasFailure ? error.message : '查询文件操作任务失败。') +
+        (stateUnknown ? ' 结果尚未确认，可在任务页继续查询，请勿重复提交操作。' : ' 请先核对目录中的实际结果。');
+      await this.updateFileTask(item.id, stateUnknown ? 'unknown' : 'failed', text, store, ticket);
+      if (error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) {
+        await this.showFailure(failure, 'file-task');
+        return 'failed';
+      }
+      if (!unknown) { await this.showFailure(failure, 'file-task'); }
+      return stateUnknown ? 'pending' : 'failed';
+    }
+  }
+
+  private async updateFileTask(id: string, state: FileTaskState, errorText: string, store: FileTaskStore, ticket: number): Promise<void> {
+    if (ticket !== this.generation) { return; }
+    this.fileTasks = this.fileTasks.map((item: FileTaskItem): FileTaskItem => item.id === id ?
+      { id: item.id, task: item.task, label: item.label, state: state, errorText: errorText } : item);
+    await this.saveFileTasks(store, this.fileTasks, ticket);
+  }
+
+  private async saveFileTasks(store: FileTaskStore, tasks: FileTaskItem[], ticket: number): Promise<void> {
+    try {
+      await store.save(tasks);
+      if (ticket === this.generation) { this.fileTasksReady = true; this.fileTasksErrorText = ''; }
+    } catch {
+      if (ticket === this.generation) {
+        this.fileTasksReady = false;
+        this.fileTasksErrorText = '文件操作记录保存失败，已启动的任务仍可查询；请重试保存后再启动新任务，退出应用可能丢失未保存的记录。';
+        this.errorText = this.fileTasksErrorText;
+      }
+    }
+  }
+
+  async reloadFileTasks(): Promise<void> {
+    if (this.busy || !this.authenticated) { return; }
+    const ticket = this.generation;
+    this.busy = true;
+    try {
+      if (this.fileTasks.length > 0) { await this.saveFileTasks(this.fileTaskStore, this.fileTasks, ticket); }
+      else { await this.attachFileTasks(); }
+    } finally { if (ticket === this.generation) { this.busy = false; } }
+  }
+
+  async uploadFiles(): Promise<void> {
+    if (!this.authenticated || this.busy || this.directory.length === 0) { return; }
+    try { await this.queue.pickAndUpload(this.directory); }
+    catch (error) { await this.showFailure(error as Error, 'upload'); }
+  }
+
+  async downloadFile(entry: NasFileEntry): Promise<void> {
+    if (!this.authenticated || this.busy || entry.isDirectory) { return; }
+    try { await this.queue.download(entry); }
+    catch (error) { await this.showFailure(error as Error, 'download'); }
+  }
+
+  async uploadSharedFiles(): Promise<void> {
+    if (!this.authenticated || this.busy || this.queue.busy || this.sharedInbox.receiving || this.directory.length === 0) { return; }
+    const ticket = this.generation;
+    const files = this.sharedInbox.files.filter((file: SharedUploadFile): boolean => !this.submittedShares.includes(file.id));
+    this.busy = true;
+    this.errorText = '';
+    this.actionNotice = '';
+    try {
+      if (files.length > 0) {
+        const result = await this.queue.uploadSources(this.directory, files.map((file: SharedUploadFile): TransferUploadSource =>
+          ({ uri: file.uri, name: file.fileName, bytes: file.size })));
+        for (const index of result.acceptedIndices) { this.submittedShares.push(files[index].id); }
+        if (ticket !== this.generation) { return; }
+        if (result.acceptedIndices.length > 0) { this.actionNotice = '已将 ' + result.acceptedIndices.length.toString() + ' 个文件加入传输队列'; }
+        if (result.issues.length > 0) { this.errorText = result.issues[0].errorText; }
+      }
+      // 清理失败的条目下次只重试清理，不再次创建上传；新入站文件不在此快照内。
+      await this.sharedInbox.consume(this.submittedShares);
+      this.submittedShares = [];
+    } catch (error) {
+      if (ticket === this.generation) { this.errorText = error instanceof Error ? error.message : '处理分享文件失败，请重试。'; }
+    } finally { if (ticket === this.generation) { this.busy = false; } }
+  }
+
+  async discardSharedFiles(): Promise<void> {
+    if (this.busy || this.queue.busy) { return; }
+    try { await this.sharedInbox.clear(); this.submittedShares = []; }
+    catch (error) { this.errorText = error instanceof Error ? error.message : '清理分享文件失败，请重试。'; }
+  }
+
+  private async attachQueue(connector: NasConnector): Promise<void> {
+    const photoTicket = this.generation;
+    this.photoLibrary.attach(connector, this.context, async (error: NasFailure): Promise<void> => {
+      if (photoTicket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'photos'); }
+    });
+    if (this.context === undefined) { return; }
+    const ticket = this.generation;
+    await this.attachFileTasks();
+    if (ticket !== this.generation) { return; }
+    try { await this.queue.attach(this.context, connector, this.address, this.account.trim()); }
+    catch (error) {
+      this.errorText = error instanceof NasFailure ? error.message : '无法读取传输记录，请在任务页重试。';
+    }
+  }
+
+  private async attachFileTasks(): Promise<void> {
+    const context = this.context;
+    if (context === undefined) { return; }
+    const ticket = this.generation;
+    const store = new FileTaskStore();
+    this.fileTasksReady = false;
+    this.fileTaskStore = store;
+    try {
+      const tasks = await store.load(context, this.address, this.account.trim());
+      if (ticket !== this.generation) { return; }
+      this.fileTasks = tasks;
+      this.fileTasksReady = true;
+      this.fileTasksErrorText = '';
+    } catch (error) {
+      if (ticket === this.generation) {
+        this.fileTasksErrorText = error instanceof NasFailure ? error.message :
+          '无法读取文件操作记录，已保留原记录；请在任务页重试读取后再启动整理任务。';
+        this.errorText = this.fileTasksErrorText;
+      }
+    }
+  }
+
+  /** 写操作只发送一次；失败后由用户核对目录，避免重试产生重复修改。 */
+  private async editFiles(action: () => Promise<FileEditResult>, notice: string): Promise<FileEditResult> {
+    if (this.busy || !this.authenticated) { return 'failed'; }
+    const ticket = this.generation;
+    this.busy = true;
+    this.errorText = '';
+    this.actionNotice = '';
+    let result: FileEditResult = 'failed';
+    try {
+      result = await action();
+      if (ticket !== this.generation) { return 'failed'; }
+      if (result === 'completed') { this.actionNotice = notice; }
+      else if (result === 'pending') { this.actionNotice = '操作已提交，可在任务页继续查询结果，请勿重复提交。'; }
+    } catch (error) {
+      if (ticket === this.generation) {
+        await this.showFailure(error as Error, 'file-operation');
+        if (error instanceof NasFailure &&
+          [NasErrorKind.Network, NasErrorKind.Http, NasErrorKind.Protocol].includes(error.kind)) {
+          this.errorText += ' 操作结果尚未确认，请先刷新目录核对，再决定是否重新操作。';
+        }
+      }
+    } finally { if (ticket === this.generation) { this.busy = false; } }
+    if (result === 'completed' && ticket === this.generation) { await this.refreshAfterFileEdit(); }
+    return ticket === this.generation ? result : 'failed';
+  }
+
+  private async refreshAfterFileEdit(): Promise<void> {
+    if (!await this.load(this.directory, 0)) {
+      if (this.directoryErrorText.length > 0) {
+        this.directoryErrorText = '操作已完成，但目录刷新失败：' + this.directoryErrorText;
+        this.errorText = this.directoryErrorText;
+      }
+    } else { this.pageHistory = []; }
+  }
+
+  async disconnect(): Promise<void> {
+    if (this.busy || this.queue.busy) { return; }
+    this.busy = true;
+    try { await this.queue.stopAll(); }
+    catch (error) {
+      this.errorText = error instanceof NasFailure ? error.message : '停止传输失败，请在任务页重试后再退出账号。';
+      this.busy = false;
+      return;
+    }
+    this.queue.detach();
     const oldConnector = this.connector;
     this.connector = undefined;
     const ticket = ++this.generation;
@@ -176,11 +491,6 @@ export class ConnectionViewModel {
     this.capabilities = [];
     this.busy = true;
     this.errorText = '';
-    try {
-      if (this.context !== undefined) { await this.transfer.cancelPending(this.context); }
-    } catch (error) {
-      if (ticket === this.generation) { await this.showFailure(error as Error, 'cancel-transfer'); }
-    }
     try {
       await this.store.clear();
       if (ticket === this.generation) {
@@ -205,95 +515,27 @@ export class ConnectionViewModel {
       }
     } finally { if (ticket === this.generation) { this.busy = false; } }
   }
-  async verifyTransfer(recheck: boolean = false, large: boolean = false): Promise<void> {
-    const connector = this.connector;
-    const context = this.context;
-    if (this.busy || !this.authenticated || connector === undefined || context === undefined) { return; }
-    const ticket = this.generation;
-    this.busy = true;
-    this.errorText = '';
-    let verified = false;
-    try {
-      const current = (): boolean => ticket === this.generation;
-      if (recheck) { await this.transfer.reconcile(context, connector, this.address, this.account, current); }
-      else { await this.transfer.run(context, connector, this.address, this.account, this.directory, current, large); }
-      verified = true;
-    } catch (error) { if (ticket === this.generation) { await this.showFailure(error as Error, 'transfer'); } }
-    finally { if (ticket === this.generation) { this.busy = false; } }
-    if (verified && ticket === this.generation && this.authenticated) { await this.refresh(); }
-  }
-  async discardTransfer(): Promise<void> {
-    if (this.busy || this.context === undefined) { return; }
-    const ticket = this.generation;
-    this.busy = true;
-    this.errorText = '';
-    try { await this.transfer.cancelPending(this.context); }
-    catch (error) { if (ticket === this.generation) { await this.showFailure(error as Error, 'cancel-transfer'); } }
-    finally { if (ticket === this.generation) { this.busy = false; } }
-  }
   async openPhotos(space: PhotosSpace = PhotosSpace.Personal, offset: number = 0): Promise<void> {
-    const connector = this.connector;
-    if (this.busy || !this.authenticated || connector === undefined) { return; }
-    const ticket = this.generation;
-    this.busy = true;
-    this.errorText = '';
-    const oldOffset = this.photosOffset;
-    const oldSpace = this.photosSpace;
+    if (this.busy || !this.authenticated || this.connector === undefined) { return; }
     this.photosOpened = true;
-    this.photosSpace = space;
-    if (oldSpace !== space || offset === 0) {
-      this.photoHistory = [];
-      this.photosOffset = 0;
-      this.photoItems = [];
-      this.sharedAlbums = [];
-      this.photosMore = false;
-    }
-    if (oldSpace !== space) { this.selectedAlbum = undefined; }
-    try {
-      const album = this.selectedAlbum;
-      const page = space === PhotosSpace.WithMe ?
-        album === undefined ? await connector.sharedAlbums(offset) : await connector.sharedAlbumPhotos(album, offset) :
-        await connector.photos(space, offset);
-      if (ticket !== this.generation) { return; }
-      if (space === PhotosSpace.WithMe && album === undefined) { this.sharedAlbums = page.items as NasSharedAlbum[]; }
-      else { this.photoItems = page.items as NasPhotoItem[]; }
-      this.photosOffset = page.offset;
-      this.photosMore = page.hasMore;
-      if (offset === 0 || oldSpace !== space) { this.photoHistory = []; }
-      else if (offset > oldOffset) { this.photoHistory.push(oldOffset); }
-      else if (offset < oldOffset) { this.photoHistory.pop(); }
-      hilog.info(0x0000, 'NasPhotos', 'operation=list space=%{public}d count=%{public}d offset=%{public}d', space, page.items.length, offset);
-    } catch (error) { if (ticket === this.generation) { await this.showFailure(error as Error, 'photos'); } }
-    finally { if (ticket === this.generation) { this.busy = false; } }
+    if (offset > 0 && space === this.photoLibrary.space) { await this.photoLibrary.loadMore(); }
+    else { await this.photoLibrary.open(space, space === PhotosSpace.WithMe ? 'albums' : 'timeline'); }
   }
-  async previousPhotos(): Promise<void> {
-    if (this.photoHistory.length > 0) { await this.openPhotos(this.photosSpace, this.photoHistory[this.photoHistory.length - 1]); }
-  }
+  async previousPhotos(): Promise<void> { await this.photoLibrary.refresh(); }
   async openSharedAlbum(album: NasSharedAlbum): Promise<void> {
-    if (this.busy) { return; }
-    this.selectedAlbum = album;
-    await this.openPhotos(PhotosSpace.WithMe);
+    const photosAlbum: NasPhotoAlbum = { id: album.id, name: album.name, itemCount: album.itemCount,
+      passphrase: album.passphrase, space: PhotosSpace.WithMe };
+    await this.photoLibrary.openAlbum(photosAlbum);
   }
-  async backToAlbums(): Promise<void> {
-    if (this.busy) { return; }
-    this.selectedAlbum = undefined;
-    await this.openPhotos(PhotosSpace.WithMe);
+  async backToAlbums(): Promise<void> { await this.photoLibrary.backToLibrary(); }
+  photosPageCount(): number {
+    return this.photoLibrary.section === 'albums' && this.photoLibrary.selectedAlbum === undefined ?
+      this.photoLibrary.albums.length : this.photoLibrary.items.length;
   }
-  photosPageCount(): number { return this.photosSpace === PhotosSpace.WithMe && this.selectedAlbum === undefined ? this.sharedAlbums.length : this.photoItems.length; }
-  closePhotos(): void { if (!this.busy) { this.photosOpened = false; this.errorText = ''; } }
-  async selectMedia(): Promise<void> {
-    if (this.busy || this.context === undefined) { return; }
-    const ticket = this.generation;
-    this.busy = true;
-    this.errorText = '';
-    try { await this.media.verify(this.context); }
-    catch (error) { if (ticket === this.generation) { await this.showFailure(error as Error, 'media'); } }
-    finally { if (ticket === this.generation) { this.busy = false; } }
-  }
-  async stopTransfer(): Promise<void> {
-    const ticket = this.generation;
-    try { await this.transfer.stop(); }
-    catch (error) { if (ticket === this.generation) { await this.showFailure(error as Error, 'stop-transfer'); } }
+  closePhotos(): void {
+    this.photosOpened = false;
+    this.photoLibrary.closeDetail();
+    this.photoLibrary.errorText = '';
   }
   async serverInfo(): Promise<string> {
     const connector = this.connector;
@@ -311,16 +553,10 @@ export class ConnectionViewModel {
     } catch (error) { if (ticket === this.generation) { await this.showFailure(error as Error, 'environment'); } return ''; }
     finally { if (ticket === this.generation) { this.busy = false; } }
   }
-  private async inspectTransfer(): Promise<boolean> {
-    if (this.context === undefined) { return false; }
-    const ticket = this.generation;
-    try { return await this.transfer.inspectSaved(this.context, this.address, this.account); }
-    catch (error) { if (ticket === this.generation) { await this.showFailure(error as Error, 'read-transfer-record'); } }
-    return false;
-  }
   dispose(): void {
     this.generation++;
-    this.transfer.detach();
+    this.queue.detach();
+
     this.connector?.close();
     this.connector = undefined;
     this.clearAccount();
@@ -335,13 +571,23 @@ export class ConnectionViewModel {
     const ticket = this.generation;
     this.busy = true;
     this.errorText = '';
+    this.directoryErrorText = '';
     try {
-      const page = await connector.list(path, offset);
+      const sort = path.length === 0 && this.fileSort === 'size' ? NasFileSortBy.Name : this.fileSort as NasFileSortBy;
+      const page = await connector.list(path, offset, sort,
+        this.sortDescending ? NasFileSortDirection.Descending : NasFileSortDirection.Ascending);
       if (ticket !== this.generation) { return false; }
+      this.fileSort = sort;
       this.applyPage(path, page);
       hilog.info(0x0000, 'NasConnection', 'operation=list result=success');
       return true;
-    } catch (error) { if (ticket === this.generation) { await this.showFailure(error as Error, 'list'); } return false; }
+    } catch (error) {
+      if (ticket === this.generation) {
+        await this.showFailure(error as Error, 'list');
+        this.directoryErrorText = this.errorText;
+      }
+      return false;
+    }
     finally { if (ticket === this.generation) { this.busy = false; } }
   }
   private applyPage(path: string, page: NasFilePage): void {
@@ -351,13 +597,17 @@ export class ConnectionViewModel {
     this.total = page.total;
   }
   private clearAccount(): void {
+    this.queue.detach();
+    this.fileSort = 'name';
+    this.sortDescending = false;
+    this.actionNotice = '';
+    this.fileTasks = [];
+    this.fileTasksReady = false;
+    this.fileTasksErrorText = '';
+    this.directoryErrorText = '';
+    this.fileTaskStore = new FileTaskStore();
     this.photosOpened = false;
-    this.photoItems = [];
-    this.sharedAlbums = [];
-    this.selectedAlbum = undefined;
-    this.photosOffset = 0;
-    this.photosMore = false;
-    this.photoHistory = [];
+    this.photoLibrary.reset();
     this.authenticated = false;
     this.password = '';
     this.otp = '';
