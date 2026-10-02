@@ -2,6 +2,8 @@ import { NasControlRecord } from '../../core/domain/SystemControl';
 import { telemetryTimestamp } from '../../core/domain/TelemetryProtocol';
 import { SystemControlModel } from './SystemControlModel';
 
+import { WorkbenchMetrics, WorkbenchSectionTitle, WorkbenchInfoRow, WorkbenchNotice, WorkbenchActionRow } from '../workbench/WorkbenchUi';
+
 @ComponentV2
 export struct NasSystemControlPage {
   @Param control: SystemControlModel = new SystemControlModel();
@@ -46,14 +48,14 @@ export struct NasSystemControlPage {
         .fontSize(15).fontColor($r('sys.color.font_primary')).width('100%')
       Text('文件与相册登录不代表系统控制权限。独立授权不保存密码或会话，退出页面、退后台或两分钟到期后失效。')
         .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
-    }.width('100%').padding(20).borderRadius(24).alignItems(HorizontalAlign.Start)
-      .backgroundColor($r('sys.color.comp_background_secondary'))
+    }.width('100%').padding(20).borderRadius(WorkbenchMetrics.cardRadius).alignItems(HorizontalAlign.Start)
+      .backgroundColor($r('app.color.workbench_surface'))
   }
 
   @Builder
   authorizationForm() {
     Column({ space: 12 }) {
-      Text('独立登录授权').fontSize(18).fontWeight(FontWeight.Bold).fontColor($r('sys.color.font_primary')).width('100%')
+      WorkbenchSectionTitle({ title: '独立登录授权', subtitle: this.control.authorized ? '临时授权已生效' : '验证账号后才能操作' })
       Text('请输入具有 DSM 系统控制权限的账号。是否允许操作由 NAS 在提交时判定，不将 File Station 管理权限作为系统授权。')
         .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
       TextInput({ text: this.control.account, placeholder: '系统控制账号' }).maxLength(128).constraintSize({ minHeight: 52 })
@@ -75,20 +77,23 @@ export struct NasSystemControlPage {
         Button('结束临时授权').width('100%').constraintSize({ minHeight: 48 }).buttonStyle(ButtonStyleMode.TEXTUAL)
           .enabled(!this.control.busy).onClick((): void => { this.onRefresh(); })
       }
-    }.width('100%').padding(20).borderRadius(24).alignItems(HorizontalAlign.Start)
-      .backgroundColor($r('sys.color.comp_background_secondary'))
+    }.width('100%').padding(20).borderRadius(WorkbenchMetrics.cardRadius).alignItems(HorizontalAlign.Start)
+      .backgroundColor($r('app.color.workbench_surface'))
   }
 
   @Builder
   actionCard() {
     Column({ space: 12 }) {
-      Text('选择操作').fontSize(18).fontWeight(FontWeight.Bold).fontColor($r('sys.color.font_primary')).width('100%')
+      WorkbenchSectionTitle({ title: '危险操作', subtitle: '操作会中断 NAS 上的服务' })
       Text('本 App 内进行中、结果不确定或未读取的任务会阻止提交；不会为系统控制自动停止或重试任务。')
         .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
-      Button('重启 NAS').width('100%').constraintSize({ minHeight: 48 }).enabled(this.control.authorized && !this.control.busy)
-        .onClick((): void => { this.control.prepare('reboot'); })
-      Button('关闭 NAS').width('100%').constraintSize({ minHeight: 48 }).buttonStyle(ButtonStyleMode.TEXTUAL)
-        .enabled(this.control.authorized && !this.control.busy).onClick((): void => { this.control.prepare('shutdown'); })
+      Column() {
+        WorkbenchActionRow({ icon: $r('sys.symbol.externaldrive'), label: '重启 NAS', destructive: true,
+          available: this.control.authorized && !this.control.busy, onAction: (): void => { this.control.prepare('reboot'); } })
+        Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
+        WorkbenchActionRow({ icon: $r('sys.symbol.externaldrive'), label: '关闭 NAS', destructive: true,
+          available: this.control.authorized && !this.control.busy, onAction: (): void => { this.control.prepare('shutdown'); } })
+      }.width('100%').borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_subtle'))
       if (this.control.selectedAction !== undefined) {
         Text('请输入“' + this.control.confirmationWord() + '”，然后再次核对设备并确认。')
           .fontSize(15).fontColor($r('sys.color.font_primary')).width('100%')
@@ -96,22 +101,25 @@ export struct NasSystemControlPage {
           .constraintSize({ minHeight: 52 }).enabled(!this.control.busy)
           .onChange((text: string): void => { this.control.confirmationText = text; }).accessibilityText('系统控制确认文字')
         Button('继续核对并确认').width('100%').constraintSize({ minHeight: 48 })
+          .backgroundColor($r('app.color.workbench_danger')).fontColor($r('app.color.workbench_surface'))
           .enabled(!this.control.busy && this.control.authorized && this.control.confirmationText === this.control.confirmationWord())
           .onClick((): void => { this.confirmSubmit(); })
         Button('取消准备').constraintSize({ minHeight: 48 }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.control.busy)
           .onClick((): void => { this.control.cancelPreparation(); })
       }
-    }.width('100%').padding(20).borderRadius(24).alignItems(HorizontalAlign.Start)
-      .backgroundColor($r('sys.color.comp_background_secondary'))
+    }.width('100%').padding(20).borderRadius(WorkbenchMetrics.cardRadius).alignItems(HorizontalAlign.Start)
+      .backgroundColor($r('app.color.workbench_surface'))
   }
 
   @Builder
   recordCard(record: NasControlRecord) {
     Column({ space: 12 }) {
-      Text('最近一次操作').fontSize(18).fontWeight(FontWeight.Bold).fontColor($r('sys.color.font_primary')).width('100%')
+      WorkbenchSectionTitle({ title: '最近一次操作' })
       Text(this.stateLabel(record)).fontSize(17).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
-      Text(record.model + ' · ' + (record.action === 'reboot' ? '重启' : '关机')).fontSize(15).width('100%')
-      Text(record.origin + '\n账号：' + record.account).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
+      WorkbenchInfoRow({ label: '设备', value: record.model })
+      WorkbenchInfoRow({ label: '操作', value: record.action === 'reboot' ? '重启' : '关机' })
+      WorkbenchInfoRow({ label: '连接地址', value: record.origin })
+      WorkbenchInfoRow({ label: '授权账号', value: record.account })
       Text('记录时间 ' + telemetryTimestamp(record.createdAt)).fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
       if (record.state === 'pending' || record.state === 'accepted') {
         Text('离线不证明操作已完成。请先在 DSM 或现场核对；未核对前不能再次提交。')
@@ -119,8 +127,8 @@ export struct NasSystemControlPage {
         Button('已人工核对结果').width('100%').constraintSize({ minHeight: 48 }).buttonStyle(ButtonStyleMode.TEXTUAL)
           .enabled(this.control.ready && !this.control.busy).onClick((): void => { this.confirmResolve(record); })
       }
-    }.width('100%').padding(20).borderRadius(24).alignItems(HorizontalAlign.Start)
-      .backgroundColor($r('sys.color.comp_background_secondary'))
+    }.width('100%').padding(20).borderRadius(WorkbenchMetrics.cardRadius).alignItems(HorizontalAlign.Start)
+      .backgroundColor($r('app.color.workbench_surface'))
   }
 
   build() {
@@ -128,7 +136,7 @@ export struct NasSystemControlPage {
       Column({ space: 20 }) {
         this.targetCard()
         if (this.control.errorText.length > 0) {
-          Text(this.control.errorText).fontSize(15).fontColor($r('sys.color.font_primary')).width('100%')
+          WorkbenchNotice({ text: this.control.errorText, warning: true })
         }
         if (this.control.notice.length > 0) {
           Text(this.control.notice).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
@@ -140,6 +148,6 @@ export struct NasSystemControlPage {
         this.actionCard()
       }.width('100%').constraintSize({ maxWidth: 840 }).padding({ left: 16, right: 16, top: 16, bottom: 32 })
         .alignItems(HorizontalAlign.Start)
-    }.width('100%').height('100%').scrollBar(BarState.Auto)
+    }.width('100%').height('100%').scrollBar(BarState.Auto).backgroundColor($r('app.color.workbench_background'))
   }
 }

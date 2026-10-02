@@ -3,6 +3,38 @@
     {
       "name": "start_window_background",
       "value": "#000000"
+    },
+    {
+      "name": "workbench_background",
+      "value": "#101113"
+    },
+    {
+      "name": "workbench_surface",
+      "value": "#1C1E22"
+    },
+    {
+      "name": "workbench_subtle",
+      "value": "#282B30"
+    },
+    {
+      "name": "workbench_accent_surface",
+      "value": "#1D3153"
+    },
+    {
+      "name": "workbench_divider",
+      "value": "#383C43"
+    },
+    {
+      "name": "workbench_danger",
+      "value": "#FFB4AB"
+    },
+    {
+      "name": "workbench_warning",
+      "value": "#FFD596"
+    },
+    {
+      "name": "workbench_warning_surface",
+      "value": "#392D1A"
     }
   ]
 }

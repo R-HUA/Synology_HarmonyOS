@@ -1,4 +1,4 @@
-import type { NasPhotoItem } from '../../core/domain/PhotosProtocol';
+import type { NasPhotoItem, NasPhotoAlbum } from '../../core/domain/PhotosProtocol';
 
 export interface WorkbenchBreadcrumb {
   title: string;
@@ -66,4 +66,30 @@ export function photoTimelineRows(items: NasPhotoItem[], columns: number): Photo
 
 export function photoMediaLabel(item: NasPhotoItem): string {
   return item.mediaType === 'video' ? '视频' : item.mediaType === 'live' ? '动态照片' : '照片';
+}
+
+export interface PhotoAlbumRow {
+  key: string;
+  albums: NasPhotoAlbum[];
+}
+
+export function workbenchBottomInset(navigationInset: number, barHeight: number = 56): number {
+  return Math.max(0, navigationInset) + barHeight + 16;
+}
+
+export function workbenchShortcutColumns(width: number): number {
+  return width >= 600 ? 4 : 2;
+}
+
+export function photoAlbumColumns(width: number): number {
+  return Math.max(1, Math.min(4, Math.floor(Math.max(160, width - 32) / 160)));
+}
+
+export function photoAlbumRows(albums: NasPhotoAlbum[], columns: number): PhotoAlbumRow[] {
+  const rows: PhotoAlbumRow[] = [];
+  for (let offset = 0; offset < albums.length; offset += columns) {
+    const album = albums[offset];
+    rows.push({ key: album.space.toString() + ':' + album.id.toString(), albums: albums.slice(offset, offset + columns) });
+  }
+  return rows;
 }

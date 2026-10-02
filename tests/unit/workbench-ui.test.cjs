@@ -9,7 +9,8 @@ const source = fs.readFileSync(path.join(__dirname, '../../entry/src/main/ets/fe
 const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS } });
 const moduleFixture = { exports: {} };
 vm.runInNewContext(compiled.outputText, { module: moduleFixture, exports: moduleFixture.exports, Date });
-const { photoGridColumns, photoTimelineRows, photoTakenDate, photoMediaLabel } = moduleFixture.exports;
+const { photoGridColumns, photoTimelineRows, photoTakenDate, photoMediaLabel,
+  workbenchBottomInset, workbenchShortcutColumns, photoAlbumColumns, photoAlbumRows } = moduleFixture.exports;
 const plain = value => JSON.parse(JSON.stringify(value));
 const item = (id, year, month) => ({ id, space: 0, filename: '照片.jpg', bytes: 12, mediaType: 'photo',
   ...(year === undefined ? {} : { takenAt: new Date(year, month - 1, 15, 12).getTime() / 1000 }) });
@@ -46,4 +47,33 @@ test('photo date and media labels show absent metadata and distinguish video and
   assert.equal(photoMediaLabel({ mediaType: 'live' }), '动态照片');
   assert.equal(photoMediaLabel({ mediaType: 'photo' }), '照片');
   assert.deepEqual(plain(photoTimelineRows([], 3)), []);
+});
+
+test('floating navigation clearance follows the actual system navigation area', () => {
+  assert.equal(workbenchBottomInset(0), 72);
+  assert.equal(workbenchBottomInset(24), 96);
+  assert.equal(workbenchBottomInset(40), 112);
+  assert.equal(workbenchBottomInset(24, 64), 104);
+});
+
+test('shortcut and album layouts adapt at content width boundaries', () => {
+  assert.equal(workbenchShortcutColumns(599), 2);
+  assert.equal(workbenchShortcutColumns(600), 4);
+  assert.equal(photoAlbumColumns(240), 1);
+  assert.equal(photoAlbumColumns(360), 2);
+  assert.equal(photoAlbumColumns(600), 3);
+  assert.equal(photoAlbumColumns(840), 4);
+});
+
+test('album resizing preserves every album, its source space and partial final row', () => {
+  const albums = Array.from({ length: 9 }, (_, index) => ({
+    id: index % 3, space: Math.floor(index / 3), name: '相册 ' + index, itemCount: index
+  }));
+  for (const columns of [1, 2, 3, 4]) {
+    const rows = plain(photoAlbumRows(albums, columns));
+    assert.deepEqual(rows.flatMap(row => row.albums), albums);
+    assert.equal(new Set(rows.map(row => row.key)).size, rows.length);
+    assert.ok(rows.every(row => row.albums.length > 0 && row.albums.length <= columns));
+  }
+  assert.deepEqual(plain(photoAlbumRows([], 2)), []);
 });

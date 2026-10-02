@@ -14,7 +14,9 @@ import { NasConnectionAddress } from '../core/domain/ConnectionRoutes';
 import { NasSystemControlPage } from '../features/control/SystemControlPage';
 import { NasTelemetrySummary, NasTelemetryDashboard } from '../features/telemetry/TelemetryDashboard';
 import { WorkbenchBreadcrumb, PhotoTimelineRow, photoGridColumns, photoTimelineRows, photoTakenDate, photoMediaLabel, workbenchBreadcrumbs, workbenchBytes,
-  workbenchCanUseDestination } from '../features/workbench/WorkbenchPresentation';
+  workbenchCanUseDestination, workbenchBottomInset, workbenchShortcutColumns, photoAlbumColumns, photoAlbumRows, PhotoAlbumRow } from '../features/workbench/WorkbenchPresentation';
+
+import { WorkbenchMetrics, WorkbenchSectionTitle, WorkbenchInfoRow, WorkbenchNotice, WorkbenchChoice, WorkbenchActionRow } from '../features/workbench/WorkbenchUi';
 
 @Entry
 @ComponentV2
@@ -56,6 +58,9 @@ struct Index {
   @Local private choosingBackupTarget: boolean = false;
   @Local private photosInitialized: boolean = false;
   @Local private contentWidth: number = 360;
+  @Local private windowWidth: number = 360;
+  @Local private deviceInfo: string[] = [];
+  @Local private selectedTaskId: string = '';
   @Local private taskFilter: string = 'all';
   @Local private taskSection: string = 'transfers';
   @Local private mediaDecodeFailed: boolean = false;
@@ -93,8 +98,8 @@ struct Index {
   }
 
   onBackPress(): boolean {
+    if (this.sheetVisible) { if (!this.formSubmitting) { this.sheetVisible = false; } return true; }
     if (this.navStack.size() > 0) { this.navStack.pop(); return true; }
-    if (this.sheetVisible) { this.sheetVisible = false; return true; }
     if (this.choosingBackupTarget) { this.choosingBackupTarget = false; this.switchTab(2); return true; }
     if (this.pendingEntry !== undefined) {
       this.pendingEntry = undefined;
@@ -125,6 +130,8 @@ struct Index {
       this.navStack.clear();
       this.sheetVisible = false;
       this.selectedEntry = undefined;
+      this.selectedTaskId = '';
+      this.deviceInfo = [];
       this.pendingEntry = undefined;
       this.pendingOperation = '';
       this.formName = '';
@@ -199,12 +206,24 @@ struct Index {
   }
 
   private showDeviceInfo(): void {
+    this.deviceInfo = [];
+    this.openForm('device');
     this.model.serverInfo().then((info: string): void => {
-      if (info.length > 0 && this.model.authenticated) {
-        this.getUIContext().showAlertDialog({ title: '设备信息', message: info,
-          confirm: { value: '知道了', action: (): void => {} } });
-      }
+      if (info.length > 0 && this.model.authenticated) { this.deviceInfo = info.split('\n'); }
     });
+  }
+
+  private bottomInset(): number {
+    return workbenchBottomInset(this.navigationInset);
+  }
+
+  private selectedTask(): TransferQueueItem | undefined {
+    return this.model.queue.items.find((item: TransferQueueItem): boolean => item.id === this.selectedTaskId);
+  }
+
+  private openTask(item: TransferQueueItem): void {
+    this.selectedTaskId = item.id;
+    this.openForm('task');
   }
 
   private confirmLogout(): void {
@@ -250,6 +269,9 @@ struct Index {
     if (this.sheetKind === 'rename') { return '重命名'; }
     if (this.sheetKind === 'sort') { return '排序'; }
     if (this.sheetKind === 'backup') { return '备份内容'; }
+    if (this.sheetKind === 'device') { return '设备与账号'; }
+    if (this.sheetKind === 'actions') { return '文件操作'; }
+    if (this.sheetKind === 'task') { return '任务详情'; }
     return '文件详情';
   }
 
@@ -339,13 +361,9 @@ struct Index {
 
   @Builder
   notices() {
-    if (this.visibleError().length > 0) {
-      Text(this.visibleError()).fontSize(14).fontColor($r('sys.color.font_primary'))
-        .width('100%').padding(16).borderRadius(16).backgroundColor($r('sys.color.comp_background_secondary'))
-        .accessibilityText('操作未完成，' + this.visibleError())
-    } else if (this.model.actionNotice.length > 0) {
-      Text(this.model.actionNotice).fontSize(14).fontColor($r('sys.color.font_emphasize'))
-        .width('100%').padding(12).accessibilityText(this.model.actionNotice)
+    WorkbenchNotice({ text: this.visibleError(), warning: true })
+    if (this.visibleError().length === 0 && this.model.actionNotice.length > 0) {
+      WorkbenchNotice({ text: this.model.actionNotice })
     }
   }
 
@@ -363,112 +381,114 @@ struct Index {
     Scroll(this.homeScroller) {
       Column({ space: 20 }) {
         Column({ space: 12 }) {
-          SymbolGlyph($r('sys.symbol.externaldrive')).fontSize(48).fontColor([$r('sys.color.icon_emphasize')])
+          SymbolGlyph($r('sys.symbol.externaldrive')).fontSize(36).padding(14).borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_accent_surface')).fontColor([$r('sys.color.icon_emphasize')])
           Text(this.model.savedSession ? '重新连接设备' : this.model.connected ? '登录你的 NAS' : '连接你的 NAS')
             .fontSize(28).fontWeight(FontWeight.Bold).fontColor($r('sys.color.font_primary'))
           Text(this.model.savedSession ? '已保存的账号会在连接后恢复。' : '安全访问文件、相册和传输任务。')
             .fontSize(16).fontColor($r('sys.color.font_secondary'))
-        }.width('100%').alignItems(HorizontalAlign.Start).padding({ top: 24, bottom: 12 })
-        Text('设备地址').fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
-        TextInput({ text: this.model.address, placeholder: 'https://nas.example.com:5001' })
-          .height(52).enabled(!this.model.connected && !this.model.busy && !this.model.savedSession)
-          .onChange((text: string): void => { this.model.address = text; }).accessibilityText('NAS HTTPS 地址')
-        if (this.model.savedSession) {
-          Text(this.model.account).fontSize(16).width('100%').fontColor($r('sys.color.font_primary'))
-          Button(this.model.busy ? '正在连接…' : '重试连接').width('100%').height(48).enabled(!this.model.busy)
-            .onClick((): void => { this.model.restore(); })
-          Button('重新登录').width('100%').height(48).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
-            .onClick((): void => { this.model.disconnect(); })
-        } else if (!this.model.connected) {
-          Button(this.model.busy ? '正在连接…' : '连接 NAS').width('100%').height(48)
-            .enabled(!this.model.busy && this.model.address.trim().length > 0).onClick((): void => { this.model.connect(); })
-        } else {
-          TextInput({ text: this.model.account, placeholder: 'NAS 账号' }).height(52).enabled(!this.model.busy)
-            .onChange((text: string): void => { this.model.account = text; }).accessibilityText('NAS 账号')
-          TextInput({ text: this.model.password, placeholder: '密码' }).height(52)
-            .type(InputType.Password).enabled(!this.model.busy)
-            .onChange((text: string): void => { this.model.password = text; }).accessibilityText('NAS 密码')
-          if (this.model.needsOtp) {
-            TextInput({ text: this.model.otp, placeholder: '6 位动态码' }).height(52)
-              .type(InputType.Number).maxLength(6).enabled(!this.model.busy)
-              .onChange((text: string): void => { this.model.otp = text; }).accessibilityText('双重验证动态码')
+        }.width('100%').alignItems(HorizontalAlign.Start).padding({ top: 12, bottom: 8 })
+        Column({ space: 16 }) {
+          Text('设备地址').fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
+          TextInput({ text: this.model.address, placeholder: 'https://nas.example.com:5001' })
+            .constraintSize({ minHeight: 52 }).enabled(!this.model.connected && !this.model.busy && !this.model.savedSession)
+            .onChange((text: string): void => { this.model.address = text; }).accessibilityText('NAS HTTPS 地址')
+          if (this.model.savedSession) {
+            Text(this.model.account).fontSize(16).width('100%').fontColor($r('sys.color.font_primary'))
+            Button(this.model.busy ? '正在连接…' : '重试连接').width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).enabled(!this.model.busy)
+              .onClick((): void => { this.model.restore(); })
+            Button('重新登录').width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
+              .onClick((): void => { this.model.disconnect(); })
+          } else if (!this.model.connected) {
+            Button(this.model.busy ? '正在连接…' : '连接 NAS').width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize })
+              .enabled(!this.model.busy && this.model.address.trim().length > 0).onClick((): void => { this.model.connect(); })
+          } else {
+            TextInput({ text: this.model.account, placeholder: 'NAS 账号' }).constraintSize({ minHeight: 52 }).enabled(!this.model.busy)
+              .onChange((text: string): void => { this.model.account = text; }).accessibilityText('NAS 账号')
+            TextInput({ text: this.model.password, placeholder: '密码' }).constraintSize({ minHeight: 52 })
+              .type(InputType.Password).enabled(!this.model.busy)
+              .onChange((text: string): void => { this.model.password = text; }).accessibilityText('NAS 密码')
+            if (this.model.needsOtp) {
+              TextInput({ text: this.model.otp, placeholder: '6 位动态码' }).constraintSize({ minHeight: 52 })
+                .type(InputType.Number).maxLength(6).enabled(!this.model.busy)
+                .onChange((text: string): void => { this.model.otp = text; }).accessibilityText('双重验证动态码')
+            }
+            Button(this.model.busy ? '正在登录…' : '登录').width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize })
+              .enabled(!this.model.busy && this.model.account.trim().length > 0 && this.model.password.length > 0)
+              .onClick((): void => { this.model.login(); })
+            Button('更换设备').width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
+              .onClick((): void => { this.model.disconnect(); })
           }
-          Button(this.model.busy ? '正在登录…' : '登录').width('100%').height(48)
-            .enabled(!this.model.busy && this.model.account.trim().length > 0 && this.model.password.length > 0)
-            .onClick((): void => { this.model.login(); })
-          Button('更换设备').width('100%').height(48).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
-            .onClick((): void => { this.model.disconnect(); })
-        }
-        Button('连接地址').width('100%').height(48).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
+        }.width('100%').padding(20).borderRadius(WorkbenchMetrics.cardRadius)
+          .backgroundColor($r('app.color.workbench_surface')).alignItems(HorizontalAlign.Start)
+        Button('连接地址').width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
           .onClick((): void => { this.openConnectionAddresses(); })
         this.notices()
-      }.width('100%').constraintSize({ maxWidth: 560 }).padding(24).alignItems(HorizontalAlign.Start)
+      }.width('100%').constraintSize({ maxWidth: 560 }).padding({ left: 16, right: 16, top: 16, bottom: 32 }).alignItems(HorizontalAlign.Start)
     }.width('100%').layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Auto)
   }
 
   @Builder
-  quickAction(icon: Resource, label: string, description: string, action: () => void) {
+  shortcut(icon: Resource, label: string, action: () => void) {
     Button() {
-      Row({ space: 16 }) {
+      Column({ space: 10 }) {
         SymbolGlyph(icon).fontSize(28).fontColor([$r('sys.color.icon_emphasize')])
-        Column({ space: 4 }) {
-          Text(label).fontSize(17).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
-          Text(description).fontSize(13).fontColor($r('sys.color.font_secondary'))
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        SymbolGlyph($r('sys.symbol.arrow_right')).fontSize(16).fontColor([$r('sys.color.font_tertiary')])
-      }.width('100%').padding(20)
-    }.width('100%').constraintSize({ minHeight: 80 }).type(ButtonType.Normal).borderRadius(20)
-      .backgroundColor($r('sys.color.comp_background_secondary')).enabled(!this.model.busy).onClick(action)
-      .accessibilityText(label + '，' + description)
+          .width(48).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).borderRadius(16).backgroundColor($r('app.color.workbench_accent_surface'))
+        Text(label).fontSize(15).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).textAlign(TextAlign.Center)
+      }.width('100%').padding({ top: 16, bottom: 16, left: 8, right: 8 })
+    }.width(workbenchShortcutColumns(this.windowWidth) === 4 ? '25%' : '50%')
+      .type(ButtonType.Normal).backgroundColor(Color.Transparent).enabled(!this.model.busy)
+      .onClick(action).accessibilityText(label)
   }
 
   @Builder
   homeView() {
     Scroll(this.homeScroller) {
-      Column({ space: 20 }) {
-        Column({ space: 16 }) {
-          Row({ space: 16 }) {
-            SymbolGlyph($r('sys.symbol.externaldrive')).fontSize(40).fontColor([$r('sys.color.icon_emphasize')])
-            Column({ space: 4 }) {
-              Text('我的 NAS').fontSize(22).fontWeight(FontWeight.Bold).fontColor($r('sys.color.font_primary'))
-              Text(this.model.account).fontSize(15).fontColor($r('sys.color.font_secondary'))
-            }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-            Text('已连接').fontSize(13).fontColor($r('sys.color.font_emphasize'))
-          }.width('100%')
-          Text(this.model.address).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
-          Divider()
-          Row({ space: 12 }) {
-            Text('HTTPS 安全连接').fontSize(13).fontColor($r('sys.color.font_secondary')).layoutWeight(1)
-            Button('设备与账号').height(48).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
-              .onClick((): void => { this.showDeviceInfo(); })
-          }.width('100%')
-          Button('连接地址').width('100%').height(48).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
-            .onClick((): void => { this.openConnectionAddresses(); })
-          if (this.model.supports('SYNO.Core.System')) {
-            Button('系统控制').width('100%').height(48).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
-              .onClick((): void => { this.navStack.pushPath({ name: 'system-control' }); })
-          }
-        }.width('100%').padding(20).borderRadius(24).alignItems(HorizontalAlign.Start)
-          .backgroundColor($r('sys.color.comp_background_secondary'))
-        this.quickAction($r('sys.symbol.arrow_down_circle'), '任务进展', this.model.queue.ready ?
-          this.model.queue.items.filter((item: TransferQueueItem): boolean => !['completed', 'cancelled', 'failed', 'closed', 'clearing'].includes(item.state)).length.toString() + ' 项需要继续处理' :
-          '任务记录尚未加载，点此处理', (): void => { this.switchTab(3); })
-        NasTelemetrySummary({ monitor: this.model.telemetry, onOpen: (): void => { this.navStack.pushPath({ name: 'telemetry' }); } })
-        Column({ space: 12 }) {
-          Text('常用功能').fontSize(18).fontWeight(FontWeight.Bold).fontColor($r('sys.color.font_primary')).width('100%')
-          this.quickAction($r('sys.symbol.folder'), '浏览文件', '整理目录，上传和下载文件', (): void => { this.switchTab(1); })
+      Column({ space: WorkbenchMetrics.sectionGap }) {
+        Row({ space: 16 }) {
+          SymbolGlyph($r('sys.symbol.externaldrive')).fontSize(32).fontColor([$r('sys.color.icon_emphasize')])
+            .width(56).height(56).borderRadius(18).backgroundColor($r('app.color.workbench_accent_surface'))
+          Column({ space: 6 }) {
+            Text(this.model.telemetry.system.data?.model ?? '我的 NAS').fontSize(22).fontWeight(FontWeight.Bold)
+              .fontColor($r('sys.color.font_primary'))
+            Text(this.model.account).fontSize(14).fontColor($r('sys.color.font_secondary'))
+            Text('已连接 · HTTPS').fontSize(13).fontColor($r('sys.color.font_emphasize'))
+          }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        }.width('100%').padding(20).borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
+        Flex({ wrap: FlexWrap.Wrap }) {
+          this.shortcut($r('sys.symbol.folder'), '文件', (): void => { this.switchTab(1); })
           if (this.supportsPhotos()) {
-            this.quickAction($r('sys.symbol.picture'), '浏览照片', '时间线、相册和原图', (): void => { this.switchTab(2); })
+            this.shortcut($r('sys.symbol.picture'), '照片', (): void => { this.switchTab(2); })
           }
           if (this.model.supports('SYNO.FileStation.Upload')) {
-            this.quickAction($r('sys.symbol.arrow_up_circle'), '备份照片与视频', '选择此设备上的内容，确认后上传',
-              (): void => { this.switchTab(2); this.selectBackup(); })
+            this.shortcut($r('sys.symbol.arrow_up_circle'), '照片备份', (): void => { this.switchTab(2); this.selectBackup(); })
           }
+          this.shortcut($r('sys.symbol.arrow_down_circle'), '传输任务', (): void => { this.switchTab(3); })
+        }.width('100%').padding(4).borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
+        NasTelemetrySummary({ monitor: this.model.telemetry, onOpen: (): void => { this.navStack.pushPath({ name: 'telemetry' }); } })
+        Column() {
+          WorkbenchActionRow({ icon: $r('sys.symbol.arrow_down_circle'), label: '任务进展',
+            description: this.model.queue.ready ?
+              this.model.queue.items.filter((item: TransferQueueItem): boolean => !['completed', 'cancelled', 'failed', 'closed', 'clearing'].includes(item.state)).length.toString() + ' 项待处理' :
+              '任务记录尚未加载，点此处理', onAction: (): void => { this.switchTab(3); } })
+        }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
+        Column({ space: 12 }) {
+          WorkbenchSectionTitle({ title: '设备管理' })
+          Column() {
+            WorkbenchActionRow({ icon: $r('sys.symbol.externaldrive'), label: '设备与账号', description: this.model.account,
+              available: !this.model.busy, onAction: (): void => { this.showDeviceInfo(); } })
+            Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
+            WorkbenchActionRow({ icon: $r('sys.symbol.externaldrive'), label: '连接地址', description: this.model.address,
+              available: !this.model.busy, onAction: (): void => { this.openConnectionAddresses(); } })
+            if (this.model.supports('SYNO.Core.System')) {
+              Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
+              WorkbenchActionRow({ icon: $r('sys.symbol.ellipsis_circle'), label: '系统控制',
+                available: !this.model.busy, onAction: (): void => { this.navStack.pushPath({ name: 'system-control' }); } })
+            }
+          }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
         }.width('100%')
         this.notices()
-        Button('登出当前账号').height(48).width('100%').buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
-          .onClick((): void => { this.confirmLogout(); })
-      }.width('100%').constraintSize({ maxWidth: 840 }).padding({ left: 16, right: 16, top: 16, bottom: 96 })
+      }.width('100%').constraintSize({ maxWidth: 840 })
+        .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin, top: 16, bottom: this.bottomInset() })
     }.width('100%').height('100%').align(Alignment.Top).scrollBar(BarState.Auto)
   }
 
@@ -477,7 +497,7 @@ struct Index {
     Scroll() {
       Row({ space: 4 }) {
         ForEach(workbenchBreadcrumbs(this.model.directory), (crumb: WorkbenchBreadcrumb): void => {
-          Button(crumb.title).height(48).buttonStyle(ButtonStyleMode.TEXTUAL)
+          Button(crumb.title).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
             .fontColor(crumb.path === this.model.directory ? $r('sys.color.font_primary') : $r('sys.color.font_emphasize'))
             .enabled(!this.model.busy && crumb.path !== this.model.directory)
             .onClick((): void => { this.navigateBreadcrumb(crumb.path); })
@@ -489,26 +509,38 @@ struct Index {
 
   @Builder
   fileActions(entry: NasFileEntry) {
-    Menu() {
-      MenuItem({ content: '详情' }).onClick((): void => { this.openForm('detail', entry); })
+    Column() {
+      if (this.sheetKind === 'actions') {
+        WorkbenchActionRow({ icon: $r('sys.symbol.doc'), label: '查看详情', available: !this.model.busy,
+          onAction: (): void => { this.openForm('detail', entry); } })
+      }
       if (!entry.isDirectory && this.model.supports('SYNO.FileStation.Download')) {
-        MenuItem({ content: '下载' }).onClick((): void => {
-          this.runTransfer(async (): Promise<void> => { await this.model.downloadFile(entry); });
-        })
+        WorkbenchActionRow({ icon: $r('sys.symbol.arrow_down_circle'), label: '下载到应用',
+          available: this.model.queue.ready && !this.model.busy && !this.model.queue.busy && !this.transferSubmitting,
+          onAction: (): void => {
+            this.sheetVisible = false;
+            this.runTransfer(async (): Promise<void> => { await this.model.downloadFile(entry); });
+            this.switchTab(3);
+          } })
       }
       if (this.model.directory.length > 0) {
-        if (this.model.supports('SYNO.FileStation.Rename')) {
-          MenuItem({ content: '重命名' }).onClick((): void => { this.openForm('rename', entry); })
-        }
         if (this.model.supports('SYNO.FileStation.CopyMove')) {
-          MenuItem({ content: '复制到…' }).onClick((): void => { this.chooseDestination(entry, 'copy'); })
-          MenuItem({ content: '移动到…' }).onClick((): void => { this.chooseDestination(entry, 'move'); })
+          WorkbenchActionRow({ icon: $r('sys.symbol.folder'), label: '复制到…', available: !this.model.busy,
+            onAction: (): void => { this.chooseDestination(entry, 'copy'); } })
+          WorkbenchActionRow({ icon: $r('sys.symbol.folder'), label: '移动到…', available: !this.model.busy,
+            onAction: (): void => { this.chooseDestination(entry, 'move'); } })
+        }
+        if (this.model.supports('SYNO.FileStation.Rename')) {
+          WorkbenchActionRow({ icon: $r('sys.symbol.doc'), label: '重命名', available: !this.model.busy,
+            onAction: (): void => { this.openForm('rename', entry); } })
         }
         if (this.model.supports('SYNO.FileStation.Delete')) {
-          MenuItem({ content: '删除' }).onClick((): void => { this.confirmDelete(entry); })
+          Divider().color($r('app.color.workbench_divider')).margin({ left: 16, right: 16 })
+          WorkbenchActionRow({ icon: $r('sys.symbol.doc'), label: '删除', destructive: true, available: !this.model.busy,
+            onAction: (): void => { this.confirmDelete(entry); } })
         }
       }
-    }
+    }.width('100%').borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_subtle'))
   }
 
   @Builder
@@ -537,13 +569,13 @@ struct Index {
           Text(this.backup.errorText).fontSize(14).fontColor($r('sys.color.font_primary')).width('100%')
         }
         Flex({ wrap: FlexWrap.Wrap }) {
-          Button(this.backup.submitting ? '正在准备…' : '备份到此处').height(48)
+          Button(this.backup.submitting ? '正在准备…' : '备份到此处').constraintSize({ minHeight: WorkbenchMetrics.touchSize })
             .enabled(this.model.directory.length > 0 && this.model.queue.ready && !this.model.queue.busy && !this.model.busy && !this.backup.submitting)
             .onClick((): void => { this.submitBackup(); })
-          Button('返回相册').height(48).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.backup.submitting)
+          Button('返回相册').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.backup.submitting)
             .onClick((): void => { this.choosingBackupTarget = false; this.switchTab(2); })
         }.width('100%')
-      }.width('100%').padding(16).borderRadius(20).backgroundColor($r('sys.color.comp_background_secondary'))
+      }.width('100%').padding(16).borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_surface'))
     }
   }
 
@@ -556,31 +588,37 @@ struct Index {
         Text(this.model.directory.length === 0 ? '请选择目标文件夹。' : '目标：' + this.model.directory)
           .fontSize(13).width('100%').fontColor($r('sys.color.font_secondary'))
         Row({ space: 12 }) {
-          Button(this.pendingOperation === 'copy' ? '复制到此处' : '移动到此处').height(48).layoutWeight(1)
+          Button(this.pendingOperation === 'copy' ? '复制到此处' : '移动到此处').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).layoutWeight(1)
             .enabled(!this.model.busy && this.destinationAllowed()).onClick((): void => { this.applyDestination(); })
-          Button('取消').height(48).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
+          Button('取消').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
             .onClick((): void => { this.pendingEntry = undefined; this.pendingOperation = ''; })
         }.width('100%')
-      }.width('100%').padding(16).borderRadius(20).backgroundColor($r('sys.color.comp_background_secondary'))
+      }.width('100%').padding(16).borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_surface'))
     }
   }
 
   @Builder
   filesView() {
     Column() {
-      List({ space: 8, scroller: this.filesScroller }) {
+      List({ space: 0, scroller: this.filesScroller }) {
         ListItem() {
           Column({ space: 8 }) {
             this.breadcrumbBar()
             Row({ space: 8 }) {
-              Text(this.fileCountText()).fontSize(14).fontColor($r('sys.color.font_secondary')).layoutWeight(1)
+              if (this.model.directory.length > 0) {
+                Button(this.sortLabel()).constraintSize({ minHeight: 48 }).buttonStyle(ButtonStyleMode.TEXTUAL)
+                  .enabled(!this.model.busy).onClick((): void => { this.openForm('sort'); })
+              } else {
+                Text('共享文件夹').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
+              }
+              Blank().layoutWeight(1)
               if (this.model.directory.length > 0 && this.model.supports('SYNO.FileStation.Upload')) {
-                Button('上传').height(48).buttonStyle(ButtonStyleMode.NORMAL)
+                Button('上传').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.NORMAL)
                   .enabled(this.model.queue.ready && !this.model.busy && !this.model.queue.busy && !this.transferSubmitting)
                   .onClick((): void => { this.runTransfer(async (): Promise<void> => { await this.model.uploadFiles(); }); })
               }
               Button() { SymbolGlyph($r('sys.symbol.ellipsis_circle')).fontSize(24).fontColor([$r('sys.color.icon_primary')]) }
-                .width(48).height(48).type(ButtonType.Circle).backgroundColor(Color.Transparent)
+                .width(48).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).type(ButtonType.Circle).backgroundColor(Color.Transparent)
                 .enabled(!this.model.busy).bindMenu(this.filePageActions()).accessibilityText('文件页面，更多操作')
             }.width('100%')
             this.backupDestinationBar()
@@ -592,55 +630,70 @@ struct Index {
                 Text('正在处理…').fontSize(14).fontColor($r('sys.color.font_secondary'))
               }.width('100%').padding(12)
             }
-          }.width('100%')
+          }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: 12 })
         }
         if (!this.model.busy && this.model.entries.length === 0 && this.model.errorText.length === 0) {
           ListItem() { this.emptyState($r('sys.symbol.folder'), '此位置为空', '此文件夹没有可显示的项目。') }
         }
         ForEach(this.model.entries, (entry: NasFileEntry): void => {
           ListItem() {
-            Row({ space: 4 }) {
-              Button() {
-                Row({ space: 14 }) {
-                  SymbolGlyph(entry.isDirectory ? $r('sys.symbol.folder') : $r('sys.symbol.doc'))
-                    .fontSize(32).fontColor([entry.isDirectory ? $r('sys.color.icon_emphasize') : $r('sys.color.font_secondary')])
-                  Column({ space: 6 }) {
-                    Text(entry.name).fontSize(16).fontWeight(FontWeight.Medium)
-                      .fontColor($r('sys.color.font_primary')).width('100%')
-                    Text(entry.isDirectory ? '文件夹' : workbenchBytes(entry.bytes))
-                      .fontSize(13).fontColor($r('sys.color.font_secondary'))
-                  }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-                }.width('100%').padding({ left: 16, top: 18, bottom: 18, right: 8 })
-              }.layoutWeight(1).type(ButtonType.Normal).backgroundColor(Color.Transparent).enabled(!this.model.busy)
-                .onClick((): void => {
-                  if (entry.isDirectory) { this.model.openDirectory(entry); }
-                  else { this.openForm('detail', entry); }
-                }).accessibilityText((entry.isDirectory ? '文件夹，' : '文件，') + entry.name)
-              Button() { SymbolGlyph($r('sys.symbol.ellipsis_circle')).fontSize(22).fontColor([$r('sys.color.font_secondary')]) }
-                .width(48).height(48).type(ButtonType.Circle).backgroundColor(Color.Transparent)
-                .enabled(!this.model.busy).bindMenu(this.fileActions(entry))
-                .accessibilityText(entry.name + '，更多操作').margin({ right: 8 })
-            }.width('100%').borderRadius(20).backgroundColor($r('sys.color.comp_background_secondary'))
+            Column() {
+              Row({ space: 4 }) {
+                Button() {
+                  Row({ space: 14 }) {
+                    SymbolGlyph(entry.isDirectory ? $r('sys.symbol.folder') : $r('sys.symbol.doc'))
+                      .fontSize(28).fontColor([entry.isDirectory ? $r('sys.color.icon_emphasize') : $r('sys.color.font_secondary')])
+                      .width(44).height(44).borderRadius(12).backgroundColor($r('app.color.workbench_subtle'))
+                    Column({ space: 6 }) {
+                      Text(entry.name).fontSize(16).fontWeight(FontWeight.Medium).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+                        .fontColor($r('sys.color.font_primary')).width('100%')
+                      Text(entry.isDirectory ? '文件夹' : workbenchBytes(entry.bytes))
+                        .fontSize(13).fontColor($r('sys.color.font_secondary'))
+                    }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+                  }.width('100%').padding({ left: 16, top: 12, bottom: 12, right: 8 })
+                }.layoutWeight(1).type(ButtonType.Normal).backgroundColor(Color.Transparent).enabled(!this.model.busy)
+                  .onClick((): void => {
+                    if (entry.isDirectory) { this.model.openDirectory(entry); }
+                    else { this.openForm('detail', entry); }
+                  }).accessibilityText((entry.isDirectory ? '文件夹，' : '文件，') + entry.name)
+                Button() { SymbolGlyph($r('sys.symbol.ellipsis_circle')).fontSize(22).fontColor([$r('sys.color.font_secondary')]) }
+                  .width(48).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).type(ButtonType.Circle).backgroundColor(Color.Transparent)
+                  .enabled(!this.model.busy).onClick((): void => { this.openForm('actions', entry); })
+                  .accessibilityText(entry.name + '，更多操作').margin({ right: 8 })
+              }.width('100%')
+              Divider().color($r('app.color.workbench_divider')).margin({ left: 74, right: 16 })
+            }.width('100%').backgroundColor($r('app.color.workbench_surface'))
           }
         }, (entry: NasFileEntry): string => this.model.address + ':' + this.model.account + ':' + entry.path)
         ListItem() {
           Row({ space: 8 }) {
-            Button('上一页').height(48).buttonStyle(ButtonStyleMode.TEXTUAL)
+            Button('上一页').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
               .enabled(!this.model.busy && this.model.pageOffset > 0).onClick((): void => { this.model.previousPage(); })
             Text(this.fileCountText()).fontSize(13).fontColor($r('sys.color.font_secondary'))
               .layoutWeight(1).textAlign(TextAlign.Center)
-            Button('下一页').height(48).buttonStyle(ButtonStyleMode.TEXTUAL)
+            Button('下一页').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
               .enabled(!this.model.busy && this.model.pageOffset + this.model.entries.length < this.model.total)
               .onClick((): void => { this.model.nextPage(); })
           }.width('100%').padding({ top: 16, bottom: 16 })
         }
-      }.width('100%').height('100%').scrollBar(BarState.Auto).contentEndOffset(96)
-    }.width('100%').constraintSize({ maxWidth: 960 }).height('100%').padding({ left: 16, right: 16 })
+      }.width('100%').height('100%').scrollBar(BarState.Auto).contentEndOffset(this.bottomInset())
+    }.width('100%').constraintSize({ maxWidth: 960 }).height('100%')
+      .backgroundColor($r('app.color.workbench_surface'))
   }
 
   @Builder
   backupCard() {
     if (this.model.supports('SYNO.FileStation.Upload')) {
+      if (this.backup.sources.length === 0) {
+        Column() {
+          WorkbenchActionRow({ icon: $r('sys.symbol.arrow_up_circle'), label: '备份照片与视频',
+            description: this.backup.selecting ? '正在选择…' : '选择本机内容，确认位置后上传',
+            available: !this.backup.selecting && !this.backup.submitting && !this.model.busy,
+            onAction: (): void => { this.selectBackup(); } })
+          WorkbenchNotice({ text: this.backup.errorText, warning: true })
+          WorkbenchNotice({ text: this.backup.status })
+        }.width('100%').borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_surface'))
+      } else {
       Column({ space: 12 }) {
         Row({ space: 12 }) {
           SymbolGlyph($r('sys.symbol.arrow_up_circle')).fontSize(28).fontColor([$r('sys.color.icon_emphasize')])
@@ -659,35 +712,33 @@ struct Index {
         }
         Flex({ wrap: FlexWrap.Wrap }) {
           Button(this.backup.selecting ? '正在选择…' : this.backup.sources.length > 0 ? '继续选择' : '选择照片与视频')
-            .height(48).enabled(!this.backup.selecting && !this.backup.submitting && !this.model.busy)
+            .constraintSize({ minHeight: WorkbenchMetrics.touchSize }).enabled(!this.backup.selecting && !this.backup.submitting && !this.model.busy)
             .onClick((): void => { this.selectBackup(); })
           if (this.backup.sources.length > 0) {
-            Button('选择备份位置').height(48).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.backup.submitting && !this.backup.selecting)
+            Button('选择备份位置').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.backup.submitting && !this.backup.selecting)
               .onClick((): void => {
                 this.pendingEntry = undefined; this.pendingOperation = '';
                 this.choosingBackupTarget = true; this.switchTab(1);
               })
-            Button('清空选择').height(48).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.backup.submitting)
+            Button('清空选择').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.backup.submitting)
               .onClick((): void => { this.backup.clear(); })
           }
         }.width('100%')
         if (this.backup.sources.length > 0) {
           Text(this.backup.sources.map((item: TransferUploadSource): string => item.name).join('、'))
             .fontSize(13).maxLines(3).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('sys.color.font_secondary')).width('100%')
-          Button('查看所选内容').height(48).buttonStyle(ButtonStyleMode.TEXTUAL)
+          Button('查看所选内容').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
             .onClick((): void => { this.openForm('backup'); })
         }
-      }.width('100%').padding(16).borderRadius(20).backgroundColor($r('sys.color.comp_background_secondary'))
+      }.width('100%').padding(16).borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_surface'))
+      }
     }
   }
 
   @Builder
   photoSpaceButton(space: PhotosSpace, label: string) {
-    Button(label).height(48)
-      .buttonStyle(this.model.photoLibrary.space === space ? ButtonStyleMode.NORMAL : ButtonStyleMode.TEXTUAL)
-      .enabled(!this.model.photoLibrary.busy)
-      .onClick((): void => { this.photosScroller.scrollTo({ xOffset: 0, yOffset: 0 }); this.model.photoLibrary.open(space); })
-      .accessibilityText(label + (this.model.photoLibrary.space === space ? '，已选择' : ''))
+    WorkbenchChoice({ label: label, selected: this.model.photoLibrary.space === space, available: !this.model.photoLibrary.busy,
+      onSelect: (): void => { this.photosScroller.scrollTo({ xOffset: 0, yOffset: 0 }); this.model.photoLibrary.open(space); } })
   }
 
   @Builder
@@ -700,7 +751,7 @@ struct Index {
             Image(fileUri.getUriFromPath(this.model.photoLibrary.thumbnailPath(item))).width('100%').height('100%').objectFit(ImageFit.Cover)
               .sourceSize({ width: 320, height: 320 }).accessibilityLevel('no')
           }
-        }.width('100%').height('100%').backgroundColor($r('sys.color.comp_background_tertiary'))
+        }.width('100%').height('100%').backgroundColor($r('app.color.workbench_subtle'))
         if (item.mediaType !== 'photo') {
           Text(photoMediaLabel(item)).fontSize(12).fontColor(Color.White).padding({ left: 8, right: 8, top: 4, bottom: 4 })
             .backgroundColor('#99000000').borderRadius(8).margin(6)
@@ -714,17 +765,19 @@ struct Index {
   @Builder
   albumCard(album: NasPhotoAlbum) {
     Button() {
-      Row({ space: 16 }) {
-        SymbolGlyph($r('sys.symbol.picture')).fontSize(36).fontColor([$r('sys.color.icon_emphasize')])
-        Column({ space: 6 }) {
-          Text(album.name).fontSize(17).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
-          Text(album.itemCount.toString() + ' 项').fontSize(13).fontColor($r('sys.color.font_secondary'))
-        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-        SymbolGlyph($r('sys.symbol.arrow_right')).fontSize(16).fontColor([$r('sys.color.font_tertiary')])
-      }.width('100%').padding(20)
-    }.width('100%').type(ButtonType.Normal).borderRadius(20).backgroundColor($r('sys.color.comp_background_secondary'))
-      .enabled(!this.model.photoLibrary.busy).onClick((): void => { this.model.photoLibrary.openAlbum(album); })
-      .accessibilityText('相册，' + album.name + '，' + album.itemCount.toString() + ' 项')
+      Column({ space: 10 }) {
+        Stack() {
+          SymbolGlyph($r('sys.symbol.picture')).fontSize(40).fontColor([$r('sys.color.icon_emphasize')])
+        }.width('100%').aspectRatio(1).borderRadius(WorkbenchMetrics.innerRadius)
+          .backgroundColor($r('app.color.workbench_accent_surface'))
+        Text(album.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
+          .width('100%').maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(album.itemCount.toString() + ' 项').fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
+      }.width('100%').alignItems(HorizontalAlign.Start)
+    }.layoutWeight(1).type(ButtonType.Normal).backgroundColor(Color.Transparent)
+      .enabled(!this.model.photoLibrary.busy)
+      .onClick((): void => { this.photosScroller.scrollTo({ xOffset: 0, yOffset: 0 }); this.model.photoLibrary.openAlbum(album); })
+      .accessibilityText(album.name + '，' + album.itemCount.toString() + ' 项')
   }
 
   @Builder
@@ -740,26 +793,26 @@ struct Index {
             }.width('100%')
             if (this.model.photoLibrary.selectedAlbum !== undefined) {
               Row({ space: 8 }) {
-                Button('返回相册').height(48).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.photoLibrary.busy)
+                Button('返回相册').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.photoLibrary.busy)
                   .onClick((): void => { this.model.photoLibrary.backToLibrary(); })
                 Text(this.model.photoLibrary.selectedAlbum.name).fontSize(20).fontWeight(FontWeight.Bold)
                   .fontColor($r('sys.color.font_primary')).layoutWeight(1)
               }.width('100%')
             } else if (this.model.photoLibrary.space !== PhotosSpace.WithMe) {
               Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center }) {
-                Button('时间线').height(48)
-                  .buttonStyle(this.model.photoLibrary.section === 'timeline' ? ButtonStyleMode.NORMAL : ButtonStyleMode.TEXTUAL)
-                  .enabled(!this.model.photoLibrary.busy).onClick((): void => { this.model.photoLibrary.open(this.model.photoLibrary.space, 'timeline'); })
-                Button('相册').height(48)
-                  .buttonStyle(this.model.photoLibrary.section === 'albums' ? ButtonStyleMode.NORMAL : ButtonStyleMode.TEXTUAL)
-                  .enabled(!this.model.photoLibrary.busy).onClick((): void => { this.model.photoLibrary.open(this.model.photoLibrary.space, 'albums'); })
-                Button('刷新').height(48).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.photoLibrary.busy)
+                WorkbenchChoice({ label: '时间线', selected: this.model.photoLibrary.section === 'timeline',
+                  available: !this.model.photoLibrary.busy,
+                  onSelect: (): void => { this.model.photoLibrary.open(this.model.photoLibrary.space, 'timeline'); } })
+                WorkbenchChoice({ label: '相册', selected: this.model.photoLibrary.section === 'albums',
+                  available: !this.model.photoLibrary.busy,
+                  onSelect: (): void => { this.model.photoLibrary.open(this.model.photoLibrary.space, 'albums'); } })
+                Button('刷新').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.photoLibrary.busy)
                   .onClick((): void => { this.model.photoLibrary.refresh(); })
               }.width('100%')
             } else {
               Row({ space: 8 }) {
                 Text('与你共享的相册').fontSize(18).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).layoutWeight(1)
-                Button('刷新').height(48).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.photoLibrary.busy)
+                Button('刷新').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.photoLibrary.busy)
                   .onClick((): void => { this.model.photoLibrary.refresh(); })
               }.width('100%')
             }
@@ -769,8 +822,8 @@ struct Index {
             }
             if (this.model.photoLibrary.errorText.length > 0) {
               Text(this.model.photoLibrary.errorText).fontSize(14).fontColor($r('sys.color.font_primary')).width('100%').padding(16)
-                .borderRadius(16).backgroundColor($r('sys.color.comp_background_secondary')).accessibilityText('照片读取未完成，' + this.model.photoLibrary.errorText)
-              Button('重试读取').height(48).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.photoLibrary.busy)
+                .borderRadius(16).backgroundColor($r('app.color.workbench_surface')).accessibilityText('照片读取未完成，' + this.model.photoLibrary.errorText)
+              Button('重试读取').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.photoLibrary.busy)
                 .onClick((): void => { this.model.photoLibrary.refresh(); })
             }
             if (this.model.photoLibrary.busy) {
@@ -787,9 +840,17 @@ struct Index {
           (this.model.photoLibrary.selectedAlbum !== undefined || this.model.photoLibrary.albums.length === 0) && this.model.photoLibrary.errorText.length === 0) {
           ListItem() { this.emptyState($r('sys.symbol.picture'), '没有可见项目', '当前账号在此空间没有可见的照片或相册。') }
         }
-        Repeat<NasPhotoAlbum>(this.model.photoLibrary.selectedAlbum === undefined ? this.model.photoLibrary.albums : []).each((album: RepeatItem<NasPhotoAlbum>): void => {
-          ListItem() { this.albumCard(album.item) }
-        }).key((album: NasPhotoAlbum): string => album.space.toString() + ':' + album.id.toString()).virtualScroll()
+        Repeat<PhotoAlbumRow>(photoAlbumRows(this.model.photoLibrary.selectedAlbum === undefined ?
+          this.model.photoLibrary.albums : [], photoAlbumColumns(this.contentWidth))).each((row: RepeatItem<PhotoAlbumRow>): void => {
+          ListItem() {
+            Row({ space: 12 }) {
+              ForEach(row.item.albums, (album: NasPhotoAlbum): void => { this.albumCard(album) },
+                (album: NasPhotoAlbum): string => album.space.toString() + ':' + album.id.toString())
+              ForEach([0, 1, 2, 3].slice(0, photoAlbumColumns(this.contentWidth) - row.item.albums.length),
+                (slot: number): void => { Blank().layoutWeight(1) }, (slot: number): string => slot.toString())
+            }.width('100%').alignItems(VerticalAlign.Top).padding({ top: 8, bottom: 8 })
+          }
+        }).key((row: PhotoAlbumRow): string => row.key).virtualScroll()
         Repeat<PhotoTimelineRow>(photoTimelineRows(this.model.photoLibrary.items, photoGridColumns(this.contentWidth))).each((row: RepeatItem<PhotoTimelineRow>): void => {
           ListItem() {
             Column({ space: 12 }) {
@@ -811,7 +872,7 @@ struct Index {
           ListItem() {
             Column({ space: 8 }) {
               if (this.model.photoLibrary.hasMore) {
-                Button(this.model.photoLibrary.busy ? '正在加载…' : '加载更多').height(48).width('100%')
+                Button(this.model.photoLibrary.busy ? '正在加载…' : '加载更多').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).width('100%')
                   .buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.photoLibrary.busy)
                   .onClick((): void => { this.model.photoLibrary.loadMore(); })
               } else if (this.model.photoLibrary.items.length > 0 || this.model.photoLibrary.albums.length > 0) {
@@ -820,7 +881,7 @@ struct Index {
             }.width('100%').padding({ top: 8, bottom: 8 })
           }
         }
-      }.width('100%').height('100%').scrollBar(BarState.Auto).contentEndOffset(96)
+      }.width('100%').height('100%').scrollBar(BarState.Auto).contentEndOffset(this.bottomInset())
     }.width('100%').constraintSize({ maxWidth: 960 }).height('100%').padding({ left: 16, right: 16 })
       .onAreaChange((oldArea: Area, newArea: Area): void => { this.contentWidth = Number(newArea.width); })
   }
@@ -841,8 +902,8 @@ struct Index {
                 .onError((): void => { this.mediaDecodeFailed = true; })
             }
             if (this.model.photoLibrary.loadingMedia) { LoadingProgress().width(40).height(40) }
-          }.width('100%').height(Math.max(220, Math.min(480, this.contentWidth))).borderRadius(20).clip(true)
-            .backgroundColor($r('sys.color.comp_background_tertiary'))
+          }.width('100%').height(Math.max(220, Math.min(480, this.contentWidth))).borderRadius(WorkbenchMetrics.innerRadius).clip(true)
+            .backgroundColor($r('app.color.workbench_subtle'))
           Column({ space: 10 }) {
             Text(this.model.photoLibrary.detail.filename).fontSize(22).fontWeight(FontWeight.Bold).fontColor($r('sys.color.font_primary')).width('100%')
             Text(photoTakenDate(this.model.photoLibrary.detail)).fontSize(15).fontColor($r('sys.color.font_secondary')).width('100%')
@@ -867,10 +928,10 @@ struct Index {
           }
           Button(this.model.photoLibrary.loadingMedia ? '正在读取…' : this.model.photoLibrary.originalPath.length > 0 ? '重新读取原文件' :
             this.model.photoLibrary.detail.mediaType === 'video' ? '读取原视频' : '查看原图')
-            .width('100%').height(48).enabled(!this.model.photoLibrary.loadingMedia)
+            .width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).enabled(!this.model.photoLibrary.loadingMedia)
             .onClick((): void => { this.mediaDecodeFailed = false; this.model.photoLibrary.loadOriginal(); })
           if (this.model.photoLibrary.originalPath.length > 0) {
-            Button('另存原文件').width('100%').height(48).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.photoLibrary.loadingMedia)
+            Button('另存原文件').width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.photoLibrary.loadingMedia)
               .onClick((): void => { this.model.photoLibrary.exportOriginal(); })
           }
           Text('原文件在此页面读取，离开页面会结束读取。较大文件请使用文件页的持久下载任务。')
@@ -885,6 +946,7 @@ struct Index {
   destinationBuilder(name: string, parameter: Object) {
     if (name === 'telemetry') {
       HdsNavDestination() { NasTelemetryDashboard({ monitor: this.model.telemetry, scroller: this.telemetryScroller }) }
+        .backgroundColor($r('app.color.workbench_background'))
         .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: '运行状态' } } })
         .bindToScrollable([this.telemetryScroller])
         .onShown((): void => { this.telemetryOpened = true; this.updateTelemetryMode(); })
@@ -894,6 +956,7 @@ struct Index {
         NasConnectionAddressPage({ model: this.model, scroller: this.addressBookScroller,
           onUseAddress: (address: NasConnectionAddress): void => { this.confirmUseAddress(address); } })
       }
+        .backgroundColor($r('app.color.workbench_background'))
         .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: '连接地址' } } })
         .bindToScrollable([this.addressBookScroller])
         .onShown((): void => { this.addressBookOpened = true; this.updateTelemetryMode(); })
@@ -908,6 +971,7 @@ struct Index {
           onRefresh: (): void => { this.model.openSystemControl(); },
           onSubmit: (): void => { this.model.submitSystemControl(); } })
       }
+        .backgroundColor($r('app.color.workbench_background'))
         .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: '系统控制' } } })
         .bindToScrollable([this.systemControlScroller])
         .onShown((): void => {
@@ -922,6 +986,7 @@ struct Index {
         })
     } else if (name === 'photo-detail') {
       HdsNavDestination() { this.photoDetailView() }
+        .backgroundColor($r('app.color.workbench_background'))
         .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: '照片详情' } } })
         .bindToScrollable([this.detailScroller])
         .onDisAppear((): void => { if (this.navStack.size() === 0) { this.model.photoLibrary.closeDetail(); } })
@@ -974,15 +1039,64 @@ struct Index {
   }
 
   @Builder
+  taskPrimaryActions(item: TransferQueueItem) {
+              Flex({ wrap: FlexWrap.Wrap }) {
+                if (item.canRetry) {
+                  Button('重试').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.NORMAL)
+                    .enabled(!this.model.queue.busy && !this.model.busy && !this.transferSubmitting)
+                    .onClick((): void => { this.runTransfer(async (): Promise<void> => { await this.model.queue.retry(item.id); }); })
+                }
+                if (item.state === 'unknown') {
+                  Button('重新确认').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
+                    .enabled(!this.model.queue.busy && !this.model.busy && !this.transferSubmitting)
+                    .onClick((): void => { this.runTransfer(async (): Promise<void> => { await this.model.queue.reconcile(); }); })
+                }
+                if (item.canClose) {
+                  Button('核对后关闭').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
+                    .enabled(!this.model.queue.busy && !this.model.busy && !this.transferSubmitting)
+                    .onClick((): void => { this.confirmCloseUpload(item); })
+                }
+                if (item.canExport) {
+                  Button('另存到系统文件').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.NORMAL)
+                    .enabled(!this.model.queue.busy && !this.model.busy && !this.transferSubmitting)
+                    .onClick((): void => { this.runTransfer(async (): Promise<void> => { await this.model.queue.exportDownload(item.id); }); })
+                }
+              }.width('100%')
+  }
+
+  @Builder
+  taskMenu(item: TransferQueueItem) {
+    Menu() {
+      MenuItem({ content: '任务详情' }).onClick((): void => { this.openTask(item); })
+      if (item.canCancel) {
+        MenuItem({ content: '取消任务' }).onClick((): void => { this.confirmCancelTask(item); })
+      }
+      if (item.canRemove) {
+        MenuItem({ content: item.state === 'clearing' ? '重试清理' : '清理记录' })
+          .onClick((): void => { this.confirmRemoveRecord(item); })
+      }
+    }
+  }
+
+  @Builder
+  taskPageMenu() {
+    Menu() {
+      MenuItem({ content: '清理已结束的记录' })
+        .enabled(this.model.queue.ready && this.model.queue.items.some((item: TransferQueueItem): boolean => item.canRemove))
+        .onClick((): void => { this.confirmClearHistory(); })
+    }
+  }
+
+  @Builder
   tasksView() {
     Column() {
       List({ space: 12, scroller: this.tasksScroller }) {
         ListItem() {
           Flex({ wrap: FlexWrap.Wrap }) {
-            Button('传输任务').height(48).buttonStyle(this.taskSection === 'transfers' ? ButtonStyleMode.NORMAL : ButtonStyleMode.TEXTUAL)
-              .onClick((): void => { this.taskSection = 'transfers'; })
-            Button('文件整理').height(48).buttonStyle(this.taskSection === 'files' ? ButtonStyleMode.NORMAL : ButtonStyleMode.TEXTUAL)
-              .onClick((): void => { this.taskSection = 'files'; })
+            WorkbenchChoice({ label: '传输任务', selected: this.taskSection === 'transfers',
+              onSelect: (): void => { this.taskSection = 'transfers'; } })
+            WorkbenchChoice({ label: '文件整理', selected: this.taskSection === 'files',
+              onSelect: (): void => { this.taskSection = 'files'; } })
           }.width('100%').padding({ top: 8 })
         }
         if (this.taskSection === 'files') {
@@ -991,7 +1105,7 @@ struct Index {
             Row({ space: 12 }) {
               Text('文件整理').fontSize(20).fontWeight(FontWeight.Bold).fontColor($r('sys.color.font_primary')).layoutWeight(1)
               if (!this.model.fileTasksReady) {
-                Button('重新加载').height(48).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
+                Button('重新加载').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
                   .onClick((): void => { this.model.reloadFileTasks(); })
               }
             }.width('100%')
@@ -1008,13 +1122,13 @@ struct Index {
               Text(task.item.label).fontSize(17).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
               Text(this.fileTaskStateText(task.item)).fontSize(15).fontColor($r('sys.color.font_primary')).width('100%')
               if (task.item.errorText.length > 0) {
-                Text(task.item.errorText).fontSize(14).fontColor($r('sys.color.font_primary')).width('100%')
+                WorkbenchNotice({ text: task.item.errorText, warning: true })
               }
               if (task.item.state === 'pending' || task.item.state === 'unknown') {
-                Button('查询结果').height(48).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
+                Button('查询结果').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
                   .onClick((): void => { this.model.checkFileTask(task.item.id); })
               }
-            }.width('100%').padding(20).borderRadius(20).backgroundColor($r('sys.color.comp_background_secondary'))
+            }.width('100%').padding(20).borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_surface'))
           }
         }).key((item: FileTaskItem): string => item.id).virtualScroll()
         } else {
@@ -1022,24 +1136,20 @@ struct Index {
           Column({ space: 8 }) {
             Row({ space: 12 }) {
               Text('传输队列').fontSize(20).fontWeight(FontWeight.Bold).fontColor($r('sys.color.font_primary')).layoutWeight(1)
-              Button(this.model.queue.ready ? '刷新状态' : '重新加载').height(48).buttonStyle(ButtonStyleMode.TEXTUAL)
+              Button(this.model.queue.ready ? '刷新状态' : '重新加载').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
                 .enabled(!this.model.queue.busy && !this.model.busy && !this.transferSubmitting)
                 .onClick((): void => { this.runTransfer(async (): Promise<void> => { await this.model.queue.reconcile(); }); })
+              Button() { SymbolGlyph($r('sys.symbol.ellipsis_circle')).fontSize(22).fontColor([$r('sys.color.icon_primary')]) }
+                .width(48).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).type(ButtonType.Circle).backgroundColor(Color.Transparent)
+                .enabled(!this.model.queue.busy && !this.model.busy && !this.transferSubmitting)
+                .bindMenu(this.taskPageMenu()).accessibilityText('任务，更多操作')
             }.width('100%')
             Text('上传到 NAS · 下载到此设备').fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
             Text('通过非计费网络传输。').fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
-            if (this.model.queue.items.some((item: TransferQueueItem): boolean => item.canRemove)) {
-              Button('清理历史').height(48).buttonStyle(ButtonStyleMode.TEXTUAL)
-                .enabled(this.model.queue.ready && !this.model.queue.busy && !this.model.busy && !this.transferSubmitting)
-                .onClick((): void => { this.confirmClearHistory(); })
-            }
             Flex({ wrap: FlexWrap.Wrap }) {
               ForEach(['all', 'active', 'finished'], (filter: string): void => {
-                Button(filter === 'all' ? '全部' : filter === 'active' ? '待处理' : '已结束').height(48)
-                  .buttonStyle(this.taskFilter === filter ? ButtonStyleMode.NORMAL : ButtonStyleMode.TEXTUAL)
-                  .onClick((): void => { this.taskFilter = filter; })
-                  .accessibilityText((filter === 'all' ? '全部任务' : filter === 'active' ? '待处理任务' : '已结束任务') +
-                    (this.taskFilter === filter ? '，已选择' : ''))
+                WorkbenchChoice({ label: filter === 'all' ? '全部' : filter === 'active' ? '待处理' : '已结束',
+                  selected: this.taskFilter === filter, onSelect: (): void => { this.taskFilter = filter; } })
               }, (filter: string): string => filter)
             }.width('100%')
             this.notices()
@@ -1056,14 +1166,25 @@ struct Index {
         Repeat<TransferQueueItem>(this.filteredTasks()).each((task: RepeatItem<TransferQueueItem>): void => {
           ListItem() {
             Column({ space: 12 }) {
-              Row({ space: 12 }) {
-                SymbolGlyph(task.item.direction === 'upload' ? $r('sys.symbol.arrow_up_circle') : $r('sys.symbol.arrow_down_circle'))
-                  .fontSize(28).fontColor([$r('sys.color.icon_emphasize')])
-                Text(task.item.name).fontSize(17).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).layoutWeight(1)
+              Row({ space: 8 }) {
+                Button() {
+                  Row({ space: 12 }) {
+                    SymbolGlyph(task.item.direction === 'upload' ? $r('sys.symbol.arrow_up_circle') : $r('sys.symbol.arrow_down_circle'))
+                      .fontSize(24).fontColor([$r('sys.color.icon_emphasize')])
+                      .width(44).height(44).borderRadius(12).backgroundColor($r('app.color.workbench_accent_surface'))
+                    Column({ space: 4 }) {
+                      Text(task.item.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
+                        .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+                      Text(task.item.stateText).fontSize(13).fontColor($r('sys.color.font_secondary'))
+                    }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+                  }.width('100%')
+                }.type(ButtonType.Normal).backgroundColor(Color.Transparent).layoutWeight(1).constraintSize({ minHeight: 48 })
+                  .onClick((): void => { this.openTask(task.item); }).accessibilityText(task.item.name + '，' + task.item.stateText + '，查看详情')
+                Button() { SymbolGlyph($r('sys.symbol.ellipsis_circle')).fontSize(22).fontColor([$r('sys.color.font_secondary')]) }
+                  .width(48).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).type(ButtonType.Circle).backgroundColor(Color.Transparent)
+                  .enabled(!this.model.queue.busy && !this.model.busy && !this.transferSubmitting)
+                  .bindMenu(this.taskMenu(task.item)).accessibilityText(task.item.name + '，更多操作')
               }.width('100%')
-              Text(task.item.stateText).fontSize(15).fontColor($r('sys.color.font_primary')).width('100%')
-              Text((task.item.direction === 'upload' ? '目标：' : '来源：') + task.item.remotePath)
-                .fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
               if (task.item.state === 'running' || task.item.state === 'waiting') {
                 if (task.item.bytes > 0) {
                   Progress({ value: this.taskProgress(task.item), total: 100, type: ProgressType.Linear }).width('100%')
@@ -1073,45 +1194,14 @@ struct Index {
                   .fontSize(13).fontColor($r('sys.color.font_secondary'))
               } else { Text(workbenchBytes(task.item.bytes)).fontSize(13).fontColor($r('sys.color.font_secondary')) }
               if (task.item.errorText.length > 0) {
-                Text(task.item.errorText).fontSize(14).fontColor($r('sys.color.font_primary')).width('100%')
+                WorkbenchNotice({ text: task.item.errorText, warning: true })
               }
-              Flex({ wrap: FlexWrap.Wrap }) {
-                if (task.item.canCancel) {
-                  Button('取消任务').height(48).buttonStyle(ButtonStyleMode.TEXTUAL)
-                    .enabled(!this.model.queue.busy && !this.model.busy && !this.transferSubmitting)
-                    .onClick((): void => { this.confirmCancelTask(task.item); })
-                }
-                if (task.item.canRetry) {
-                  Button('重试').height(48).buttonStyle(ButtonStyleMode.NORMAL)
-                    .enabled(!this.model.queue.busy && !this.model.busy && !this.transferSubmitting)
-                    .onClick((): void => { this.runTransfer(async (): Promise<void> => { await this.model.queue.retry(task.item.id); }); })
-                }
-                if (task.item.state === 'unknown') {
-                  Button('重新确认').height(48).buttonStyle(ButtonStyleMode.TEXTUAL)
-                    .enabled(!this.model.queue.busy && !this.model.busy && !this.transferSubmitting)
-                    .onClick((): void => { this.runTransfer(async (): Promise<void> => { await this.model.queue.reconcile(); }); })
-                }
-                if (task.item.canClose) {
-                  Button('核对后关闭').height(48).buttonStyle(ButtonStyleMode.TEXTUAL)
-                    .enabled(!this.model.queue.busy && !this.model.busy && !this.transferSubmitting)
-                    .onClick((): void => { this.confirmCloseUpload(task.item); })
-                }
-                if (task.item.canExport) {
-                  Button('另存到系统文件').height(48).buttonStyle(ButtonStyleMode.NORMAL)
-                    .enabled(!this.model.queue.busy && !this.model.busy && !this.transferSubmitting)
-                    .onClick((): void => { this.runTransfer(async (): Promise<void> => { await this.model.queue.exportDownload(task.item.id); }); })
-                }
-                if (task.item.canRemove) {
-                  Button(task.item.state === 'clearing' ? '重试清理' : '清理记录').height(48).buttonStyle(ButtonStyleMode.TEXTUAL)
-                    .enabled(!this.model.queue.busy && !this.model.busy && !this.transferSubmitting)
-                    .onClick((): void => { this.confirmRemoveRecord(task.item); })
-                }
-              }.width('100%')
-            }.width('100%').padding(20).borderRadius(20).backgroundColor($r('sys.color.comp_background_secondary'))
+              this.taskPrimaryActions(task.item)
+            }.width('100%').padding(20).borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_surface'))
           }
         }).key((item: TransferQueueItem): string => item.id).virtualScroll()
         }
-      }.width('100%').height('100%').scrollBar(BarState.Auto).contentEndOffset(96)
+      }.width('100%').height('100%').scrollBar(BarState.Auto).contentEndOffset(this.bottomInset())
     }.width('100%').constraintSize({ maxWidth: 960 }).height('100%').padding({ left: 16, right: 16 })
   }
 
@@ -1146,7 +1236,7 @@ struct Index {
         }
         Flex({ wrap: FlexWrap.Wrap }) {
           if (this.model.authenticated) {
-            Button(this.model.directory.length === 0 ? '选择目标文件夹' : '上传到此文件夹').height(48)
+            Button(this.model.directory.length === 0 ? '选择目标文件夹' : '上传到此文件夹').constraintSize({ minHeight: WorkbenchMetrics.touchSize })
               .buttonStyle(ButtonStyleMode.NORMAL)
               .enabled(this.model.queue.ready && !this.model.sharedInbox.receiving && !this.model.queue.busy && !this.model.busy &&
                 !this.transferSubmitting && this.model.sharedInbox.pendingCount > 0)
@@ -1155,74 +1245,134 @@ struct Index {
                 else { this.confirmSharedUpload(); }
               })
           }
-          Button('取消接收').height(48).buttonStyle(ButtonStyleMode.TEXTUAL)
+          Button('取消接收').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
             .enabled(!this.model.sharedInbox.receiving && !this.model.queue.busy && !this.model.busy)
             .onClick((): void => { this.model.discardSharedFiles(); })
         }.width('100%')
-      }.width('100%').constraintSize({ maxWidth: 960 }).padding(16).borderRadius(20)
-        .backgroundColor($r('sys.color.comp_background_secondary')).margin({ left: 16, right: 16, bottom: 8 })
+      }.width('100%').constraintSize({ maxWidth: 960 }).padding(16).borderRadius(WorkbenchMetrics.innerRadius)
+        .backgroundColor($r('app.color.workbench_surface')).margin({ left: 16, right: 16, bottom: 8 })
     }
+  }
+
+  @Builder
+  sortOption(field: string, label: string) {
+    Button() {
+      Row({ space: 12 }) {
+        Text(label).fontSize(16).fontColor($r('sys.color.font_primary')).layoutWeight(1)
+        Text(this.model.fileSort === field ? '✓' : '').fontSize(20).fontColor($r('sys.color.font_emphasize'))
+      }.width('100%').padding(16)
+    }.width('100%').constraintSize({ minHeight: 56 }).type(ButtonType.Normal).backgroundColor(Color.Transparent)
+      .enabled(!this.model.busy && (field !== 'size' || this.model.directory.length > 0))
+      .onClick((): void => { this.model.setSort(field as 'name' | 'size' | 'mtime', this.model.sortDescending); })
+      .accessibilityText(label + (this.model.fileSort === field ? '，已选择' : ''))
+  }
+
+  @Builder
+  taskDetail(item: TransferQueueItem) {
+    WorkbenchSectionTitle({ title: item.name, subtitle: item.stateText })
+    Column() {
+      WorkbenchInfoRow({ label: '方向', value: item.direction === 'upload' ? '上传到 NAS' : '下载到此设备' })
+      WorkbenchInfoRow({ label: item.direction === 'upload' ? '目标' : '来源', value: item.remotePath })
+      WorkbenchInfoRow({ label: '大小', value: workbenchBytes(item.bytes) })
+      if (item.state === 'running' || item.state === 'waiting') {
+        WorkbenchInfoRow({ label: '已传输', value: workbenchBytes(item.processed) })
+      }
+    }.width('100%').padding(16).borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_subtle'))
+    WorkbenchNotice({ text: item.errorText, warning: true })
+    this.taskPrimaryActions(item)
+    Button('更多操作').constraintSize({ minHeight: 48 }).width('100%').buttonStyle(ButtonStyleMode.TEXTUAL)
+      .enabled(!this.model.queue.busy && !this.model.busy && !this.transferSubmitting).bindMenu(this.taskMenu(item))
+  }
+
+  @Builder
+  deviceSheet() {
+    Column() {
+      WorkbenchInfoRow({ label: '账号', value: this.model.account })
+      WorkbenchInfoRow({ label: '连接地址', value: this.model.address })
+      WorkbenchInfoRow({ label: '连接方式', value: 'HTTPS 安全连接' })
+      if (this.deviceInfo.length > 0) {
+        Divider().color($r('app.color.workbench_divider'))
+        WorkbenchInfoRow({ label: '设备型号', value: this.deviceInfo[0] })
+        WorkbenchInfoRow({ label: 'DSM 版本', value: this.deviceInfo[1] })
+        WorkbenchInfoRow({ label: '文件服务', value: this.deviceInfo[2] })
+        WorkbenchInfoRow({ label: '照片服务', value: this.deviceInfo[3] })
+        WorkbenchInfoRow({ label: '文件权限', value: this.deviceInfo[4] })
+      } else if (this.model.busy) {
+        LoadingProgress().width(32).height(32).margin(12)
+      } else {
+        Button('重新读取设备信息').constraintSize({ minHeight: 48 }).buttonStyle(ButtonStyleMode.TEXTUAL)
+          .onClick((): void => { this.showDeviceInfo(); })
+      }
+    }.width('100%').padding(16).borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_subtle'))
+    Button('退出当前账号').constraintSize({ minHeight: 48 }).width('100%').buttonStyle(ButtonStyleMode.TEXTUAL)
+      .fontColor($r('app.color.workbench_danger')).enabled(!this.model.busy).onClick((): void => { this.confirmLogout(); })
   }
 
   @Builder
   fileSheet() {
     Scroll() {
       Column({ space: 20 }) {
-        if (this.sheetKind === 'sort') {
-          Button('名称' + (this.model.fileSort === 'name' ? ' · 已选' : '')).width('100%').height(48)
-            .buttonStyle(ButtonStyleMode.NORMAL).enabled(!this.model.busy)
-            .onClick((): void => { this.model.setSort('name', this.model.sortDescending); })
-          Button('大小' + (this.model.fileSort === 'size' ? ' · 已选' : '')).width('100%').height(48)
-            .buttonStyle(ButtonStyleMode.NORMAL).enabled(!this.model.busy && this.model.directory.length > 0)
-            .onClick((): void => { this.model.setSort('size', this.model.sortDescending); })
-          Button('修改时间' + (this.model.fileSort === 'mtime' ? ' · 已选' : '')).width('100%').height(48)
-            .buttonStyle(ButtonStyleMode.NORMAL).enabled(!this.model.busy)
-            .onClick((): void => { this.model.setSort('mtime', this.model.sortDescending); })
-          Button(this.model.sortDescending ? '降序 · 点击切换为升序' : '升序 · 点击切换为降序')
-            .width('100%').height(48).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
-            .onClick((): void => { this.model.setSort(this.model.fileSort as 'name' | 'size' | 'mtime', !this.model.sortDescending); })
+        if (this.sheetKind === 'device') {
+          this.deviceSheet()
+        } else if (this.sheetKind === 'task') {
+          if (this.selectedTask() !== undefined) { this.taskDetail(this.selectedTask()!) }
+          else { WorkbenchNotice({ text: '此任务记录已清理。' }) }
+        } else if (this.sheetKind === 'sort') {
+          Column() {
+            this.sortOption('name', '名称')
+            Divider().color($r('app.color.workbench_divider')).margin({ left: 16, right: 16 })
+            this.sortOption('size', '大小')
+            Divider().color($r('app.color.workbench_divider')).margin({ left: 16, right: 16 })
+            this.sortOption('mtime', '修改时间')
+          }.width('100%').borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_subtle'))
+          Flex({ wrap: FlexWrap.Wrap }) {
+            WorkbenchChoice({ label: '升序', selected: !this.model.sortDescending, available: !this.model.busy,
+              onSelect: (): void => { this.model.setSort(this.model.fileSort as 'name' | 'size' | 'mtime', false); } })
+            WorkbenchChoice({ label: '降序', selected: this.model.sortDescending, available: !this.model.busy,
+              onSelect: (): void => { this.model.setSort(this.model.fileSort as 'name' | 'size' | 'mtime', true); } })
+          }.width('100%')
         } else if (this.sheetKind === 'create' || this.sheetKind === 'rename') {
-          Text(this.sheetKind === 'create' ? '位置：' + this.model.directory : '原名称：' + (this.selectedEntry?.name ?? ''))
-            .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
+          WorkbenchInfoRow({ label: this.sheetKind === 'create' ? '位置' : '原名称',
+            value: this.sheetKind === 'create' ? this.model.directory : (this.selectedEntry?.name ?? '') })
           TextInput({ text: this.formName, placeholder: this.sheetKind === 'create' ? '文件夹名称' : '新名称' })
-            .height(52).enabled(!this.formSubmitting && !this.model.busy)
+            .constraintSize({ minHeight: 52 }).enabled(!this.formSubmitting && !this.model.busy)
             .onChange((text: string): void => { this.formName = text; }).accessibilityText('名称')
           Text('名称不能包含斜杠、冒号或控制字符。').fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
-          Button(this.formSubmitting ? '正在保存…' : '保存').width('100%').height(48)
+          Button(this.formSubmitting ? '正在保存…' : '保存').width('100%').constraintSize({ minHeight: 48 })
             .enabled(this.validName() && !this.formSubmitting && !this.model.busy).onClick((): void => { this.submitName(); })
         } else if (this.sheetKind === 'backup') {
-          Text('这些名称将用于 NAS 上的目标文件。所选内容重名时已添加序号，上传完成后请在任务页核对结果。')
-            .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
-          ForEach(this.backup.sources, (source: TransferUploadSource): void => {
+          WorkbenchNotice({ text: '重名内容已添加序号。上传完成后，可在任务页核对结果。' })
+          ForEach(this.backup.sources, (backupSource: TransferUploadSource): void => {
             Column({ space: 6 }) {
-              Text(source.name).fontSize(16).fontColor($r('sys.color.font_primary')).width('100%')
-              Text(workbenchBytes(source.bytes)).fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
-              Divider()
-            }.width('100%').padding({ top: 8, bottom: 8 })
-          }, (source: TransferUploadSource): string => source.uri)
+              WorkbenchInfoRow({ label: backupSource.name, value: workbenchBytes(backupSource.bytes) })
+              Divider().color($r('app.color.workbench_divider'))
+            }.width('100%')
+          }, (backupSource: TransferUploadSource): string => backupSource.uri)
         } else if (this.selectedEntry !== undefined) {
-          SymbolGlyph(this.selectedEntry.isDirectory ? $r('sys.symbol.folder') : $r('sys.symbol.doc'))
-            .fontSize(48).fontColor([$r('sys.color.icon_emphasize')])
-          Text(this.selectedEntry.name).fontSize(24).fontWeight(FontWeight.Bold).fontColor($r('sys.color.font_primary'))
-          Text(this.selectedEntry.path).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
-          Text(this.selectedEntry.isDirectory ? '文件夹' : workbenchBytes(this.selectedEntry.bytes))
-            .fontSize(16).fontColor($r('sys.color.font_primary')).width('100%')
-          if (!this.selectedEntry.isDirectory && this.model.supports('SYNO.FileStation.Download')) {
-            Button('下载到应用').width('100%').height(48).enabled(this.model.queue.ready && !this.model.busy && !this.model.queue.busy)
-              .onClick((): void => {
-                if (this.selectedEntry !== undefined) {
-                  const downloadEntry = this.selectedEntry;
-                  this.runTransfer(async (): Promise<void> => { await this.model.downloadFile(downloadEntry); });
-                  this.sheetVisible = false;
-                  this.switchTab(3);
-                }
-              })
-            Text('下载完成后，可在任务页另存到系统文件目录。').fontSize(13).fontColor($r('sys.color.font_secondary'))
+          Row({ space: 16 }) {
+            SymbolGlyph(this.selectedEntry.isDirectory ? $r('sys.symbol.folder') : $r('sys.symbol.doc'))
+              .fontSize(32).fontColor([$r('sys.color.icon_emphasize')])
+              .width(48).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).borderRadius(16).backgroundColor($r('app.color.workbench_accent_surface'))
+            Text(this.selectedEntry.name).fontSize(20).fontWeight(FontWeight.Medium)
+              .fontColor($r('sys.color.font_primary')).layoutWeight(1)
+          }.width('100%')
+          if (this.sheetKind === 'actions') {
+            this.fileActions(this.selectedEntry)
+          } else {
+            Column() {
+              WorkbenchInfoRow({ label: '类型', value: this.selectedEntry.isDirectory ? '文件夹' : '文件' })
+              WorkbenchInfoRow({ label: '位置', value: this.selectedEntry.path })
+              if (!this.selectedEntry.isDirectory) {
+                WorkbenchInfoRow({ label: '大小', value: workbenchBytes(this.selectedEntry.bytes) })
+              }
+            }.width('100%').padding(16).borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_subtle'))
+            this.fileActions(this.selectedEntry)
+            if (!this.selectedEntry.isDirectory && this.model.supports('SYNO.FileStation.Download')) {
+              Text('下载完成后，可在任务页另存到系统文件。').fontSize(13).fontColor($r('sys.color.font_secondary'))
+            }
           }
         }
         this.notices()
-        Button('关闭').width('100%').height(48).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.formSubmitting)
-          .onClick((): void => { this.sheetVisible = false; })
       }.width('100%').padding({ left: 24, right: 24, top: 16, bottom: 32 }).alignItems(HorizontalAlign.Start)
     }.width('100%').scrollBar(BarState.Auto)
   }
@@ -1252,16 +1402,19 @@ struct Index {
               .onChange((index: number): void => { this.activeTab = index; if (index === 2) { this.ensurePhotosOpen(); } })
           } else { this.connectionForm() }
         }.width('100%').height('100%')
-      }.width('100%').height('100%').mode(NavigationMode.Stack).hideBackButton(true)
+      }.width('100%').height('100%').backgroundColor($r('app.color.workbench_background')).mode(NavigationMode.Stack).hideBackButton(true)
         .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.BOTTOM])
         .navDestination(this.destinationBuilder).bindToScrollable(this.activeScrollers())
         .titleMode(HdsNavigationTitleMode.MINI).titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: this.pageTitle() } },
           style: { scrollEffectOpts: { scrollEffectType: ScrollEffectType.GRADIENT_BLUR },
             originalStyle: { contentStyle: { titleStyle: { mainTitleColor: $r('sys.color.font_primary') } } },
             scrollEffectStyle: { contentStyle: { titleStyle: { mainTitleColor: $r('sys.color.font_primary') } } } } })
-    }.width('100%').height('100%').backgroundColor($r('sys.color.background_primary'))
+    }.width('100%').height('100%').backgroundColor($r('app.color.workbench_background'))
+      .onAreaChange((oldArea: Area, newArea: Area): void => { this.windowWidth = Number(newArea.width); })
       .bindSheet($$this.sheetVisible, this.fileSheet(), {
-        height: SheetSize.LARGE, preferType: SheetType.CENTER, showClose: true,
+        height: this.sheetKind === 'backup' || this.sheetKind === 'device' || this.sheetKind === 'task' ? SheetSize.LARGE : SheetSize.FIT_CONTENT,
+        preferType: this.windowWidth < 600 ? SheetType.BOTTOM : SheetType.CENTER, showClose: true,
+        backgroundColor: $r('app.color.workbench_surface'),
         title: { title: this.sheetTitle() }, keyboardAvoidMode: SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL
       })
   }
