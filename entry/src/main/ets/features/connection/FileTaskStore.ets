@@ -2,10 +2,11 @@ import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
-import { cryptoFramework } from '@kit.CryptoArchitectureKit';
+import { sha256 } from '../../platform/SdkDigest';
 import { NasErrorKind, NasFailure, normalizeNasOrigin } from '../../core/domain/DsmProtocol';
 import { FileTaskItem } from '../../core/domain/FileOperations';
 import { decodeFileTasks, FileTaskSnapshot } from '../../core/domain/FileTaskState';
+import { writePrivateSnapshot } from '../../platform/SdkFileIO';
 
 /** 每个实例绑定一个 NAS/账号；只有成功读取后才允许覆盖该账号的记录。 */
 export class FileTaskStore {
@@ -16,9 +17,7 @@ export class FileTaskStore {
     this.path = '';
     this.scope = '';
     if (account.trim().length === 0) { throw new NasFailure(NasErrorKind.InvalidInput, '缺少账号，无法读取文件操作记录。'); }
-    const digest = cryptoFramework.createMd('SHA256');
-    await digest.update({ data: new util.TextEncoder().encodeInto(JSON.stringify([normalizeNasOrigin(origin), account.trim()])) });
-    const scope = (await digest.digest()).data.reduce((text: string, byte: number): string => text + byte.toString(16).padStart(2, '0'), '');
+    const scope = await sha256(new util.TextEncoder().encodeInto(JSON.stringify([normalizeNasOrigin(origin), account.trim()])));
     const directory = context.filesDir + '/file-tasks/' + scope;
     try { await fileIo.mkdir(directory, true); }
     catch (error) { if ((error as BusinessError).code !== 13900015) { throw error as Error; } }
@@ -44,17 +43,6 @@ export class FileTaskStore {
     const snapshot: FileTaskSnapshot = { version: 1, scope: this.scope, tasks: tasks };
     const bytes = new util.TextEncoder().encodeInto(JSON.stringify(snapshot));
     if (bytes.length > 1024 * 1024) { throw new NasFailure(NasErrorKind.Protocol, '文件操作记录过大，无法完整保存。'); }
-    const path = this.path;
-    const file = await fileIo.open(path + '.tmp', fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC);
-    try {
-      let offset = 0;
-      while (offset < bytes.length) {
-        const count = await fileIo.write(file.fd, bytes.slice(offset).buffer as ArrayBuffer);
-        if (count < 1) { throw new NasFailure(NasErrorKind.Protocol, '无法完整保存文件操作记录。'); }
-        offset += count;
-      }
-      await fileIo.fsync(file.fd);
-    } finally { await fileIo.close(file); }
-    await fileIo.rename(path + '.tmp', path);
+    await writePrivateSnapshot(this.path, bytes);
   }
 }

@@ -18,7 +18,12 @@ function loadSource(relative, mocks = {}) {
   const module = { exports: {} };
   vm.runInNewContext(output.outputText, {
     module, exports: module.exports, Error, Date, Uint8Array, ArrayBuffer,
-    require: id => { assert.ok(Object.hasOwn(mocks, id), `unexpected dependency ${id}`); return mocks[id]; },
+    require: id => {
+      if (id === '../../platform/SdkDigest') {
+        return require('../helpers/load-sdk-digest.cjs')(mocks['@kit.CryptoArchitectureKit'].cryptoFramework, protocol);
+      }
+      assert.ok(Object.hasOwn(mocks, id), `unexpected dependency ${id}`); return mocks[id];
+    },
   }, { filename: relative });
   return module.exports;
 }

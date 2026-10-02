@@ -18,7 +18,12 @@ function loadSource(relative, mocks, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(output.outputText, {
     module, exports: module.exports, Error, Date, Uint8Array, ArrayBuffer,
-    require: id => { assert.ok(Object.hasOwn(mocks, id), `unexpected dependency ${id}`); return mocks[id]; },
+    require: id => {
+      if (id === '../../platform/SdkDigest') {
+        return require('../helpers/load-sdk-digest.cjs')(mocks['@kit.CryptoArchitectureKit'].cryptoFramework, protocol);
+      }
+      assert.ok(Object.hasOwn(mocks, id), `unexpected dependency ${id}`); return mocks[id];
+    },
     ...globals,
   }, { filename: relative });
   return module.exports;
@@ -297,7 +302,7 @@ function fileStoreFixture() {
   const fds = new Map();
   const writes = [];
   let nextFd = 1;
-  const faults = { read: false, readCode: 13900012, rename: false, fsync: false };
+  const faults = { read: false, readCode: 13900012, rename: false, fsync: false, close: false };
   const io = {
     OpenMode: { READ_WRITE: 2, CREATE: 64, TRUNC: 512 },
     async mkdir() {},
@@ -308,11 +313,16 @@ function fileStoreFixture() {
       const file = fds.get(fd); const existing = Buffer.from(files.get(file), 'latin1');
       files.set(file, Buffer.concat([existing, buffer.subarray(0, count)]).toString('latin1')); return count; },
     async fsync() { if (faults.fsync) throw { code: 13900025 }; },
-    async close() {},
+    async close() { if (faults.close) throw { code: 13900005 }; },
+    async unlink(file) { files.delete(file); },
     async rename(oldPath, newPath) { if (faults.rename) throw { code: 13900012 };
       files.set(newPath, Buffer.from(files.get(oldPath), 'latin1').toString('utf8')); files.delete(oldPath); },
   };
   const { FileTaskStore } = loadSource('features/connection/FileTaskStore.ets', {
+    '../../platform/SdkFileIO': loadSource('platform/SdkFileIO.ets', {
+      '@kit.CoreFileKit': { fileIo: io }, '@kit.PerformanceAnalysisKit': { hilog: { error() {} } },
+      '../core/domain/DsmProtocol': protocol,
+    }),
     '@kit.CoreFileKit': { fileIo: io }, '@kit.ArkTS': { util: { TextEncoder: class {
       encodeInto(text) { return new TextEncoder().encode(text); }
     } } },
@@ -361,8 +371,8 @@ test('actual store preserves corrupt or unreadable originals and refuses subsequ
   }
 });
 
-test('a private snapshot fsync or rename failure leaves the previous task snapshot intact', async () => {
-  for (const fault of ['fsync', 'rename']) {
+test('a private snapshot fsync, close or rename failure leaves the previous task snapshot intact', async () => {
+  for (const fault of ['fsync', 'close', 'rename']) {
     const { FileTaskStore, files, faults } = fileStoreFixture();
     const store = new FileTaskStore();
     await store.load({ filesDir: '/private' }, 'https://nas.example.test', 'alice');
@@ -372,6 +382,7 @@ test('a private snapshot fsync or rename failure leaves the previous task snapsh
     faults[fault] = true;
     await assert.rejects(store.save([{ ...persistedTask, state: 'completed' }]));
     assert.equal(files.get(path), original);
+    assert.equal(files.has(path + '.tmp'), false);
   }
 });
 

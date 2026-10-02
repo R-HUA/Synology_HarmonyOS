@@ -56,7 +56,9 @@ Photos 每页读取最多 20 项。“与我共享”按服务端提供的照片
 ## 代码位置
 
 - `entry/src/main/ets/core/domain/DsmProtocol.ts`：边界校验、响应解析与错误分类。
-- `entry/src/main/ets/core/network/`：会话、API 版本选择与 rcp 原生传输。
+- `entry/src/main/ets/core/network/`：DSM RPC 请求、已验证 API 版本选择、会话与 rcp 原生传输。
+- `entry/src/main/ets/core/capabilities/`：按实际读取证据记录功能状态，区分权限、连接、版本与响应格式问题。
+- `entry/src/main/ets/platform/`：UTF-8 解码、记录持久化、摘要及系统托管传输边界。
 - `entry/src/main/ets/features/connection/`：V2 ViewModel、加密会话保存、持久文件整理任务，以及保留的可行性验证实现。
 - `entry/src/main/ets/features/transfers/`：用户文件传输、持久记录、系统任务对账和导出。
 - `entry/src/main/ets/features/photos/`：分页图库、详情、认证媒体缓存和原文件另存。

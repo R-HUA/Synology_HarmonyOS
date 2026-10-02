@@ -23,6 +23,10 @@ const operations = load('core/domain/FileOperations.ts', { './DsmProtocol': dsm 
 const queueState = load('core/domain/TransferQueueState.ts', { './DsmProtocol': dsm });
 const control = load('core/domain/SystemControl.ts', { './DsmProtocol': dsm });
 const connectorModule = load('core/network/NasConnector.ts', { '../domain/DsmProtocol': dsm,
+  '../capabilities/CapabilityRegistry': load('core/capabilities/CapabilityRegistry.ts', { '../domain/DsmProtocol': dsm,
+    '../network/ApiVersionPolicy': load('core/network/ApiVersionPolicy.ts', { '../domain/DsmProtocol': dsm }) }),
+  './DsmRpcClient': load('core/network/DsmRpcClient.ts', { '../domain/DsmProtocol': dsm,
+    './ApiVersionPolicy': load('core/network/ApiVersionPolicy.ts', { '../domain/DsmProtocol': dsm }) }),
   '../domain/PhotosProtocol': photos, '../domain/FileOperations': operations, '../domain/TransferQueueState': queueState,
   '../domain/SystemControl': control });
 const { NasFailure, NasErrorKind: K } = dsm;

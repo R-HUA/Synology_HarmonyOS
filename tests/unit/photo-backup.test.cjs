@@ -74,6 +74,10 @@ function fixture() {
     async select(options) { calls.pick.push(plain(options)); return picker(); }
   }
   const { PhotoBackup } = loadSource('features/backup/PhotoBackup.ets', {
+    '../../platform/SdkFileIO': loadSource('platform/SdkFileIO.ets', {
+      '@kit.CoreFileKit': { fileIo: io }, '@kit.PerformanceAnalysisKit': { hilog: { error() {} } },
+      '../core/domain/DsmProtocol': protocol,
+    }),
     '@kit.CoreFileKit': { fileIo: io },
     '@kit.MediaLibraryKit': { photoAccessHelper: {
       PhotoSelectOptions, PhotoViewPicker, PhotoViewMIMETypes: { IMAGE_VIDEO_TYPE: '*/*' },
@@ -168,6 +172,16 @@ test('metadata and name failures always close their opened descriptors and prese
   assert.equal(f.calls.close.length, 3);
   assert.equal(f.handles.size, 0);
   assert.notEqual(f.backup.errorText, '');
+});
+
+test('metadata failure remains the visible reason when closing the picker file also fails', async () => {
+  const f = fixture();
+  await f.select([f.add('missing', 'a.jpg', 10, {
+    statError: { code: 13900002 }, closeError: { code: 13900042 },
+  })]);
+  assert.equal(f.backup.sources.length, 0);
+  assert.match(f.backup.errorText, /已不可用/);
+  assert.equal(f.calls.close.length, 1);
 });
 
 test('close failure is reported instead of presenting the file as successfully selected', async () => {

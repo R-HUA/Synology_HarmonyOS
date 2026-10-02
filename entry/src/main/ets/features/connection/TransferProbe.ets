@@ -1,7 +1,8 @@
 import { common } from '@kit.AbilityKit';
 import { request, BusinessError } from '@kit.BasicServicesKit';
 import { fileIo } from '@kit.CoreFileKit';
-import { cryptoFramework } from '@kit.CryptoArchitectureKit';
+import { sha256 } from '../../platform/SdkDigest';
+import { sdkTransferAgent } from '../../platform/SdkTransferAgent';
 import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { NasConnector, NasTransferPlan } from '../../core/network/NasConnector';
@@ -51,7 +52,7 @@ export class TransferProbe {
     this.status = record === undefined ? '' : !sameAccount ? '其他账号有传输记录' : record.verified ? '上次上传下载已校验' : '传输结果待检查';
     if (record === undefined || !sameAccount || record.verified || record.uploadId.length === 0) { return false; }
     const downloading = record.downloadId.length > 0;
-    const info = await request.agent.show(downloading ? record.downloadId : record.uploadId);
+    const info = await sdkTransferAgent.show(downloading ? record.downloadId : record.uploadId);
     this.processed = info.progress.processed;
     hilog.info(0x0000, 'NasTransfer', 'operation=restore-progress state=%{public}d bytes=%{public}d', info.progress.state, info.progress.processed);
     if (info.progress.state === request.agent.State.RUNNING) {
@@ -88,7 +89,7 @@ export class TransferProbe {
       const fields: request.agent.FormItem[] = plan.fields.map((field): request.agent.FormItem => ({ name: field.name, value: field.content }));
       // 群晖要求文件为最后一个 multipart 部分；不手动设置 multipart boundary。
       fields.push({ name: 'file', value: { path: source, filename: filename(record), contentType: 'text/plain' } });
-      const task = await request.agent.create(context, {
+      const task = await sdkTransferAgent.create(context, {
         action: request.agent.Action.UPLOAD, url: plan.address, method: 'POST',
         mode: request.agent.Mode.BACKGROUND, title: '上传测试文件', data: fields,
         headers: this.headers(plan), retry: false, redirect: false, metered: false, roaming: false
@@ -127,11 +128,11 @@ export class TransferProbe {
     this.status = '正在检查传输';
     try {
       if (record.uploadId.length === 0) { throw failure('上传任务尚未建立，未确认写入，请重新开始。'); }
-      const info = await request.agent.show(record.uploadId);
+      const info = await sdkTransferAgent.show(record.uploadId);
       ensureCurrent(current);
       hilog.info(0x0000, 'NasTransfer', 'operation=reconcile-upload state=%{public}d', info.progress.state);
       if (info.progress.state !== request.agent.State.COMPLETED) {
-        const task = await request.agent.getTask(context, record.uploadId);
+        const task = await sdkTransferAgent.getTask(context, record.uploadId);
         if (record.bytes === LARGE_PROBE_BYTES && info.progress.state === request.agent.State.INITIALIZED) {
           await task.setMaxSpeed(1024 * 1024);
         }
@@ -178,7 +179,7 @@ export class TransferProbe {
   async stop(): Promise<void> {
     const task = this.activeTask;
     if (task === undefined) { throw failure('当前没有正在监控的传输。'); }
-    await task.stop();
+    await sdkTransferAgent.stop(task);
     this.stopMonitor?.();
     hilog.info(0x0000, 'NasTransfer', 'operation=stop result=success');
   }
@@ -197,12 +198,12 @@ export class TransferProbe {
     const destination = context.cacheDir + '/download-' + filename(record);
     let outcome: ProbeOutcome;
     if (record.downloadId.length > 0) {
-      const info = await request.agent.show(record.downloadId);
+      const info = await sdkTransferAgent.show(record.downloadId);
       ensureCurrent(current);
       hilog.info(0x0000, 'NasTransfer', 'operation=reconcile-download state=%{public}d', info.progress.state);
       if (info.progress.state === request.agent.State.COMPLETED) { outcome = { progress: info.progress }; }
       else {
-        const task = await request.agent.getTask(context, record.downloadId);
+        const task = await sdkTransferAgent.getTask(context, record.downloadId);
         if (record.bytes === LARGE_PROBE_BYTES && info.progress.state === request.agent.State.INITIALIZED) {
           await task.setMaxSpeed(1024 * 1024);
         }
@@ -212,7 +213,7 @@ export class TransferProbe {
     } else {
       const plan = connector.transferDownloadPlan(remotePath(record));
       const headers = this.headers(plan, true);
-      const task = await request.agent.create(context, {
+      const task = await sdkTransferAgent.create(context, {
         action: request.agent.Action.DOWNLOAD, url: plan.address, method: 'POST', data: encodeNasForm(plan.fields),
         mode: request.agent.Mode.BACKGROUND, title: '下载测试文件', saveas: destination, headers: headers,
         overwrite: false, retry: false, redirect: false, metered: false, roaming: false
@@ -270,6 +271,7 @@ export class TransferProbe {
     this.stoppable = true;
     return new Promise((resolve, reject): void => {
       let settled = false;
+      let dispose = (): void => {};
       let httpStatus: number | undefined = undefined;
       let loggedPercent = -1;
       const response = (reply: request.agent.HttpResponse): void => {
@@ -298,8 +300,7 @@ export class TransferProbe {
         this.stoppable = false;
         clearTimeout(timer);
         clearInterval(poll);
-        task.off('response', response); task.off('progress', progress);
-        task.off('completed', completed); task.off('failed', failed);
+        dispose();
         if (error !== undefined) { reject(error); }
         else if (value !== undefined) { resolve({ progress: value, status: httpStatus }); }
       };
@@ -316,7 +317,7 @@ export class TransferProbe {
         if (!current()) { this.detachMonitor?.(); return; }
         if (querying) { return; }
         querying = true;
-        request.agent.show(task.tid).then((info: request.agent.TaskInfo): void => {
+        sdkTransferAgent.show(task.tid).then((info: request.agent.TaskInfo): void => {
           if (settled) { return; }
           if (!current()) { this.detachMonitor?.(); return; }
           progress(info.progress);
@@ -325,11 +326,14 @@ export class TransferProbe {
         }).catch((error: BusinessError): void => { finish(undefined, new NasFailure(NasErrorKind.Network, '无法查询系统传输。', error.code)); })
           .finally((): void => { querying = false; });
       }, 2000);
-      task.on('response', response); task.on('progress', progress);
-      task.on('completed', completed); task.on('failed', failed);
-      if (start) { task.start().catch((error: BusinessError): void => { finish(undefined, new NasFailure(NasErrorKind.Network, '无法启动系统传输。', error.code)); }); }
+      try {
+        dispose = sdkTransferAgent.observe(task, { response: response, progress: progress, completed: completed, failed: failed,
+          error: (error: Error): void => { finish(undefined, error as NasFailure); } });
+      } catch (error) { finish(undefined, error as NasFailure); return; }
+      if (settled) { dispose(); return; }
+      if (start) { sdkTransferAgent.start(task).catch((error: BusinessError): void => { finish(undefined, new NasFailure(NasErrorKind.Network, '无法启动系统传输。', error.code)); }); }
       else {
-        request.agent.show(task.tid).then((info: request.agent.TaskInfo): void => {
+        sdkTransferAgent.show(task.tid).then((info: request.agent.TaskInfo): void => {
           if (settled) { return; }
           if (!current()) { this.detachMonitor?.(); return; }
           progress(info.progress);
@@ -341,9 +345,7 @@ export class TransferProbe {
   }
 
   private async scope(origin: string, account: string): Promise<string> {
-    const digest = cryptoFramework.createMd('SHA256');
-    await digest.update({ data: new util.TextEncoder().encodeInto(origin + '\n' + account.trim()) });
-    return (await digest.digest()).data.reduce((text: string, byte: number): string => text + byte.toString(16).padStart(2, '0'), '');
+    return sha256(new util.TextEncoder().encodeInto(origin + '\n' + account.trim()));
   }
 
   private async save(context: common.UIAbilityContext, record: ProbeRecord): Promise<void> {
@@ -435,7 +437,7 @@ export class TransferProbe {
     let failed: NasFailure | undefined = undefined;
     for (const id of [record.uploadId, record.downloadId]) {
       if (id.length === 0) { continue; }
-      try { await request.agent.remove(id); }
+      try { await sdkTransferAgent.remove(id); }
       catch (error) {
         const code = (error as BusinessError).code;
         if (code !== 21900006) { failed = new NasFailure(NasErrorKind.Network, '本机传输任务未能全部取消，请重试。', code); }

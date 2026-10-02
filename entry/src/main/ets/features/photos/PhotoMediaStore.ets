@@ -1,4 +1,5 @@
 import { common } from '@kit.AbilityKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -229,11 +230,17 @@ export class PhotoMediaStore {
     if (context === undefined) { throw new NasFailure(NasErrorKind.Unsupported, '照片媒体需要应用私有缓存目录，请重新打开应用。'); }
     if (this.directory.length === 0) {
       const base = context.cacheDir + '/photos-v2';
-      // 此目录仅归本功能所有；启动或切换账号后不复用旧账号的媒体文件。
-      if (fileIo.accessSync(base)) { this.removeDirectory(base); }
-      if (this.cleanupErrorText.length > 0) { throw new NasFailure(NasErrorKind.Protocol, this.cleanupErrorText); }
-      this.directory = base + '/' + util.generateRandomUUID();
-      fileIo.mkdirSync(this.directory, true);
+      try {
+        // 此目录仅归本功能所有；启动或切换账号后不复用旧账号的媒体文件。
+        if (fileIo.accessSync(base)) { this.removeDirectory(base); }
+        if (this.cleanupErrorText.length > 0) { throw new NasFailure(NasErrorKind.Protocol, this.cleanupErrorText); }
+        const directory = base + '/' + util.generateRandomUUID();
+        fileIo.mkdirSync(directory, true);
+        this.directory = directory;
+      } catch (error) {
+        if (error instanceof NasFailure) { throw error; }
+        throw new NasFailure(NasErrorKind.Protocol, '无法创建照片缓存目录，请检查可用存储空间后重试。', (error as BusinessError).code);
+      }
     }
     return this.directory + '/' + util.generateRandomUUID() + '.media';
   }

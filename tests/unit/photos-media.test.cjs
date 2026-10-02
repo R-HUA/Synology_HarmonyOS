@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const { TextDecoder } = require('node:util');
+const util = require('../helpers/arkts-text-decoder.cjs');
 const sdkRoot = process.env.HARMONY_SDK_ROOT || path.join(process.env.DEVECO_CLI_CLT_PATH || 'C:/Program Files/command-line-tools', 'sdk/default');
 const ts = require(path.join(sdkRoot, 'openharmony/ets/build-tools/ets-loader/node_modules/typescript'));
 function load(relative, mocks = {}) {
@@ -17,6 +17,7 @@ function load(relative, mocks = {}) {
   return module.exports;
 }
 const dsm = load('core/domain/DsmProtocol.ts');
+const utf8 = load('platform/Utf8Codec.ets', { '@kit.ArkTS': { util }, '../core/domain/DsmProtocol': dsm });
 const photos = load('core/domain/PhotosProtocol.ts', { './DsmProtocol': dsm });
 const { NasFailure, NasErrorKind: K } = dsm;
 const { PhotosSpace: S } = photos;
@@ -50,6 +51,7 @@ function storage() {
 }
 function transportFixture() {
   const disk = storage(); const replies = []; const sessions = []; const requests = [];
+  const diagnostics = [];
   class Request { constructor(url, method, headers, content) { Object.assign(this, { url, method, headers, content }); } }
   const rcp = { Request, createSession(configuration) {
     assert.equal(configuration.requestConfiguration.transfer.autoRedirect, false);
@@ -61,12 +63,64 @@ function transportFixture() {
     }, cancel() { session.cancelled = true; }, close() { session.closed = true; } };
     sessions.push(session); return session;
   } };
-  const util = { TextDecoder: class { decodeWithStream(bytes) { return new TextDecoder().decode(bytes); } } };
   const { RcpNasTransport } = load('core/network/RcpNasTransport.ets', { '@kit.RemoteCommunicationKit': { rcp },
-    '@kit.CoreFileKit': { fileIo: disk.io }, '@kit.ArkTS': { util }, '../domain/DsmProtocol': dsm,
+    '@kit.PerformanceAnalysisKit': { hilog: { error(...args) { diagnostics.push(args); } } },
+    '@kit.CoreFileKit': { fileIo: disk.io }, '../../platform/Utf8Codec': utf8, '../domain/DsmProtocol': dsm,
     '../domain/PhotosProtocol': photos });
-  return { RcpNasTransport, disk, replies, sessions, requests };
+  return { RcpNasTransport, disk, replies, sessions, requests, diagnostics };
 }
+
+test('media close failure prevents delivery and still removes the private file', async () => {
+  const fixture = transportFixture();
+  fixture.replies.push({ chunks: [jpeg.buffer], headers: { 'content-type': 'image/jpeg' } });
+  fixture.disk.io.closeSync = () => { throw Object.assign(new Error('close failed'), { code: 13900005 }); };
+  await assert.rejects(new fixture.RcpNasTransport().downloadMedia(plan(), '/cache/media', true, undefined, () => true),
+    error => error.kind === K.Protocol && error.code === 13900005);
+  assert.deepEqual(fixture.disk.removed, ['/cache/media']);
+  assert.equal(fixture.disk.files.has('/cache/media'), false);
+});
+
+test('media cleanup failures cannot replace the original protocol or cancellation failure', async () => {
+  for (const cancelled of [false, true]) {
+    const fixture = transportFixture();
+    fixture.replies.push({ status: 302, chunks: [jpeg.buffer] });
+    fixture.disk.io.closeSync = () => { throw Object.assign(new Error('close failed'), { code: 13900005 }); };
+    let removalAttempted = false;
+    fixture.disk.io.unlinkSync = () => { removalAttempted = true; throw Object.assign(new Error('unlink failed'), { code: 13900013 }); };
+    await assert.rejects(new fixture.RcpNasTransport().downloadMedia(plan(), '/cache/media', true, undefined, () => !cancelled),
+      isKind(cancelled ? K.Cancelled : K.Http));
+    assert.equal(removalAttempted, true);
+    assert.equal(fixture.diagnostics.length, 2);
+    assert.ok(fixture.diagnostics.every(args => !JSON.stringify(args).includes('/cache/media')));
+  }
+});
+
+test('UTF-8 distinguishes complete text from truncated or binary prefixes', () => {
+  assert.equal(utf8.decodeUtf8Complete(new Uint8Array()), '');
+  assert.equal(utf8.decodeUtf8Complete(new TextEncoder().encode('\uFEFF中文😀')), '中文😀');
+  assert.throws(() => utf8.decodeUtf8Complete(new Uint8Array([0xe4, 0xb8])), isKind(K.Protocol));
+  assert.throws(() => utf8.decodeUtf8Complete(new Uint8Array([0xff])), isKind(K.Protocol));
+  assert.equal(utf8.decodeResponsePrefix(new Uint8Array([0xe4, 0xb8])), '\uFFFD');
+  assert.doesNotThrow(() => utf8.decodeResponsePrefix(jpeg));
+  assert.equal(utf8.decodeResponsePrefix(new Uint8Array()), '');
+});
+
+test('RCP decodes aggregated UTF-8 across every network byte boundary', async () => {
+  const text = JSON.stringify({ success: true, data: { name: '中文😀' } });
+  const bytes = new TextEncoder().encode(text);
+  for (let split = 1; split < bytes.length; split++) {
+    const fixture = transportFixture();
+    fixture.replies.push({ chunks: [bytes.slice(0, split).buffer, bytes.slice(split).buffer] });
+    const reply = await new fixture.RcpNasTransport().post('https://nas.example.test/webapi/entry.cgi', '');
+    assert.equal(reply.text, text);
+  }
+});
+
+test('RCP reports malformed complete UTF-8 as a protocol error, not a network error', async () => {
+  const fixture = transportFixture();
+  fixture.replies.push({ chunks: [new Uint8Array([0xe4, 0xb8]).buffer] });
+  await assert.rejects(new fixture.RcpNasTransport().post('https://nas.example.test/webapi/entry.cgi', ''), isKind(K.Protocol));
+});
 
 test('RCP uses POST Cookie/token/no-store, streams bounded chunks to a private file and never aggregates originals', async () => {
   const f = transportFixture(); const transport = new f.RcpNasTransport();
@@ -179,6 +233,22 @@ function storeFixture() {
   return { store, jobs, disk, connector, PhotoMediaStore, max: () => maximum, change: () => changed,
     select: value => { destinations = value; }, failCopy: value => { copyFailure = value; }, copies: () => copies };
 }
+
+test('a failed cache directory creation is not reused on the next thumbnail attempt', async () => {
+  const fixture = storeFixture();
+  const mkdir = fixture.disk.io.mkdirSync;
+  fixture.disk.io.mkdirSync = () => { throw new Error('mkdir failed'); };
+  await assert.rejects(fixture.store.thumbnail(item(1)), isKind(K.Protocol));
+  await turn();
+  assert.equal(fixture.store.directory, '');
+  assert.equal(fixture.jobs.length, 0);
+  fixture.disk.io.mkdirSync = mkdir;
+  const next = fixture.store.thumbnail(item(1));
+  assert.ok(fixture.disk.dirs.has(fixture.store.directory));
+  fixture.jobs[0].gate.resolve(8);
+  await next;
+  fixture.store.reset();
+});
 
 test('thumbnail work is deduplicated, capped at three active requests and caches stay bounded by count and bytes', async () => {
   const f = storeFixture(); const requests = Array.from({ length: 30 }, (_, id) => f.store.thumbnail(item(id + 1)));

@@ -2,6 +2,7 @@ import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo } from '@kit.CoreFileKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
+import { closeFile } from '../../platform/SdkFileIO';
 import { NasErrorKind, NasFailure, validateLogicalPath } from '../../core/domain/DsmProtocol';
 import { TransferQueueItem, transferRemotePath, validateTransferName } from '../../core/domain/TransferQueueState';
 import { TransferQueue, TransferUploadSource } from '../transfers/TransferQueue';
@@ -179,6 +180,7 @@ export class PhotoBackup {
 
   private async readSource(uri: string, ticket: number): Promise<PhotoBackupSource> {
     const file = await fileIo.open(uri, fileIo.OpenMode.READ_ONLY);
+    let failed = false;
     try {
       this.ensureCurrent(ticket);
       const stat = await fileIo.stat(file.fd);
@@ -191,7 +193,8 @@ export class PhotoBackup {
       }
       // 从授权文件对象取得真实名称，不使用媒体 URI 的资源编号。
       return { uri: uri, name: validateTransferName(file.name), bytes: stat.size };
-    } finally { await fileIo.close(file); }
+    } catch (error) { failed = true; throw error as Error; }
+    finally { await closeFile(file, failed); }
   }
 
   private availableName(name: string, names: Set<string>): string {

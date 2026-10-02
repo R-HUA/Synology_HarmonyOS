@@ -2,7 +2,7 @@ import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
-import { cryptoFramework } from '@kit.CryptoArchitectureKit';
+import { sha256 } from '../../platform/SdkDigest';
 import { NasErrorKind, NasFailure } from '../../core/domain/DsmProtocol';
 import {
   decodeConnectionAddressBook, decodeNasDeviceIdentity, encodeConnectionAddressBook,
@@ -80,15 +80,9 @@ export class NasAddressBookStore {
 export async function nasDeviceFingerprint(identity: NasConnectionDeviceIdentity): Promise<string> {
   const verified = decodeNasDeviceIdentity(identity as Object as Record<string, Object>);
   try {
-    const digest = cryptoFramework.createMd('SHA256');
-    await digest.update({ data: new util.TextEncoder().encodeInto(JSON.stringify([verified.model, verified.serial])) });
-    const bytes = (await digest.digest()).data;
-    if (bytes.length !== 32) {
-      throw new NasFailure(NasErrorKind.Protocol, '设备指纹计算结果不完整，暂不能登记或核验设备身份。');
-    }
-    return bytes.reduce((text: string, byte: number): string => text + byte.toString(16).padStart(2, '0'), '');
+    return await sha256(new util.TextEncoder().encodeInto(JSON.stringify([verified.model, verified.serial])));
   } catch (error) {
-    if (error instanceof NasFailure) { throw error; }
+    if (error instanceof NasFailure && error.kind === NasErrorKind.Unsupported) { throw error; }
     throw new NasFailure(NasErrorKind.Protocol, '无法计算设备指纹，暂不能登记或核验设备身份。', (error as BusinessError).code);
   }
 }

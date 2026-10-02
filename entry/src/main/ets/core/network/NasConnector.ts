@@ -1,4 +1,4 @@
-import { decodeCapabilities, decodeNasFileInfo, decodeNasFilePage, decodeNasResponse, decodeNasSession, encodeNasForm,
+import { decodeCapabilities, decodeNasFileInfo, decodeNasFilePage, decodeNasResponse, decodeNasSession,
   nasString, NasErrorKind, NasFailure,
   normalizeNasOrigin, selectNasApi, validateLogicalPath } from '../domain/DsmProtocol';
 import type { NasApiDescriptor, NasFileEntry, NasFileInfo, NasFilePage, NasFormField, NasLoginSession } from '../domain/DsmProtocol';
@@ -15,14 +15,14 @@ import type { NasFileOperationCapabilities, NasFileTask, NasFileTaskStatus } fro
 import { decodeTransferChecksumStatus, decodeTransferChecksumTask,
   validateChecksumTaskId } from '../domain/TransferQueueState';
 import type { TransferChecksumStatus } from '../domain/TransferQueueState';
+import { DsmRpcClient } from './DsmRpcClient';
+import { CapabilityRegistry } from '../capabilities/CapabilityRegistry';
+import type { CapabilitySnapshot } from '../capabilities/CapabilityRegistry';
+import type { NasTransport } from './DsmRpcClient';
+export type { NasHttpReply, NasTransport } from './DsmRpcClient';
 
-export interface NasHttpReply { status: number; text: string; }
 export interface NasEnvironment { model: string; dsmVersion: string; fileStationVersion: string; photosVersion: string; administrator: boolean; }
 export interface NasTransferPlan { address: string; fields: NasFormField[]; session: NasLoginSession; }
-export interface NasTransport {
-  post(address: string, body: string, session?: NasLoginSession): Promise<NasHttpReply>;
-  close(): void;
-}
 
 export const NAS_DISCOVERY_QUERY = 'SYNO.API.Auth,SYNO.FileStation.List,SYNO.FileStation.Info,' +
   'SYNO.FileStation.Upload,SYNO.FileStation.Download,SYNO.Foto.Browse.Item,SYNO.FotoTeam.Browse.Item,' +
@@ -38,19 +38,25 @@ export class NasConnector {
   private generation: number = 0;
   private disposed: boolean = false;
   private authenticating: boolean = false;
-  constructor(private transport: NasTransport, private sessionName: 'FileStation' | 'NasControl' = 'FileStation') {}
+  private rpc: DsmRpcClient;
+  private featureRegistry: CapabilityRegistry = new CapabilityRegistry([
+    { feature: 'fileBrowse', api: 'SYNO.FileStation.List', verifiedVersions: [2] },
+    { feature: 'personalPhotos', api: 'SYNO.Foto.Browse.Item', verifiedVersions: [1] },
+    { feature: 'sharedPhotos', api: 'SYNO.FotoTeam.Browse.Item', verifiedVersions: [1] }
+  ]);
+  constructor(private transport: NasTransport, private sessionName: 'FileStation' | 'NasControl' = 'FileStation') {
+    this.rpc = new DsmRpcClient(transport);
+  }
 
   async discover(address: string): Promise<NasApiDescriptor[]> {
     this.ensureOpen();
     if (this.origin.length > 0) { throw new NasFailure(NasErrorKind.InvalidInput, '请先断开当前连接。'); }
     this.origin = normalizeNasOrigin(address);
     const ticket = this.generation;
-    const reply = await this.transport.post(this.origin + '/webapi/query.cgi', encodeNasForm([
-      { name: 'api', content: 'SYNO.API.Info' }, { name: 'version', content: '1' },
-      { name: 'method', content: 'query' }, { name: 'query', content: NAS_DISCOVERY_QUERY }
-    ]));
+    const reply = await this.rpc.discover(this.origin, NAS_DISCOVERY_QUERY);
     this.ensureCurrent(ticket);
     this.capabilities = decodeCapabilities(decodeNasResponse('SYNO.API.Info', reply.status, reply.text));
+    this.featureRegistry.discover(this.capabilities);
     selectNasApi(this.capabilities, 'SYNO.API.Auth', [6]);
     selectNasApi(this.capabilities, 'SYNO.FileStation.List', [2]);
     return this.capabilities.slice();
@@ -95,8 +101,16 @@ export class NasConnector {
       validateLogicalPath(path);
       fields.push({ name: 'folder_path', content: api.jsonParameters ? JSON.stringify(path) : path });
     }
-    const data = await this.call('SYNO.FileStation.List', 2, path.length === 0 ? 'list_share' : 'list', fields);
-    return decodeNasFilePage(data, path.length === 0, offset, 100);
+    const read = async (): Promise<NasFilePage> => {
+      const data = await this.call('SYNO.FileStation.List', 2, path.length === 0 ? 'list_share' : 'list', fields);
+      return decodeNasFilePage(data, path.length === 0, offset, 100);
+    };
+    return path.length === 0 && offset === 0 ? this.featureRegistry.read('fileBrowse', read) : read();
+  }
+
+  capabilitySnapshots(): CapabilitySnapshot[] {
+    this.ensureOpen();
+    return this.featureRegistry.snapshots();
   }
 
   fileOperationCapabilities(): NasFileOperationCapabilities {
@@ -284,7 +298,9 @@ export class NasConnector {
       throw new NasFailure(NasErrorKind.InvalidInput, '照片空间不正确。');
     }
     const api = this.photoApi(space, 'Browse.Item');
-    return decodePhotosPage(await this.photosCall(api, 'list', this.photoListFields(offset)), space, offset, 20);
+    const read = async (): Promise<NasPhotoPage> =>
+      decodePhotosPage(await this.photosCall(api, 'list', this.photoListFields(offset)), space, offset, 20);
+    return offset === 0 ? this.featureRegistry.read(space === PhotosSpace.Personal ? 'personalPhotos' : 'sharedPhotos', read) : read();
   }
 
   async photoAlbums(space: PhotosSpace, offset: number = 0): Promise<NasPhotoAlbumPage> {
@@ -481,6 +497,7 @@ export class NasConnector {
     const data: Record<string, Object> = { sid: session.sid };
     if (session.synoToken.length > 0) { data['synotoken'] = session.synoToken; }
     this.session = decodeNasSession(data);
+    this.featureRegistry.discover(this.capabilities);
   }
 
   sessionSnapshot(): NasLoginSession | undefined {
@@ -492,14 +509,11 @@ export class NasConnector {
     const oldSession = this.session;
     this.session = undefined;
     this.generation++;
+    this.featureRegistry.clear();
     if (this.disposed || oldSession === undefined) { this.close(); return; }
     try {
       const api = selectNasApi(this.capabilities, 'SYNO.API.Auth', [6]);
-      const fields: NasFormField[] = [
-        { name: 'api', content: api.name }, { name: 'version', content: '6' },
-        { name: 'method', content: 'logout' }, { name: 'session', content: this.sessionName }
-      ];
-      const reply = await this.transport.post(this.origin + '/webapi/' + api.path, encodeNasForm(fields), oldSession);
+      const reply = await this.rpc.request(this.origin, api, 6, 'logout', [{ name: 'session', content: this.sessionName }], oldSession);
       decodeNasResponse(api.name, reply.status, reply.text);
     } finally { this.close(); }
   }
@@ -510,6 +524,7 @@ export class NasConnector {
     this.generation++;
     this.session = undefined;
     this.capabilities = [];
+    this.featureRegistry.clear();
     this.transport.close();
   }
 
@@ -521,11 +536,9 @@ export class NasConnector {
     const method = validateNasControlAction(action);
     const api = selectNasApi(this.capabilities, 'SYNO.Core.System', [1]);
     const ticket = this.generation;
-    const fields: NasFormField[] = [
-      { name: 'api', content: api.name }, { name: 'version', content: '1' }, { name: 'method', content: method }
-    ];
+    const fields: NasFormField[] = [];
     if (method === 'shutdown') { fields.push({ name: 'local', content: 'true' }); }
-    const reply = await this.transport.post(this.origin + '/webapi/' + api.path, encodeNasForm(fields), this.session);
+    const reply = await this.rpc.request(this.origin, api, 1, method, fields, this.session);
     this.ensureCurrent(ticket);
     assertNasControlAccepted(reply.status, reply.text);
   }
@@ -534,19 +547,15 @@ export class NasConnector {
     this.ensureOpen();
     const ticket = this.generation;
     const api = selectNasApi(this.capabilities, name, [version]);
-    const fields: NasFormField[] = [
-      { name: 'api', content: name }, { name: 'version', content: version.toString() },
-      { name: 'method', content: method }
-    ];
-    for (const parameter of parameters) { fields.push(parameter); }
     // 认证参数交由传输层发送 Cookie 和 CSRF 请求头，不进入 URL 或业务表单。
-    const reply = await this.transport.post(this.origin + '/webapi/' + api.path, encodeNasForm(fields), this.session);
+    const reply = await this.rpc.request(this.origin, api, version, method, parameters, this.session);
     this.ensureCurrent(ticket);
     try { return decodeNasResponse(name, reply.status, reply.text); }
     catch (error) {
       if (invalidateExpired && error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) {
         this.session = undefined;
         this.generation++;
+        this.featureRegistry.discover(this.capabilities);
       }
       throw error;
     }

@@ -23,6 +23,25 @@ function loadEts(relative, mocks) {
   const module = { exports: {} };
   vm.runInNewContext(output.outputText, {
     module, exports: module.exports, require: id => {
+      if (id === '../../platform/SdkTransferAgent') {
+        return require('../helpers/load-sdk-transfer-agent.cjs')(mocks['@kit.BasicServicesKit'].request.agent, protocol);
+      }
+      if (id === '../../platform/SdkDigest') {
+        return require('../helpers/load-sdk-digest.cjs')(mocks['@kit.CryptoArchitectureKit'].cryptoFramework, protocol);
+      }
+      if (id === '../../platform/SdkFileIO') {
+        return loadEts('platform/SdkFileIO.ets', {
+          '@kit.CoreFileKit': mocks['@kit.CoreFileKit'],
+          '@kit.PerformanceAnalysisKit': { hilog: { error() {} } },
+          '../core/domain/DsmProtocol': protocol,
+        });
+      }
+      if (id === '../../platform/Utf8Codec') {
+        return loadEts('platform/Utf8Codec.ets', {
+          '@kit.ArkTS': { util: require('../helpers/arkts-text-decoder.cjs') },
+          '../core/domain/DsmProtocol': protocol,
+        });
+      }
       assert.ok(Object.hasOwn(mocks, id), `unexpected dependency ${id}`);
       return mocks[id];
     }, setInterval: () => 1, clearInterval: () => {}, Date, Uint8Array, ArrayBuffer, console,
@@ -105,7 +124,6 @@ function fixture() {
   const util = {
     generateRandomUUID: () => `${(++uuid).toString().padStart(8, '0')}-1111-4111-8111-111111111111`,
     TextEncoder: class { encodeInto(text) { return new TextEncoder().encode(text); } },
-    TextDecoder: class { decodeWithStream(bytes) { return new TextDecoder().decode(bytes); } },
   };
   const agent = {
     State, Mode: { BACKGROUND: 0 }, Action: { UPLOAD: 0, DOWNLOAD: 1 },
@@ -239,6 +257,24 @@ test('recovered completed upload without business/HTTP response stays unknown an
   f.queue.detach();
 });
 
+test('a broken SDK off call does not interrupt account detach or leave live callbacks', async () => {
+  const f = fixture();
+  await f.attach('alice');
+  await f.queue.download({ path: '/share/a.txt', name: 'a.txt', isDirectory: false });
+  const task = f.tasks.get('100');
+  const callbacks = [...task.handlers.values()];
+  const removed = [];
+  task.off = event => { removed.push(event); if (event === 'response') throw { code: 201 }; };
+  assert.doesNotThrow(() => f.queue.detach());
+  assert.deepEqual(removed, ['response', 'progress', 'completed', 'failed']);
+  assert.equal(f.queue.ready, false);
+  assert.equal(f.queue.items.length, 0);
+  await f.attach('bob');
+  for (const callback of callbacks) callback({ processed: 999, state: f.State.COMPLETED });
+  assert.equal(f.queue.items.length, 0);
+  f.queue.detach();
+});
+
 test('same origin different accounts have distinct records and detached callbacks cannot populate new account', async () => {
   const f = fixture(); await f.attach('alice');
   await f.queue.uploadSources('/share', [{ uri: 'selected', name: 'file.txt', bytes: 37 }]);
@@ -304,6 +340,119 @@ test('private file copy handles partial reads/writes with bounded allocations an
   assert.deepEqual(Buffer.concat(chunks), input);
   assert.ok(maxRead <= 256 * 1024 && maxWrite <= 256 * 1024);
   assert.deepEqual(events, ['sync:2', 'close:2', 'close:1']);
+});
+
+test('copy cancellation remains primary while both descriptors still attempt close', async () => {
+  const closed = [];
+  const cancelled = new protocol.NasFailure(protocol.NasErrorKind.Cancelled, 'cancelled');
+  const fileIo = {
+    OpenMode: { READ_ONLY: 0, READ_WRITE: 2, CREATE: 64, TRUNC: 512 },
+    async open(name) { return { fd: name === 'source' ? 1 : 2 }; },
+    async stat() { return { size: 10, isDirectory: () => false }; },
+    async close(file) { closed.push(file.fd); throw { code: 13900005 }; },
+  };
+  const { copyTransferFile } = loadEts('features/transfers/TransferQueueFiles.ets', {
+    '@kit.CoreFileKit': { fileIo }, '@kit.ArkTS': {},
+    '../../core/domain/DsmProtocol': protocol, '../../core/domain/TransferQueueState': state,
+  });
+  await assert.rejects(copyTransferFile('source', 'destination', 10, () => { throw cancelled; }), error => error === cancelled);
+  assert.deepEqual(closed, [2, 1]);
+});
+
+test('private snapshots commit only after complete writes, fsync and close, preserving the old record on every failure', async () => {
+  for (const fault of ['', 'open', 'write', 'short', 'fsync', 'close', 'rename', 'write-close-cleanup']) {
+    const files = new Map([['/private/queue.json', Buffer.from('old')]]);
+    const events = [];
+    const diagnostics = [];
+    const fileIo = {
+      OpenMode: { READ_WRITE: 2, CREATE: 64, TRUNC: 512 },
+      async open(name) {
+        events.push('open');
+        if (fault === 'open') throw { code: 13900013 };
+        files.set(name, Buffer.alloc(0)); return { fd: 1 };
+      },
+      async write(descriptor, bytes) {
+        events.push('write');
+        if (fault.startsWith('write')) throw { code: 13900028 };
+        if (fault === 'short') return 0;
+        const part = Buffer.from(bytes).subarray(0, 3);
+        files.set('/private/queue.json.tmp', Buffer.concat([files.get('/private/queue.json.tmp'), part]));
+        return part.length;
+      },
+      async fsync() { events.push('fsync'); if (fault === 'fsync') throw { code: 13900025 }; },
+      async close() { events.push('close'); if (fault.includes('close')) throw { code: 13900005 }; },
+      async rename(source, destination) {
+        events.push('rename'); if (fault === 'rename') throw { code: 13900012 };
+        files.set(destination, files.get(source)); files.delete(source);
+      },
+      async unlink(name) {
+        events.push('unlink'); if (fault.includes('cleanup')) throw { code: 13900013 };
+        assert.equal(name, '/private/queue.json.tmp'); files.delete(name);
+      },
+    };
+    const { writePrivateSnapshot } = loadEts('platform/SdkFileIO.ets', {
+      '@kit.CoreFileKit': { fileIo }, '../core/domain/DsmProtocol': protocol,
+      '@kit.PerformanceAnalysisKit': { hilog: { error(...args) { diagnostics.push(args); } } },
+    });
+    const bytes = new TextEncoder().encode('中文快照😀');
+    if (fault === '') {
+      await writePrivateSnapshot('/private/queue.json', bytes);
+      assert.deepEqual(files.get('/private/queue.json'), Buffer.from(bytes));
+      assert.deepEqual(events.slice(-3), ['fsync', 'close', 'rename']);
+    } else {
+      await assert.rejects(writePrivateSnapshot('/private/queue.json', bytes), error =>
+        error.kind === protocol.NasErrorKind.Protocol && (!fault.startsWith('write') || error.code === 13900028));
+      assert.equal(files.get('/private/queue.json').toString(), 'old');
+      assert.equal(events.includes('rename'), fault === 'rename');
+      assert.equal(events.includes('close'), fault !== 'open');
+      assert.equal(events.includes('unlink'), fault !== 'open');
+    }
+    assert.ok(diagnostics.every(args => !JSON.stringify(args).includes('/private/')));
+  }
+});
+
+test('transfer snapshot size cannot exceed the recovery bound', async () => {
+  let opened = false;
+  const { saveTransferRecords } = loadEts('features/transfers/TransferQueueFiles.ets', {
+    '@kit.CoreFileKit': { fileIo: { async open() { opened = true; throw new Error('must not open'); } } },
+    '@kit.ArkTS': { util: { TextEncoder: class { encodeInto(text) { return new TextEncoder().encode(text); } } } },
+    '../../core/domain/DsmProtocol': protocol, '../../core/domain/TransferQueueState': state,
+  });
+  await assert.rejects(saveTransferRecords('/private', 'scope', [record({ errorText: 'x'.repeat(4 * 1024 * 1024) })]),
+    error => error.kind === protocol.NasErrorKind.Protocol);
+  assert.equal(opened, false);
+});
+
+test('file prefix decoding tolerates binary and cut UTF-8 without changing wholeFile evidence', async () => {
+  for (const size of [0, 8, 65537]) {
+    const content = new Uint8Array(size).fill(0x61);
+    if (size > 65536) { content.set([0xe4, 0xb8, 0xad], 65534); }
+    else if (size > 0) { content[0] = 0xff; }
+    let offset = 0;
+    let closed = false;
+    const fileIo = {
+      OpenMode: { READ_ONLY: 0 },
+      async open() { return { fd: 1 }; },
+      async read(descriptor, buffer) {
+        const count = Math.min(997, buffer.byteLength, content.length - offset);
+        new Uint8Array(buffer).set(content.subarray(offset, offset + count));
+        offset += count;
+        return count;
+      },
+      async close() { closed = true; },
+    };
+    const { readTransferPrefix } = loadEts('features/transfers/TransferQueueFiles.ets', {
+      '@kit.CoreFileKit': { fileIo }, '@kit.ArkTS': {}, '../../core/domain/DsmProtocol': protocol,
+      '../../core/domain/TransferQueueState': state,
+    });
+    const prefix = await readTransferPrefix('download.bin', size);
+    assert.equal(prefix.wholeFile, size <= 65536);
+    assert.equal(offset, Math.min(size, 65536));
+    assert.equal(closed, true);
+    if (size > 65536) assert.ok(prefix.text.endsWith('\uFFFD'));
+    else if (size > 0) assert.ok(prefix.text.startsWith('\uFFFD'));
+    else assert.equal(prefix.text, '');
+  }
 });
 
 test('downloads with missing HTTP and checksum evidence remain unconfirmed and never expose export', async () => {

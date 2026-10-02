@@ -5,6 +5,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { systemShare } from '@kit.ShareKit';
+import { closeFile } from '../../platform/SdkFileIO';
 
 const MAX_SHARED_FILES: number = 20;
 const MAX_FILE_BYTES: number = 256 * 1024 * 1024;
@@ -182,7 +183,11 @@ export class SharedUploadInbox {
       return { id: id, uri: fileUri.getUriFromPath(localPath), localPath: localPath,
         fileName: fileName, size: size, utd: record.utd };
     } catch (error) {
-      await this.removeCopy(localPath);
+      try { await this.removeCopy(localPath); }
+      catch (cleanupError) {
+        hilog.error(0x0000, 'NasShare', 'operation=copy_cleanup result=failed code=%{public}d',
+          (cleanupError as BusinessError).code);
+      }
       throw error as Error;
     }
   }
@@ -195,6 +200,7 @@ export class SharedUploadInbox {
 
   private async copyFile(uri: string, localPath: string, generation: number): Promise<number> {
     const source = await fileIo.open(uri, fileIo.OpenMode.READ_ONLY);
+    let sourceFailed = false;
     try {
       this.checkGeneration(generation);
       const info = await fileIo.stat(source.fd);
@@ -210,14 +216,17 @@ export class SharedUploadInbox {
       }
       const destination = await fileIo.open(localPath,
         fileIo.OpenMode.CREATE | fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.TRUNC);
+      let destinationFailed = false;
       try {
         await this.copyBytes(source.fd, destination.fd, info.size, generation);
         if ((await fileIo.stat(destination.fd)).size !== info.size) {
           throw new SharedIntakeFailure('未能完整保存分享文件，请重新分享。');
         }
-      } finally { await fileIo.close(destination); }
+      } catch (error) { destinationFailed = true; throw error as Error; }
+      finally { await closeFile(destination, destinationFailed); }
       return info.size;
-    } finally { await fileIo.close(source); }
+    } catch (error) { sourceFailed = true; throw error as Error; }
+    finally { await closeFile(source, sourceFailed); }
   }
 
   private async copyBytes(sourceFd: number, destinationFd: number, size: number,

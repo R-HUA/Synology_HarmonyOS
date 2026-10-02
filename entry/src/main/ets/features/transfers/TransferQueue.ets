@@ -1,7 +1,8 @@
 import { common } from '@kit.AbilityKit';
 import { request, BusinessError } from '@kit.BasicServicesKit';
 import { fileIo, fileUri, picker } from '@kit.CoreFileKit';
-import { cryptoFramework } from '@kit.CryptoArchitectureKit';
+import { sha256 } from '../../platform/SdkDigest';
+import { sdkTransferAgent } from '../../platform/SdkTransferAgent';
 import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { NasConnector, NasTransferPlan } from '../../core/network/NasConnector';
@@ -54,12 +55,11 @@ export class TransferQueue {
 
   async attach(context: common.UIAbilityContext, connector: NasConnector, origin: string, account: string): Promise<void> {
     this.detach();
+    sdkTransferAgent.requireCapability();
     const generation = this.generation;
     const normalized = normalizeNasOrigin(origin);
     if (account.length === 0) { throw queueFailure('缺少传输账号，无法加载任务。'); }
-    const digest = cryptoFramework.createMd('SHA256');
-    await digest.update({ data: new util.TextEncoder().encodeInto(JSON.stringify([normalized, account])) });
-    const scope = (await digest.digest()).data.reduce((text: string, byte: number): string => text + byte.toString(16).padStart(2, '0'), '');
+    const scope = await sha256(new util.TextEncoder().encodeInto(JSON.stringify([normalized, account])));
     await this.tail;
     if (this.generation !== generation) { throw new NasFailure(NasErrorKind.Cancelled, '连接已变化。'); }
     const session: QueueSession = { context: context, connector: connector, origin: normalized, scope: scope,
@@ -371,7 +371,7 @@ export class TransferQueue {
       config.data = fields;
     } else { config.data = encodeNasForm(plan.fields); config.saveas = this.localPath(session, record); config.overwrite = false; }
     let task: request.agent.Task;
-    try { task = await request.agent.create(session.context, config); }
+    try { task = await sdkTransferAgent.create(session.context, config); }
     catch (error) {
       // 创建调用失败可能已生成 INITIALIZED 任务；恢复时通过 marker 搜索，不再创建另一份。
       record.errorText = '系统任务创建结果待检查，请点击重新检查。';
@@ -398,7 +398,7 @@ export class TransferQueue {
     record.errorText = '';
     await this.save(session);
     this.ensureCurrent(session);
-    try { await task.start(); }
+    try { await sdkTransferAgent.start(task); }
     catch (error) {
       record.state = record.direction === 'upload' ? 'unknown' : 'failed';
       record.errorText = '系统任务启动结果待检查，请重新检查任务状态。';
@@ -429,15 +429,15 @@ export class TransferQueue {
             await this.save(session); continue;
           }
         }
-        const info = await request.agent.show(record.taskId);
+        const info = await sdkTransferAgent.show(record.taskId);
         this.ensureCurrent(session);
         await this.acceptProgress(session, record, info.progress);
         if (info.progress.state === request.agent.State.INITIALIZED) {
           // INITIALIZED 是尚未开始执行的系统任务；恢复同一个 ID，不建立新上传。
-          const task = await request.agent.getTask(session.context, record.taskId);
+          const task = await sdkTransferAgent.getTask(session.context, record.taskId);
           await this.startTask(session, record, task);
         } else if ([request.agent.State.RUNNING, request.agent.State.WAITING, request.agent.State.RETRYING].includes(info.progress.state)) {
-          this.bind(session, record, await request.agent.getTask(session.context, record.taskId));
+          this.bind(session, record, await sdkTransferAgent.getTask(session.context, record.taskId));
         }
       } catch (error) {
         if (this.session !== session) { throw error as Error; }
@@ -465,12 +465,12 @@ export class TransferQueue {
   }
 
   private async adoptCreatedTask(session: QueueSession, record: TransferQueueRecord): Promise<void> {
-    const ids = await request.agent.search({ after: Math.max(0, record.createdAt - 60000), mode: request.agent.Mode.BACKGROUND });
+    const ids = await sdkTransferAgent.search({ after: Math.max(0, record.createdAt - 60000), mode: request.agent.Mode.BACKGROUND });
     const found: string[] = [];
     for (const id of ids) {
       this.ensureCurrent(session);
       let info: request.agent.TaskInfo;
-      try { info = await request.agent.show(id); }
+      try { info = await sdkTransferAgent.show(id); }
       catch (error) { if (isMissingTask(error as Error)) { continue; } throw error as Error; }
       const extra = info.extras as Record<string, Object> | undefined;
       if (extra !== undefined && extra['transferScope'] === session.scope && extra['transferQueue'] === record.id &&
@@ -668,10 +668,9 @@ export class TransferQueue {
     const failed = (value: request.agent.Progress): void => {
       this.background(session, taskId, async (): Promise<void> => { await this.acceptProgress(session, record, value); });
     };
-    task.on('response', response); task.on('progress', progress); task.on('completed', completed); task.on('failed', failed);
-    this.bindings.push({ taskId: taskId, dispose: (): void => {
-      task.off('response', response); task.off('progress', progress); task.off('completed', completed); task.off('failed', failed);
-    } });
+    const dispose = sdkTransferAgent.observe(task, { response: response, progress: progress, completed: completed, failed: failed,
+      error: (error: Error): void => this.report(session, error) });
+    this.bindings.push({ taskId: taskId, dispose: dispose });
   }
 
   private background(session: QueueSession, taskId: string, work: () => Promise<void>): void {
@@ -713,7 +712,7 @@ export class TransferQueue {
   }
 
   private async removeTask(id: string): Promise<void> {
-    try { await request.agent.remove(id); }
+    try { await sdkTransferAgent.remove(id); }
     catch (error) { if (!isMissingTask(error as Error)) { throw error as Error; } }
   }
 

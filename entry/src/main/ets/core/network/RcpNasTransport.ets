@@ -1,7 +1,8 @@
 import { rcp } from '@kit.RemoteCommunicationKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo } from '@kit.CoreFileKit';
-import { util } from '@kit.ArkTS';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+import { decodeUtf8Complete, decodeResponsePrefix } from '../../platform/Utf8Codec';
 import { encodeNasForm, NasErrorKind, NasFailure, NasFormField, NasLoginSession } from '../domain/DsmProtocol';
 import { PHOTO_ORIGINAL_MAX_BYTES, PHOTO_THUMBNAIL_MAX_BYTES, validatePhotoMediaResponse } from '../domain/PhotosProtocol';
 import { NasHttpReply, NasTransport, NasTransferPlan } from './NasConnector';
@@ -27,7 +28,7 @@ export class RcpNasTransport implements NasTransport {
       const data = new Uint8Array(bytes);
       let offset = 0;
       for (const chunk of chunks) { data.set(chunk, offset); offset += chunk.length; }
-      return { status: reply.statusCode, text: new util.TextDecoder().decodeWithStream(data) };
+      return { status: reply.statusCode, text: decodeUtf8Complete(data) };
     } catch (error) {
       if (overflow) { throw new NasFailure(NasErrorKind.Protocol, '服务器业务响应过大。'); }
       throw this.failure(error as Error);
@@ -43,8 +44,14 @@ export class RcpNasTransport implements NasTransport {
     }
     const request = this.request(plan.address, encodeNasForm(plan.fields), plan.session, thumbnail ? 'image/*' : 'image/*,video/*,application/octet-stream');
     request.configuration = { transfer: { autoRedirect: false, timeout: { connectMs: 10000, transferMs: 120000 } } };
-    if (fileIo.accessSync(destination)) { throw new NasFailure(NasErrorKind.Protocol, '照片临时路径已被占用。'); }
-    const output = fileIo.openSync(destination, fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE);
+    let output: fileIo.File;
+    try {
+      if (fileIo.accessSync(destination)) { throw new NasFailure(NasErrorKind.Protocol, '照片临时路径已被占用。'); }
+      output = fileIo.openSync(destination, fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE);
+    } catch (error) {
+      if (error instanceof NasFailure) { throw error; }
+      throw new NasFailure(NasErrorKind.Protocol, '无法创建照片临时文件。', (error as BusinessError).code);
+    }
     let bytes = 0;
     let prefix = new Uint8Array(0);
     let callbackFailure: NasFailure | undefined = undefined;
@@ -72,7 +79,7 @@ export class RcpNasTransport implements NasTransport {
         this.session.cancel(request);
       }
     };
-    let completed = false;
+    let failure: NasFailure | undefined = undefined;
     try {
       const reply = await this.session.fetch(request);
       if (callbackFailure !== undefined) { throw callbackFailure as Error; }
@@ -80,18 +87,33 @@ export class RcpNasTransport implements NasTransport {
       const api = plan.fields.find((field: NasFormField): boolean => field.name === 'api');
       validatePhotoMediaResponse(api === undefined ? '' : api.content, reply.statusCode,
         this.header(reply.headers, 'content-type'), this.header(reply.headers, 'content-length'), bytes, prefix,
-        new util.TextDecoder().decodeWithStream(prefix), thumbnail, expectedBytes);
-      if (fileIo.statSync(output.fd).size !== bytes) { throw new NasFailure(NasErrorKind.Protocol, '照片文件大小校验失败。'); }
-      completed = true;
-      return bytes;
+        decodeResponsePrefix(prefix), thumbnail, expectedBytes);
+      try {
+        if (fileIo.statSync(output.fd).size !== bytes) { throw new NasFailure(NasErrorKind.Protocol, '照片文件大小校验失败。'); }
+      } catch (error) {
+        if (error instanceof NasFailure) { throw error; }
+        throw new NasFailure(NasErrorKind.Protocol, '无法校验照片临时文件。', (error as BusinessError).code);
+      }
     } catch (error) {
-      if (callbackFailure !== undefined) { throw callbackFailure as Error; }
-      if (!current() || this.closed) { throw new NasFailure(NasErrorKind.Cancelled, '照片读取已取消。'); }
-      throw this.failure(error as Error);
+      if (callbackFailure !== undefined) { failure = callbackFailure; }
+      else if (!current() || this.closed) { failure = new NasFailure(NasErrorKind.Cancelled, '照片读取已取消。'); }
+      else { failure = this.failure(error as Error); }
     } finally {
-      fileIo.closeSync(output);
-      if (!completed && fileIo.accessSync(destination)) { fileIo.unlinkSync(destination); }
+      try { fileIo.closeSync(output); }
+      catch (error) {
+        const code = (error as BusinessError).code;
+        hilog.error(0x0000, 'NasPhotos', 'operation=media_close result=failed code=%{public}d', code);
+        if (failure === undefined) { failure = new NasFailure(NasErrorKind.Protocol, '照片临时文件关闭失败，无法安全使用。', code); }
+      }
+      if (failure !== undefined) {
+        try { if (fileIo.accessSync(destination)) { fileIo.unlinkSync(destination); } }
+        catch (error) {
+          hilog.error(0x0000, 'NasPhotos', 'operation=media_cleanup result=failed code=%{public}d', (error as BusinessError).code);
+        }
+      }
     }
+    if (failure !== undefined) { throw failure; }
+    return bytes;
   }
 
   close(): void {
