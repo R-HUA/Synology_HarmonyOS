@@ -1500,7 +1500,7 @@ struct Index {
           content: { title: { mainTitle: this.pageTitle() } },
           style: { scrollEffectOpts: { enableScrollEffect: false, scrollEffectType: ScrollEffectType.GRADIENT_BLUR },
             systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE },
-            originalStyle: { backgroundStyle: { blurRadius: 24 },
+            originalStyle: { backgroundStyle: { blurRadius: 12, maskExtraHeight: 16 },
               contentStyle: { titleStyle: { mainTitleColor: $r('sys.color.font_primary') } } } } })
     }.width('100%').height('100%').backgroundColor($r('app.color.workbench_background'))
       .onAreaChange((oldArea: Area, newArea: Area): void => { this.windowWidth = Number(newArea.width); })
