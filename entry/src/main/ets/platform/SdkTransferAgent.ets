@@ -63,7 +63,7 @@ export class SdkTransferAgent {
     const invoke = (action: () => void): void => {
       if (!active) { return; }
       try { action(); }
-      catch (error) { listeners.error(transferFailure(error as Error)); }
+      catch (error) { listeners.error(transferFailure(error as Error) as Error); }
     };
     const response = (value: request.agent.HttpResponse): void => invoke((): void => listeners.response(value));
     const progress = (value: request.agent.Progress): void => invoke((): void => listeners.progress(value));

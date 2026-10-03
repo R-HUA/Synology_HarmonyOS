@@ -12,6 +12,8 @@ import { ConnectionViewModel, FileTaskItem } from '../features/connection/Connec
 import { NasConnectionAddressPage } from '../features/connection/ConnectionAddressPage';
 import { NasConnectionAddress } from '../core/domain/ConnectionRoutes';
 import { NasSystemControlPage } from '../features/control/SystemControlPage';
+import { ShareLinksPage } from '../features/fileSharing/ShareLinksPage';
+import { DownloadStationPage } from '../features/downloadStation/DownloadStationPage';
 import { NasTelemetrySummary, NasTelemetryDashboard } from '../features/telemetry/TelemetryDashboard';
 import { WorkbenchBreadcrumb, PhotoTimelineRow, photoGridColumns, photoTimelineRows, photoTakenDate, photoMediaLabel, workbenchBreadcrumbs, workbenchBytes,
   workbenchCanUseDestination, workbenchBottomInset, workbenchShortcutColumns, photoAlbumColumns, photoAlbumRows, PhotoAlbumRow } from '../features/workbench/WorkbenchPresentation';
@@ -31,6 +33,10 @@ struct Index {
   @Local private telemetryOpened: boolean = false;
   @Local private addressBookOpened: boolean = false;
   @Local private systemControlOpened: boolean = false;
+  @Local private extensionsOpened: boolean = false;
+  @Local private choosingDownloadTarget: boolean = false;
+  private sharesScroller: Scroller = new Scroller();
+  private downloadsScroller: Scroller = new Scroller();
   private telemetryScroller: Scroller = new Scroller();
   private addressBookScroller: Scroller = new Scroller();
   private systemControlScroller: Scroller = new Scroller();
@@ -100,6 +106,7 @@ struct Index {
   onBackPress(): boolean {
     if (this.sheetVisible) { if (!this.formSubmitting) { this.sheetVisible = false; } return true; }
     if (this.navStack.size() > 0) { this.navStack.pop(); return true; }
+    if (this.choosingDownloadTarget) { this.choosingDownloadTarget = false; this.openNasDownloads(); return true; }
     if (this.choosingBackupTarget) { this.choosingBackupTarget = false; this.switchTab(2); return true; }
     if (this.pendingEntry !== undefined) {
       this.pendingEntry = undefined;
@@ -124,6 +131,8 @@ struct Index {
     if (!this.model.authenticated) {
       this.backup.reset();
       this.choosingBackupTarget = false;
+      this.choosingDownloadTarget = false;
+      this.extensionsOpened = false;
       this.photosInitialized = false;
       this.taskSection = 'transfers';
       this.taskFilter = 'all';
@@ -156,7 +165,7 @@ struct Index {
   }
 
   private updateTelemetryMode(): void {
-    this.model.telemetry.setMode(!this.pageActive || !this.foreground || !this.model.authenticated || this.addressBookOpened || this.systemControlOpened ? 'hidden' :
+    this.model.telemetry.setMode(!this.pageActive || !this.foreground || !this.model.authenticated || this.addressBookOpened || this.systemControlOpened || this.extensionsOpened ? 'hidden' :
       this.telemetryOpened ? 'detail' : this.activeTab === 0 ? 'home' : 'hidden');
   }
 
@@ -176,6 +185,27 @@ struct Index {
   private supportsPhotos(): boolean {
     return this.model.supports('SYNO.Foto.Browse.Item') || this.model.supports('SYNO.FotoTeam.Browse.Item') ||
       this.model.supports('SYNO.Foto.Sharing.Misc');
+  }
+
+  private openNasDownloads(): void {
+    if (this.model.extensions.downloadDestination.length === 0 && this.model.directory.length > 0) {
+      this.model.extensions.downloadDestination = this.model.directory.slice(1);
+    }
+    this.navStack.pushPathByName('nas-downloads', undefined);
+  }
+
+  private chooseDownloadDirectory(): void {
+    this.model.extensions.downloadFormRequested = true;
+    this.choosingDownloadTarget = true;
+    this.choosingBackupTarget = false;
+    this.navStack.pop();
+    this.switchTab(1);
+  }
+
+  private useDownloadDirectory(): void {
+    this.model.extensions.downloadDestination = this.model.directory.slice(1);
+    this.choosingDownloadTarget = false;
+    this.openNasDownloads();
   }
 
   private activeScrollers(): Scroller[] {
@@ -463,6 +493,12 @@ struct Index {
             this.shortcut($r('sys.symbol.arrow_up_circle'), '照片备份', (): void => { this.switchTab(2); this.selectBackup(); })
           }
           this.shortcut($r('sys.symbol.arrow_down_circle'), '传输任务', (): void => { this.switchTab(3); })
+          if (this.model.supports('SYNO.FileStation.Sharing')) {
+            this.shortcut($r('sys.symbol.doc'), '我的分享', (): void => { this.navStack.pushPathByName('share-links', undefined); })
+          }
+          if (this.model.supports('SYNO.DownloadStation.Task')) {
+            this.shortcut($r('sys.symbol.arrow_down_circle'), 'NAS 下载', (): void => { this.openNasDownloads(); })
+          }
         }.width('100%').padding(4).borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
         NasTelemetrySummary({ monitor: this.model.telemetry, onOpen: (): void => { this.navStack.pushPath({ name: 'telemetry' }); } })
         Column() {
@@ -510,6 +546,15 @@ struct Index {
   @Builder
   fileActions(entry: NasFileEntry) {
     Column() {
+      if (this.model.supports('SYNO.FileStation.Sharing')) {
+        WorkbenchActionRow({ icon: $r('sys.symbol.doc'), label: '创建分享链接', available: this.model.extensions.canWrite('fileSharing'),
+          onAction: (): void => {
+            this.sheetVisible = false;
+            this.model.extensions.shareDraftPaths = [entry.path];
+            this.model.extensions.selectedShare = undefined;
+            this.navStack.pushPathByName('share-links', undefined);
+          } })
+      }
       if (this.sheetKind === 'actions') {
         WorkbenchActionRow({ icon: $r('sys.symbol.doc'), label: '查看详情', available: !this.model.busy,
           onAction: (): void => { this.openForm('detail', entry); } })
@@ -546,6 +591,9 @@ struct Index {
   @Builder
   filePageActions() {
     Menu() {
+      if (this.model.supports('SYNO.FileStation.Sharing')) {
+        MenuItem({ content: '我的分享链接' }).onClick((): void => { this.navStack.pushPathByName('share-links', undefined); })
+      }
       MenuItem({ content: '刷新目录' }).onClick((): void => { this.model.refresh(); })
       if (this.model.directory.length > 0) {
         MenuItem({ content: '排序：' + this.sortLabel() }).onClick((): void => { this.openForm('sort'); })
@@ -604,6 +652,16 @@ struct Index {
         ListItem() {
           Column({ space: 8 }) {
             this.breadcrumbBar()
+            if (this.choosingDownloadTarget) {
+              Text('选择 NAS 下载的保存目录').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
+              Text('请打开一个共享文件夹或子目录，文件将由 NAS 下载。').fontSize(13).fontColor($r('sys.color.font_secondary'))
+              Row({ space: 8 }) {
+                Button('保存到此目录').constraintSize({ minHeight: 48 }).enabled(!this.model.busy && this.model.directory.length > 0)
+                  .onClick((): void => { this.useDownloadDirectory(); })
+                Button('取消选择').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: 48 })
+                  .onClick((): void => { this.choosingDownloadTarget = false; this.openNasDownloads(); })
+              }.width('100%')
+            }
             Row({ space: 8 }) {
               if (this.model.directory.length > 0) {
                 Button(this.sortLabel()).constraintSize({ minHeight: 48 }).buttonStyle(ButtonStyleMode.TEXTUAL)
@@ -944,7 +1002,24 @@ struct Index {
 
   @Builder
   destinationBuilder(name: string, parameter: Object) {
-    if (name === 'telemetry') {
+    if (name === 'share-links') {
+      HdsNavDestination() { ShareLinksPage({ model: this.model.extensions, scroller: this.sharesScroller }) }
+        .backgroundColor($r('app.color.workbench_background'))
+        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: '我的分享' } } })
+        .bindToScrollable([this.sharesScroller])
+        .onShown((): void => { this.extensionsOpened = true; this.updateTelemetryMode(); this.model.extensions.refreshShares(); })
+        .onHidden((): void => { this.extensionsOpened = false; this.updateTelemetryMode(); })
+    } else if (name === 'nas-downloads') {
+      HdsNavDestination() {
+        DownloadStationPage({ model: this.model.extensions, scroller: this.downloadsScroller,
+          onChooseDirectory: (): void => { this.chooseDownloadDirectory(); } })
+      }
+        .backgroundColor($r('app.color.workbench_background'))
+        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: 'NAS 下载' } } })
+        .bindToScrollable([this.downloadsScroller])
+        .onShown((): void => { this.extensionsOpened = true; this.updateTelemetryMode(); this.model.extensions.refreshDownloads(); })
+        .onHidden((): void => { this.extensionsOpened = false; this.updateTelemetryMode(); })
+    } else if (name === 'telemetry') {
       HdsNavDestination() { NasTelemetryDashboard({ monitor: this.model.telemetry, scroller: this.telemetryScroller }) }
         .backgroundColor($r('app.color.workbench_background'))
         .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: '运行状态' } } })
@@ -1097,6 +1172,9 @@ struct Index {
               onSelect: (): void => { this.taskSection = 'transfers'; } })
             WorkbenchChoice({ label: '文件整理', selected: this.taskSection === 'files',
               onSelect: (): void => { this.taskSection = 'files'; } })
+            if (this.model.supports('SYNO.DownloadStation.Task')) {
+              WorkbenchChoice({ label: 'NAS 下载', selected: false, onSelect: (): void => { this.openNasDownloads(); } })
+            }
           }.width('100%').padding({ top: 8 })
         }
         if (this.taskSection === 'files') {
@@ -1165,39 +1243,43 @@ struct Index {
         }
         Repeat<TransferQueueItem>(this.filteredTasks()).each((task: RepeatItem<TransferQueueItem>): void => {
           ListItem() {
-            Column({ space: 12 }) {
-              Row({ space: 8 }) {
-                Button() {
-                  Row({ space: 12 }) {
-                    SymbolGlyph(task.item.direction === 'upload' ? $r('sys.symbol.arrow_up_circle') : $r('sys.symbol.arrow_down_circle'))
-                      .fontSize(24).fontColor([$r('sys.color.icon_emphasize')])
-                      .width(44).height(44).borderRadius(12).backgroundColor($r('app.color.workbench_accent_surface'))
-                    Column({ space: 4 }) {
-                      Text(task.item.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
-                        .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-                      Text(task.item.stateText).fontSize(13).fontColor($r('sys.color.font_secondary'))
-                    }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-                  }.width('100%')
-                }.type(ButtonType.Normal).backgroundColor(Color.Transparent).layoutWeight(1).constraintSize({ minHeight: 48 })
-                  .onClick((): void => { this.openTask(task.item); }).accessibilityText(task.item.name + '，' + task.item.stateText + '，查看详情')
-                Button() { SymbolGlyph($r('sys.symbol.ellipsis_circle')).fontSize(22).fontColor([$r('sys.color.font_secondary')]) }
-                  .width(48).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).type(ButtonType.Circle).backgroundColor(Color.Transparent)
-                  .enabled(!this.model.queue.busy && !this.model.busy && !this.transferSubmitting)
-                  .bindMenu(this.taskMenu(task.item)).accessibilityText(task.item.name + '，更多操作')
-              }.width('100%')
-              if (task.item.state === 'running' || task.item.state === 'waiting') {
-                if (task.item.bytes > 0) {
-                  Progress({ value: this.taskProgress(task.item), total: 100, type: ProgressType.Linear }).width('100%')
-                    .accessibilityText('已传输 ' + this.taskProgress(task.item).toFixed(0) + '%')
-                }
-                Text(workbenchBytes(task.item.processed) + ' / ' + workbenchBytes(task.item.bytes))
-                  .fontSize(13).fontColor($r('sys.color.font_secondary'))
-              } else { Text(workbenchBytes(task.item.bytes)).fontSize(13).fontColor($r('sys.color.font_secondary')) }
-              if (task.item.errorText.length > 0) {
-                WorkbenchNotice({ text: task.item.errorText, warning: true })
+            Row({ space: 4 }) {
+              Button() {
+                Row({ space: 10 }) {
+                  SymbolGlyph(task.item.direction === 'upload' ? $r('sys.symbol.arrow_up_circle') : $r('sys.symbol.arrow_down_circle'))
+                    .fontSize(22).fontColor([$r('sys.color.icon_emphasize')])
+                    .width(36).height(36).borderRadius(10).backgroundColor($r('app.color.workbench_accent_surface'))
+                  Column({ space: 4 }) {
+                    Text(task.item.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
+                      .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
+                    Progress({ value: this.taskProgress(task.item), total: 100, type: ProgressType.Linear })
+                      .width('100%').height(4).visibility(task.item.bytes > 0 ? Visibility.Visible : Visibility.Hidden)
+                      .accessibilityText(task.item.bytes > 0 ? '已传输 ' + this.taskProgress(task.item).toFixed(0) + '%' : '大小未知')
+                    Row({ space: 8 }) {
+                      Text(workbenchBytes(task.item.processed) + (task.item.bytes > 0 ? ' / ' + workbenchBytes(task.item.bytes) : ' · 大小未知'))
+                        .fontSize(12).fontColor($r('sys.color.font_secondary')).layoutWeight(1).maxLines(1)
+                      Text(task.item.stateText).fontSize(12).fontColor($r('sys.color.font_secondary')).maxLines(1)
+                    }.width('100%')
+                    if (task.item.errorText.length > 0) {
+                      Text(task.item.errorText).fontSize(12).fontColor($r('app.color.workbench_warning'))
+                        .width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                    }
+                  }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+                }.width('100%')
+              }.type(ButtonType.Normal).backgroundColor(Color.Transparent).layoutWeight(1).constraintSize({ minHeight: 48 })
+                .padding(0).onClick((): void => { this.openTask(task.item); })
+                .accessibilityText(task.item.name + '，' + task.item.stateText + '，查看详情')
+              if (task.item.canCancel) {
+                Button('取消').fontSize(12).width(48).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
+                  .buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.queue.busy && !this.model.busy && !this.transferSubmitting)
+                  .onClick((): void => { this.confirmCancelTask(task.item); }).accessibilityText('取消' + task.item.name)
               }
-              this.taskPrimaryActions(task.item)
-            }.width('100%').padding(20).borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_surface'))
+              Button() { SymbolGlyph($r('sys.symbol.ellipsis_circle')).fontSize(20).fontColor([$r('sys.color.font_secondary')]) }
+                .width(48).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).type(ButtonType.Circle).backgroundColor(Color.Transparent)
+                .enabled(!this.model.queue.busy && !this.model.busy && !this.transferSubmitting)
+                .bindMenu(this.taskMenu(task.item)).accessibilityText(task.item.name + '，更多操作')
+            }.width('100%').padding({ left: 10, right: 4, top: 10, bottom: 10 })
+              .borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_surface'))
           }
         }).key((item: TransferQueueItem): string => item.id).virtualScroll()
         }

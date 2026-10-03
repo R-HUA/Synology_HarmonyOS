@@ -182,6 +182,7 @@ async function fixture(options = {}) {
     '../telemetry/TelemetryMonitor': { TelemetryMonitor: MockTelemetry },
     './ConnectionAddressBook': { ConnectionAddressBook },
     '../control/SystemControlModel': { SystemControlModel: class { deactivate() {} } },
+    '../extensions/NasExtensionsModel': { NasExtensionsModel: class { async attach() {} reset() {} } },
   });
   const model = new ConnectionViewModel();
   Object.assign(model, { context, address: oldOrigin, account: 'alice', password: 'typed-password', otp: '123456' });

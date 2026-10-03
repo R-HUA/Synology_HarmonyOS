@@ -16,6 +16,8 @@ import { decodeTransferChecksumStatus, decodeTransferChecksumTask,
   validateChecksumTaskId } from '../domain/TransferQueueState';
 import type { TransferChecksumStatus } from '../domain/TransferQueueState';
 import { DsmRpcClient } from './DsmRpcClient';
+import { decodeExtensionResponse } from '../domain/ExtensionProtocol';
+import { selectVerifiedApi } from './ApiVersionPolicy';
 import { CapabilityRegistry } from '../capabilities/CapabilityRegistry';
 import type { CapabilitySnapshot } from '../capabilities/CapabilityRegistry';
 import type { NasTransport } from './DsmRpcClient';
@@ -29,6 +31,7 @@ export const NAS_DISCOVERY_QUERY = 'SYNO.API.Auth,SYNO.FileStation.List,SYNO.Fil
   'SYNO.DSM.Info,SYNO.Core.Package,SYNO.Foto.Sharing.Misc,' +
   'SYNO.Foto.Browse.Album,SYNO.FotoTeam.Browse.Album,SYNO.Foto.Thumbnail,SYNO.FotoTeam.Thumbnail,SYNO.Foto.Download,SYNO.FotoTeam.Download,' +
   'SYNO.FileStation.CreateFolder,SYNO.FileStation.Rename,SYNO.FileStation.Delete,SYNO.FileStation.CopyMove,SYNO.FileStation.MD5,' +
+  'SYNO.FileStation.Sharing,SYNO.DownloadStation.Task,' +
   'SYNO.Core.System,SYNO.Core.System.Utilization,SYNO.Storage.CGI.Storage';
 
 export class NasConnector {
@@ -42,7 +45,9 @@ export class NasConnector {
   private featureRegistry: CapabilityRegistry = new CapabilityRegistry([
     { feature: 'fileBrowse', api: 'SYNO.FileStation.List', verifiedVersions: [2] },
     { feature: 'personalPhotos', api: 'SYNO.Foto.Browse.Item', verifiedVersions: [1] },
-    { feature: 'sharedPhotos', api: 'SYNO.FotoTeam.Browse.Item', verifiedVersions: [1] }
+    { feature: 'sharedPhotos', api: 'SYNO.FotoTeam.Browse.Item', verifiedVersions: [1] },
+    { feature: 'fileSharing', api: 'SYNO.FileStation.Sharing', verifiedVersions: [3] },
+    { feature: 'nasDownloads', api: 'SYNO.DownloadStation.Task', verifiedVersions: [1, 3] }
   ]);
   constructor(private transport: NasTransport, private sessionName: 'FileStation' | 'NasControl' = 'FileStation') {
     this.rpc = new DsmRpcClient(transport);
@@ -559,6 +564,36 @@ export class NasConnector {
       }
       throw error;
     }
+  }
+
+  async extensionRequest(feature: 'fileSharing' | 'nasDownloads', method: string, fields: NasFormField[]): Promise<Object> {
+    this.requireSession();
+    const name = feature === 'fileSharing' ? 'SYNO.FileStation.Sharing' : 'SYNO.DownloadStation.Task';
+    const methods = feature === 'fileSharing' ? ['list', 'getinfo', 'create', 'edit', 'delete'] :
+      ['list', 'getinfo', 'create', 'pause', 'resume', 'delete'];
+    if (!methods.includes(method)) { throw new NasFailure(NasErrorKind.InvalidInput, '不支持此套件操作。'); }
+    const versions = feature === 'fileSharing' || method === 'create' ? [3] : [1, 3];
+    const selected = selectVerifiedApi(this.capabilities, name, versions);
+    const ticket = this.generation;
+    const reply = await this.rpc.request(this.origin, selected.api, selected.version, method, fields, this.session);
+    this.ensureCurrent(ticket);
+    return decodeExtensionResponse(name, method, reply.status, reply.text);
+  }
+
+  supportsExtensionAction(feature: 'fileSharing' | 'nasDownloads', method: string): boolean {
+    const name = feature === 'fileSharing' ? 'SYNO.FileStation.Sharing' : 'SYNO.DownloadStation.Task';
+    try {
+      selectVerifiedApi(this.capabilities, name, feature === 'fileSharing' || method === 'create' ? [3] : [1, 3]);
+      return true;
+    } catch (error) {
+      if (error instanceof NasFailure && error.kind === NasErrorKind.Unsupported) { return false; }
+      throw error;
+    }
+  }
+
+  async readExtension<T>(feature: 'fileSharing' | 'nasDownloads', readAndValidate: () => Promise<T>): Promise<T> {
+    this.requireSession();
+    return this.featureRegistry.read(feature, readAndValidate);
   }
 
   private ensureOpen(): void {

@@ -94,6 +94,7 @@ async function fixture(options = {}) {
     '../telemetry/TelemetryMonitor': { TelemetryMonitor: class { attach() {} detach() {} } },
     './ConnectionAddressBook': { ConnectionAddressBook: class { ready = true; dispose() {} } },
     '../control/SystemControlModel': { SystemControlModel: class { deactivate() {} } },
+    '../extensions/NasExtensionsModel': { NasExtensionsModel: class { async attach() {} reset() {} } },
     '../transfers/TransferQueue': { TransferQueue: MockQueue },
     '../../core/domain/FileOperations': operations,
     '../sharing/SharedUploadInbox': { sharedUploadInbox: {} },

@@ -14,6 +14,7 @@ import { PhotoLibrary } from '../photos/PhotoLibrary';
 import { TelemetryMonitor } from '../telemetry/TelemetryMonitor';
 import { ConnectionAddressBook } from './ConnectionAddressBook';
 import { SystemControlModel } from '../control/SystemControlModel';
+import { NasExtensionsModel } from '../extensions/NasExtensionsModel';
 import type { NasConnectionAddress } from '../../core/domain/ConnectionRoutes';
 
 export { FileEditResult, FileTaskItem } from '../../core/domain/FileOperations';
@@ -48,6 +49,7 @@ export class ConnectionViewModel {
   readonly telemetry: TelemetryMonitor = new TelemetryMonitor();
   readonly addressBook: ConnectionAddressBook = new ConnectionAddressBook();
   readonly systemControl: SystemControlModel = new SystemControlModel();
+  readonly extensions: NasExtensionsModel = new NasExtensionsModel();
   @Trace deviceCheckText: string = '尚未登记设备身份';
   @Trace photosOpened: boolean = false;
   get photosErrorText(): string { return this.photoLibrary.errorText; }
@@ -508,6 +510,11 @@ export class ConnectionViewModel {
   }
 
   private async attachQueue(connector: NasConnector): Promise<void> {
+    const extensionTicket = this.generation;
+    await this.extensions.attach(connector, this.context, this.address, this.account.trim(), async (error: NasFailure): Promise<void> => {
+      if (extensionTicket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'extensions'); }
+    });
+    if (extensionTicket !== this.generation) { return; }
     const telemetryTicket = this.generation;
     this.telemetry.attach(connector, async (error: NasFailure): Promise<void> => {
       if (telemetryTicket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'telemetry'); }
@@ -708,6 +715,7 @@ export class ConnectionViewModel {
     this.total = page.total;
   }
   private clearAccount(): void {
+    this.extensions.reset();
     this.systemControl.deactivate();
     this.deviceCheckText = '尚未登记设备身份';
     this.telemetry.detach();
