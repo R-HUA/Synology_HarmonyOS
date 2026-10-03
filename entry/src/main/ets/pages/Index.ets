@@ -1492,7 +1492,7 @@ struct Index {
               blurEffectiveStartOffset: LengthMetrics.vp(0), blurEffectiveEndOffset: LengthMetrics.vp(8) },
             systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE },
             originalStyle: { contentStyle: { titleStyle: { mainTitleColor: $r('sys.color.font_primary') } } },
-            scrollEffectStyle: { backgroundStyle: { backgroundColor: $r('app.color.workbench_background') },
+            scrollEffectStyle: { backgroundStyle: { blurRadius: 24, maskExtraHeight: 32 },
               contentStyle: { titleStyle: { mainTitleColor: $r('sys.color.font_primary') } } } } })
     }.width('100%').height('100%').backgroundColor($r('app.color.workbench_background'))
       .onAreaChange((oldArea: Area, newArea: Area): void => { this.windowWidth = Number(newArea.width); })
