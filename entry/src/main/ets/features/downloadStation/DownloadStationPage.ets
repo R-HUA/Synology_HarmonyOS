@@ -2,7 +2,7 @@ import { NasExtensionsModel } from '../extensions/NasExtensionsModel';
 import { ExtensionStatusPanel } from '../extensions/ExtensionStatusPanel';
 import { DownloadTask, DownloadTaskFile } from './DownloadStationProtocol';
 import { workbenchBytes } from '../workbench/WorkbenchPresentation';
-import { WorkbenchChoice, WorkbenchInfoRow, WorkbenchNotice } from '../workbench/WorkbenchUi';
+import { WorkbenchMetrics, WorkbenchChoice, WorkbenchIconTile, WorkbenchInfoRow, WorkbenchNotice } from '../workbench/WorkbenchUi';
 
 @ComponentV2
 export struct DownloadStationPage {
@@ -82,9 +82,9 @@ export struct DownloadStationPage {
   taskRow(task: DownloadTask) {
     Row({ space: 4 }) {
       Button() {
-        Row({ space: 10 }) {
-          SymbolGlyph($r('sys.symbol.arrow_down_circle')).fontSize(22).fontColor([$r('sys.color.icon_emphasize')])
-            .width(36).height(36).borderRadius(10).backgroundColor($r('app.color.workbench_accent_surface'))
+        Row({ space: 12 }) {
+          WorkbenchIconTile({ icon: $r('sys.symbol.arrow_down_circle'), iconSize: 20, tileSize: 40, tileRadius: 12,
+            iconColor: $r('sys.color.icon_emphasize'), tileColor: $r('app.color.workbench_accent_surface') })
           Column({ space: 4 }) {
             Text(task.title).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
               .width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -116,15 +116,15 @@ export struct DownloadStationPage {
   createForm() {
     Scroll() {
       Column({ space: 12 }) {
-        Text('由当前 NAS 执行，不下载到手机。关闭手机页面不会停止 NAS 下载。')
-          .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
+        Text('由 NAS 执行，不下载到手机；关闭页面不会停止下载。')
+          .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
         TextInput({ text: this.model.downloadUri, placeholder: 'HTTP(S)、FTP 或 magnet 下载链接' }).enabled(!this.model.busy)
           .onChange((value: string): void => { this.model.downloadUri = value; })
         WorkbenchInfoRow({ label: 'NAS 目标目录', value: this.model.downloadDestination.length === 0 ? '尚未选择' : '/' + this.model.downloadDestination })
         Button('浏览并选择 NAS 目录').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: 48 }).enabled(!this.model.busy)
           .onClick((): void => { this.creating = false; this.onChooseDirectory(); })
-        Text('目标目录权限由 NAS 在提交时验证。链接和认证参数不会保存到普通任务记录。')
-          .fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
+        Text('目标目录权限由 NAS 在提交时验证；链接与认证参数不会写入普通任务记录。')
+          .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
         ExtensionStatusPanel({ model: this.model, feature: 'nasDownloads' })
         if (!this.model.canCreateDownload) {
           WorkbenchNotice({ text: '此服务器尚未发现支持链接与目标目录创建的接口版本，可继续查看和控制已有任务。', warning: true })
@@ -161,7 +161,7 @@ export struct DownloadStationPage {
     Scroll(this.scroller) {
       Column({ space: 12 }) {
         Row() {
-          Text('由 NAS 执行').fontSize(18).fontWeight(FontWeight.Bold).fontColor($r('sys.color.font_primary')).layoutWeight(1)
+          Text('由 NAS 执行').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).layoutWeight(1)
           Button('刷新').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: 48 }).enabled(!this.model.busy)
             .onClick((): void => { this.model.refreshDownloads(); })
           Button('新增').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: 48 }).enabled(!this.model.busy)
@@ -174,19 +174,19 @@ export struct DownloadStationPage {
           }, (filter: string): string => filter)
         }.width('100%')
         ExtensionStatusPanel({ model: this.model, feature: 'nasDownloads' })
-        Text('状态和速率为最近一次刷新采样。做种表示仍在上传，不等于任务已停止。')
-          .fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
+        Text('状态和速率为最近一次刷新采样；做种表示仍在上传。')
+          .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
         if (this.model.downloadsLoaded && this.model.downloadError.length === 0 && this.tasks().length === 0) {
-          Text('当前页此分类暂无下载任务。').fontSize(15).fontColor($r('sys.color.font_secondary'))
+          Text('当前页此分类暂无下载任务。').fontSize(14).fontColor($r('sys.color.font_secondary'))
         }
         Column() {
           ForEach(this.tasks(), (task: DownloadTask): void => { this.taskRow(task); Divider().color($r('app.color.workbench_divider')) },
             (task: DownloadTask): string => task.id)
-        }.width('100%').borderRadius(16).backgroundColor($r('app.color.workbench_surface'))
+        }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
         Row() {
           Button('上一页').buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy && this.model.downloadOffset > 0)
             .onClick((): void => { this.model.refreshDownloads(Math.max(0, this.model.downloadOffset - 50)); })
-          Text(this.model.downloadsLoaded ? '共 ' + this.model.downloadTotal.toString() + ' 个任务' : '尚未读取').fontSize(13).fontColor($r('sys.color.font_secondary')).layoutWeight(1).textAlign(TextAlign.Center)
+          Text(this.model.downloadsLoaded ? '共 ' + this.model.downloadTotal.toString() + ' 个任务' : '尚未读取').fontSize(12).fontColor($r('sys.color.font_secondary')).layoutWeight(1).textAlign(TextAlign.Center)
           Button('下一页').buttonStyle(ButtonStyleMode.TEXTUAL)
             .enabled(!this.model.busy && this.model.downloadOffset + this.model.downloads.length < this.model.downloadTotal)
             .onClick((): void => { this.model.refreshDownloads(this.model.downloadOffset + 50); })

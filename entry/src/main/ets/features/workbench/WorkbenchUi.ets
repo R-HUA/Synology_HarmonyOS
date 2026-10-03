@@ -1,10 +1,31 @@
 export class WorkbenchMetrics {
   static readonly pageMargin: number = 16;
-  static readonly sectionGap: number = 20;
+  static readonly sectionGap: number = 12;
   static readonly itemGap: number = 12;
-  static readonly cardRadius: number = 24;
-  static readonly innerRadius: number = 16;
+  static readonly cardRadius: number = 16;
+  static readonly innerRadius: number = 12;
   static readonly touchSize: number = 48;
+  static readonly rowMinHeight: number = 56;
+  static readonly chipHeight: number = 40;
+}
+
+/** 统一图标容器：固定尺寸 + 居中，避免图标在底板中偏移。 */
+@ComponentV2
+export struct WorkbenchIconTile {
+  @Param icon: Resource = $r('sys.symbol.folder');
+  @Param iconSize: number = 22;
+  @Param tileSize: number = 40;
+  @Param iconColor: ResourceColor = $r('sys.color.icon_emphasize');
+  @Param tileRadius: number = 12;
+  @Param tileColor: ResourceColor = $r('app.color.workbench_subtle');
+
+  build() {
+    Stack({ alignContent: Alignment.Center }) {
+      SymbolGlyph(this.icon).fontSize(this.iconSize).fontColor([this.iconColor])
+    }
+    .width(this.tileSize).height(this.tileSize)
+    .borderRadius(this.tileRadius).backgroundColor(this.tileColor)
+  }
 }
 
 @ComponentV2
@@ -13,10 +34,10 @@ export struct WorkbenchSectionTitle {
   @Param subtitle: string = '';
 
   build() {
-    Column({ space: 4 }) {
-      Text(this.title).fontSize(18).fontWeight(FontWeight.Bold).fontColor($r('sys.color.font_primary'))
+    Column({ space: 2 }) {
+      Text(this.title).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
       if (this.subtitle.length > 0) {
-        Text(this.subtitle).fontSize(13).fontColor($r('sys.color.font_secondary'))
+        Text(this.subtitle).fontSize(12).fontColor($r('sys.color.font_secondary'))
       }
     }.width('100%').alignItems(HorizontalAlign.Start)
   }
@@ -29,10 +50,10 @@ export struct WorkbenchInfoRow {
 
   build() {
     Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.SpaceBetween, alignItems: ItemAlign.Center }) {
-      Text(this.label).fontSize(14).fontColor($r('sys.color.font_secondary')).margin({ right: 16, top: 6, bottom: 6 })
+      Text(this.label).fontSize(14).fontColor($r('sys.color.font_secondary')).margin({ right: 16 })
       Text(this.value).fontSize(16).fontColor($r('sys.color.font_primary')).textAlign(TextAlign.End)
-        .constraintSize({ maxWidth: '100%' }).margin({ top: 6, bottom: 6 }).copyOption(CopyOptions.InApp)
-    }.width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize })
+        .constraintSize({ maxWidth: '100%' }).copyOption(CopyOptions.InApp)
+    }.width('100%').constraintSize({ minHeight: 44 }).padding({ top: 4, bottom: 4 })
   }
 }
 
@@ -45,7 +66,7 @@ export struct WorkbenchNotice {
     if (this.text.length > 0) {
       Text(this.text).fontSize(14)
         .fontColor(this.warning ? $r('app.color.workbench_warning') : $r('sys.color.font_secondary'))
-        .width('100%').padding(16).borderRadius(WorkbenchMetrics.innerRadius)
+        .width('100%').padding(12).borderRadius(WorkbenchMetrics.innerRadius)
         .backgroundColor(this.warning ? $r('app.color.workbench_warning_surface') : $r('app.color.workbench_subtle'))
         .accessibilityText(this.text)
     }
@@ -60,11 +81,11 @@ export struct WorkbenchChoice {
   @Event onSelect: () => void = (): void => {};
 
   build() {
-    Button(this.label).type(ButtonType.Capsule).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
+    Button(this.label).type(ButtonType.Capsule).constraintSize({ minHeight: WorkbenchMetrics.chipHeight })
       .fontSize(14).fontWeight(this.selected ? FontWeight.Medium : FontWeight.Regular)
       .fontColor(this.selected ? $r('sys.color.font_emphasize') : $r('sys.color.font_secondary'))
       .backgroundColor(this.selected ? $r('app.color.workbench_accent_surface') : $r('app.color.workbench_subtle'))
-      .padding({ left: 16, right: 16, top: 10, bottom: 10 }).margin({ right: 8, bottom: 8 }).enabled(this.available).onClick(this.onSelect)
+      .padding({ left: 14, right: 14, top: 6, bottom: 6 }).margin({ right: 8, bottom: 8 }).enabled(this.available).onClick(this.onSelect)
       .accessibilityText(this.label + (this.selected ? '，已选择' : ''))
   }
 }
@@ -81,19 +102,20 @@ export struct WorkbenchActionRow {
   build() {
     Button() {
       Row({ space: 12 }) {
-        SymbolGlyph(this.icon).fontSize(22)
-          .fontColor([this.destructive ? $r('app.color.workbench_danger') : $r('sys.color.icon_emphasize')])
-          .width(40).height(40).borderRadius(12).backgroundColor($r('app.color.workbench_subtle'))
-        Column({ space: 4 }) {
+        WorkbenchIconTile({ icon: this.icon, iconSize: 22, tileSize: 40,
+          iconColor: this.destructive ? $r('app.color.workbench_danger') : $r('sys.color.icon_emphasize'),
+          tileColor: $r('app.color.workbench_subtle') })
+        Column({ space: 2 }) {
           Text(this.label).fontSize(16)
             .fontColor(this.destructive ? $r('app.color.workbench_danger') : $r('sys.color.font_primary'))
           if (this.description.length > 0) {
-            Text(this.description).fontSize(13).fontColor($r('sys.color.font_secondary'))
+            Text(this.description).fontSize(14).fontColor($r('sys.color.font_secondary'))
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
           }
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
         SymbolGlyph($r('sys.symbol.arrow_right')).fontSize(12).fontColor([$r('sys.color.font_tertiary')])
-      }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 12 })
-    }.type(ButtonType.Normal).width('100%').constraintSize({ minHeight: 64 })
+      }.width('100%').padding({ left: 16, right: 16, top: 10, bottom: 10 })
+    }.type(ButtonType.Normal).width('100%').constraintSize({ minHeight: WorkbenchMetrics.rowMinHeight })
       .backgroundColor(Color.Transparent).enabled(this.available).onClick(this.onAction)
       .accessibilityText(this.label + (this.description.length > 0 ? '，' + this.description : ''))
   }
@@ -106,15 +128,15 @@ export struct WorkbenchMetric {
   @Param percentage: number | undefined = undefined;
 
   build() {
-    Column({ space: 10 }) {
+    Column({ space: 6 }) {
       Text(this.label).fontSize(14).fontColor($r('sys.color.font_secondary'))
-      Text(this.value).fontSize(26).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
+      Text(this.value).fontSize(24).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
       if (this.percentage !== undefined) {
-        Progress({ value: this.percentage, total: 100, type: ProgressType.Linear }).width('100%')
+        Progress({ value: this.percentage, total: 100, type: ProgressType.Linear }).width('100%').height(4)
           .color($r('sys.color.icon_emphasize')).backgroundColor($r('app.color.workbench_divider'))
           .accessibilityText(this.label + '，' + this.value)
       }
-    }.width('100%').padding(16).borderRadius(WorkbenchMetrics.innerRadius)
+    }.width('100%').padding(12).borderRadius(WorkbenchMetrics.innerRadius)
       .backgroundColor($r('app.color.workbench_subtle')).alignItems(HorizontalAlign.Start)
   }
 }

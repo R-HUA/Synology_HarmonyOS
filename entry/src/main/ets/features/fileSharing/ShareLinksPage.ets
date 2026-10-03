@@ -5,7 +5,7 @@ import { uniformTypeDescriptor } from '@kit.ArkData';
 import { NasExtensionsModel } from '../extensions/NasExtensionsModel';
 import { ExtensionStatusPanel } from '../extensions/ExtensionStatusPanel';
 import { ShareCreateResult, ShareLink, ShareLinkOptions, SharePasswordMode, validateShareUrl } from './FileSharingProtocol';
-import { WorkbenchChoice, WorkbenchInfoRow, WorkbenchNotice } from '../workbench/WorkbenchUi';
+import { WorkbenchMetrics, WorkbenchChoice, WorkbenchIconTile, WorkbenchInfoRow, WorkbenchNotice } from '../workbench/WorkbenchUi';
 
 @ComponentV2
 export struct ShareLinksPage {
@@ -81,8 +81,8 @@ export struct ShareLinksPage {
       Column({ space: 12 }) {
         Text(this.editingId.length === 0 ? this.model.shareDraftPaths.join('、') : this.model.selectedShare?.name ?? '分享链接')
           .fontSize(16).fontColor($r('sys.color.font_primary')).width('100%')
-        Text('日期按 NAS 的日期规则生效。留空表示不限制；口令不会保存到本机记录。')
-          .fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
+        Text('日期按 NAS 的日期规则生效；留空表示不限制，口令不会保存到本机记录。')
+          .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
         Flex({ wrap: FlexWrap.Wrap }) {
           ForEach(['retain', 'set', 'remove'], (mode: string): void => {
             WorkbenchChoice({ label: mode === 'retain' ? '保留现有口令' : mode === 'set' ? '设置口令' : '移除口令',
@@ -126,14 +126,14 @@ export struct ShareLinksPage {
         Button('撤销').constraintSize({ minHeight: 48 }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(this.model.canWrite('fileSharing'))
           .onClick((): void => { this.confirmRevoke(link); })
       }.width('100%')
-    }.width('100%').padding(16).borderRadius(16).backgroundColor($r('app.color.workbench_surface'))
+    }.width('100%').padding(16).borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
   }
 
   build() {
     Scroll(this.scroller) {
       Column({ space: 12 }) {
         Row() {
-          Text('File Station 分享').fontSize(18).fontWeight(FontWeight.Bold).fontColor($r('sys.color.font_primary')).layoutWeight(1)
+          Text('File Station 分享').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).layoutWeight(1)
           Button('刷新').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: 48 }).enabled(!this.model.busy)
             .onClick((): void => { this.model.refreshShares(); })
         }.width('100%')
@@ -145,31 +145,32 @@ export struct ShareLinksPage {
         }.width('100%')
         ExtensionStatusPanel({ model: this.model, feature: 'fileSharing' })
         WorkbenchNotice({ text: this.platformError, warning: true })
-        Text('撤销只使链接失效，不删除 NAS 文件。链接可能是局域网或外部地址，发送前请核对接收方可达性。')
-          .fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
+        Text('撤销只使链接失效，不删除 NAS 文件；发送前请核对接收方是否可达。')
+          .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
         if (this.model.sharesLoaded && this.model.shareError.length === 0 && this.links().length === 0) {
-          Text('当前页此分类暂无分享链接。').fontSize(15).fontColor($r('sys.color.font_secondary'))
+          Text('当前页此分类暂无分享链接。').fontSize(14).fontColor($r('sys.color.font_secondary'))
         }
         Column() {
           ForEach(this.links(), (link: ShareLink): void => {
             Row({ space: 12 }) {
-              SymbolGlyph($r('sys.symbol.doc')).fontSize(24).fontColor([$r('sys.color.icon_emphasize')]).width(36)
-              Column({ space: 4 }) {
+              WorkbenchIconTile({ icon: $r('sys.symbol.doc'), iconSize: 20, tileSize: 40, tileRadius: 12,
+                iconColor: $r('sys.color.icon_emphasize'), tileColor: $r('app.color.workbench_accent_surface') })
+              Column({ space: 2 }) {
                 Text(link.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
                   .width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
                 Text((link.hasPassword ? '口令保护 · ' : '仅链接可访问 · ') + this.stateText(link.status))
-                  .fontSize(13).fontColor($r('sys.color.font_secondary'))
+                  .fontSize(12).fontColor($r('sys.color.font_secondary'))
               }.layoutWeight(1).alignItems(HorizontalAlign.Start)
               Button('详情').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: 48 }).enabled(!this.model.busy)
                 .onClick((): void => { this.model.showShare(link.id); })
             }.width('100%').padding({ left: 12, right: 8, top: 8, bottom: 8 })
             Divider().color($r('app.color.workbench_divider'))
           }, (link: ShareLink): string => link.id)
-        }.width('100%').borderRadius(16).backgroundColor($r('app.color.workbench_surface'))
+        }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
         Row() {
           Button('上一页').buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy && this.model.shareOffset > 0)
             .onClick((): void => { this.model.refreshShares(Math.max(0, this.model.shareOffset - 50)); })
-          Text(this.model.sharesLoaded ? '共 ' + this.model.shareTotal.toString() + ' 个链接' : '尚未读取').fontSize(13).fontColor($r('sys.color.font_secondary')).layoutWeight(1).textAlign(TextAlign.Center)
+          Text(this.model.sharesLoaded ? '共 ' + this.model.shareTotal.toString() + ' 个链接' : '尚未读取').fontSize(12).fontColor($r('sys.color.font_secondary')).layoutWeight(1).textAlign(TextAlign.Center)
           Button('下一页').buttonStyle(ButtonStyleMode.TEXTUAL)
             .enabled(!this.model.busy && this.model.shareOffset + this.model.shares.length < this.model.shareTotal)
             .onClick((): void => { this.model.refreshShares(this.model.shareOffset + 50); })
@@ -183,7 +184,7 @@ export struct ShareLinksPage {
               Button('复制新链接').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: 48 })
                 .onClick((): void => { this.copy(result.url!); })
             }
-          }.width('100%').padding(12).borderRadius(16).backgroundColor($r('app.color.workbench_surface'))
+          }.width('100%').padding(12).borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
         }, (result: ShareCreateResult): string => result.path)
         if (this.model.selectedShare !== undefined) { this.detail(this.model.selectedShare) }
       }.width('100%').padding(16).alignItems(HorizontalAlign.Start)

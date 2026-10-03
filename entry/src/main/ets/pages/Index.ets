@@ -1,5 +1,5 @@
 import { common } from '@kit.AbilityKit';
-import { SymbolGlyphModifier, window } from '@kit.ArkUI';
+import { LengthMetrics, SymbolGlyphModifier, window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileUri } from '@kit.CoreFileKit';
 import { HdsNavigation, HdsNavigationTitleMode, HdsNavDestination, HdsTabs, HdsTabsController, hdsMaterial, ScrollEffectType } from '@kit.UIDesignKit';
@@ -18,7 +18,7 @@ import { NasTelemetrySummary, NasTelemetryDashboard } from '../features/telemetr
 import { WorkbenchBreadcrumb, PhotoTimelineRow, photoGridColumns, photoTimelineRows, photoTakenDate, photoMediaLabel, workbenchBreadcrumbs, workbenchBytes,
   workbenchCanUseDestination, workbenchBottomInset, workbenchShortcutColumns, photoAlbumColumns, photoAlbumRows, PhotoAlbumRow } from '../features/workbench/WorkbenchPresentation';
 
-import { WorkbenchMetrics, WorkbenchSectionTitle, WorkbenchInfoRow, WorkbenchNotice, WorkbenchChoice, WorkbenchActionRow } from '../features/workbench/WorkbenchUi';
+import { WorkbenchMetrics, WorkbenchIconTile, WorkbenchSectionTitle, WorkbenchInfoRow, WorkbenchNotice, WorkbenchChoice, WorkbenchActionRow } from '../features/workbench/WorkbenchUi';
 
 @Entry
 @ComponentV2
@@ -399,28 +399,29 @@ struct Index {
 
   @Builder
   emptyState(icon: Resource, title: string, description: string) {
-    Column({ space: 12 }) {
-      SymbolGlyph(icon).fontSize(40).fontColor([$r('sys.color.font_tertiary')])
-      Text(title).fontSize(18).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
+    Column({ space: 8 }) {
+      SymbolGlyph(icon).fontSize(32).fontColor([$r('sys.color.font_tertiary')])
+      Text(title).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
       Text(description).fontSize(14).fontColor($r('sys.color.font_secondary')).textAlign(TextAlign.Center)
-    }.width('100%').padding({ top: 40, bottom: 40, left: 24, right: 24 })
+    }.width('100%').padding({ top: 32, bottom: 32, left: 24, right: 24 })
   }
 
   @Builder
   connectionForm() {
     Scroll(this.homeScroller) {
-      Column({ space: 20 }) {
-        Column({ space: 12 }) {
-          SymbolGlyph($r('sys.symbol.externaldrive')).fontSize(36).padding(14).borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_accent_surface')).fontColor([$r('sys.color.icon_emphasize')])
+      Column({ space: 16 }) {
+        Column({ space: 8 }) {
+          WorkbenchIconTile({ icon: $r('sys.symbol.externaldrive'), iconSize: 30, tileSize: 56, tileRadius: 16,
+            iconColor: $r('sys.color.icon_emphasize'), tileColor: $r('app.color.workbench_accent_surface') })
           Text(this.model.savedSession ? '重新连接设备' : this.model.connected ? '登录你的 NAS' : '连接你的 NAS')
-            .fontSize(28).fontWeight(FontWeight.Bold).fontColor($r('sys.color.font_primary'))
+            .fontSize(24).fontWeight(FontWeight.Bold).fontColor($r('sys.color.font_primary'))
           Text(this.model.savedSession ? '已保存的账号会在连接后恢复。' : '安全访问文件、相册和传输任务。')
-            .fontSize(16).fontColor($r('sys.color.font_secondary'))
-        }.width('100%').alignItems(HorizontalAlign.Start).padding({ top: 12, bottom: 8 })
+            .fontSize(14).fontColor($r('sys.color.font_secondary'))
+        }.width('100%').alignItems(HorizontalAlign.Start).padding({ top: 8, bottom: 4 })
         Column({ space: 16 }) {
           Text('设备地址').fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
           TextInput({ text: this.model.address, placeholder: 'https://nas.example.com:5001' })
-            .constraintSize({ minHeight: 52 }).enabled(!this.model.connected && !this.model.busy && !this.model.savedSession)
+            .constraintSize({ minHeight: 48 }).enabled(!this.model.connected && !this.model.busy && !this.model.savedSession)
             .onChange((text: string): void => { this.model.address = text; }).accessibilityText('NAS HTTPS 地址')
           if (this.model.savedSession) {
             Text(this.model.account).fontSize(16).width('100%').fontColor($r('sys.color.font_primary'))
@@ -432,13 +433,13 @@ struct Index {
             Button(this.model.busy ? '正在连接…' : '连接 NAS').width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize })
               .enabled(!this.model.busy && this.model.address.trim().length > 0).onClick((): void => { this.model.connect(); })
           } else {
-            TextInput({ text: this.model.account, placeholder: 'NAS 账号' }).constraintSize({ minHeight: 52 }).enabled(!this.model.busy)
+            TextInput({ text: this.model.account, placeholder: 'NAS 账号' }).constraintSize({ minHeight: 48 }).enabled(!this.model.busy)
               .onChange((text: string): void => { this.model.account = text; }).accessibilityText('NAS 账号')
-            TextInput({ text: this.model.password, placeholder: '密码' }).constraintSize({ minHeight: 52 })
+            TextInput({ text: this.model.password, placeholder: '密码' }).constraintSize({ minHeight: 48 })
               .type(InputType.Password).enabled(!this.model.busy)
               .onChange((text: string): void => { this.model.password = text; }).accessibilityText('NAS 密码')
             if (this.model.needsOtp) {
-              TextInput({ text: this.model.otp, placeholder: '6 位动态码' }).constraintSize({ minHeight: 52 })
+              TextInput({ text: this.model.otp, placeholder: '6 位动态码' }).constraintSize({ minHeight: 48 })
                 .type(InputType.Number).maxLength(6).enabled(!this.model.busy)
                 .onChange((text: string): void => { this.model.otp = text; }).accessibilityText('双重验证动态码')
             }
@@ -448,7 +449,7 @@ struct Index {
             Button('更换设备').width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
               .onClick((): void => { this.model.disconnect(); })
           }
-        }.width('100%').padding(20).borderRadius(WorkbenchMetrics.cardRadius)
+        }.width('100%').padding(16).borderRadius(WorkbenchMetrics.cardRadius)
           .backgroundColor($r('app.color.workbench_surface')).alignItems(HorizontalAlign.Start)
         Button('连接地址').width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
           .onClick((): void => { this.openConnectionAddresses(); })
@@ -460,11 +461,12 @@ struct Index {
   @Builder
   shortcut(icon: Resource, label: string, action: () => void) {
     Button() {
-      Column({ space: 10 }) {
-        SymbolGlyph(icon).fontSize(28).fontColor([$r('sys.color.icon_emphasize')])
-          .width(48).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).borderRadius(16).backgroundColor($r('app.color.workbench_accent_surface'))
-        Text(label).fontSize(15).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).textAlign(TextAlign.Center)
-      }.width('100%').padding({ top: 16, bottom: 16, left: 8, right: 8 })
+      Column({ space: 8 }) {
+        WorkbenchIconTile({ icon: icon, iconSize: 26, tileSize: 48, tileRadius: 12,
+          iconColor: $r('sys.color.icon_emphasize'), tileColor: $r('app.color.workbench_accent_surface') })
+        Text(label).fontSize(14).fontColor($r('sys.color.font_primary')).textAlign(TextAlign.Center)
+          .width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.width('100%').padding({ top: 12, bottom: 12, left: 4, right: 4 })
     }.width(workbenchShortcutColumns(this.windowWidth) === 4 ? '25%' : '50%')
       .type(ButtonType.Normal).backgroundColor(Color.Transparent).enabled(!this.model.busy)
       .onClick(action).accessibilityText(label)
@@ -474,16 +476,16 @@ struct Index {
   homeView() {
     Scroll(this.homeScroller) {
       Column({ space: WorkbenchMetrics.sectionGap }) {
-        Row({ space: 16 }) {
-          SymbolGlyph($r('sys.symbol.externaldrive')).fontSize(32).fontColor([$r('sys.color.icon_emphasize')])
-            .width(56).height(56).borderRadius(18).backgroundColor($r('app.color.workbench_accent_surface'))
-          Column({ space: 6 }) {
-            Text(this.model.telemetry.system.data?.model ?? '我的 NAS').fontSize(22).fontWeight(FontWeight.Bold)
-              .fontColor($r('sys.color.font_primary'))
-            Text(this.model.account).fontSize(14).fontColor($r('sys.color.font_secondary'))
-            Text('已连接 · HTTPS').fontSize(13).fontColor($r('sys.color.font_emphasize'))
+        Row({ space: 12 }) {
+          WorkbenchIconTile({ icon: $r('sys.symbol.externaldrive'), iconSize: 26, tileSize: 48, tileRadius: 12,
+            iconColor: $r('sys.color.icon_emphasize'), tileColor: $r('app.color.workbench_accent_surface') })
+          Column({ space: 2 }) {
+            Text(this.model.telemetry.system.data?.model ?? '我的 NAS').fontSize(20).fontWeight(FontWeight.Medium)
+              .fontColor($r('sys.color.font_primary')).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            Text(this.model.account + ' · 已连接').fontSize(14).fontColor($r('sys.color.font_secondary'))
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
           }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-        }.width('100%').padding(20).borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
+        }.width('100%').padding(16).borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
         Flex({ wrap: FlexWrap.Wrap }) {
           this.shortcut($r('sys.symbol.folder'), '文件', (): void => { this.switchTab(1); })
           if (this.supportsPhotos()) {
@@ -608,11 +610,11 @@ struct Index {
   backupDestinationBar() {
     if (this.choosingBackupTarget && this.backup.sources.length > 0) {
       Column({ space: 12 }) {
-        Text('确认备份位置').fontSize(17).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
+        Text('确认备份位置').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
         Text(this.model.directory.length === 0 ? '请进入一个可上传的文件夹。' : '目标：' + this.model.directory)
           .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
         Text(this.backup.sources.length.toString() + ' 项照片与视频。所选内容重名时已添加序号；与 NAS 文件重名时会拒绝上传。')
-          .fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
+          .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
         if (this.backup.errorText.length > 0) {
           Text(this.backup.errorText).fontSize(14).fontColor($r('sys.color.font_primary')).width('100%')
         }
@@ -634,7 +636,7 @@ struct Index {
         Text((this.pendingOperation === 'copy' ? '复制：' : '移动：') + this.pendingEntry.name)
           .fontSize(16).fontWeight(FontWeight.Medium).width('100%').fontColor($r('sys.color.font_primary'))
         Text(this.model.directory.length === 0 ? '请选择目标文件夹。' : '目标：' + this.model.directory)
-          .fontSize(13).width('100%').fontColor($r('sys.color.font_secondary'))
+          .fontSize(12).width('100%').fontColor($r('sys.color.font_tertiary'))
         Row({ space: 12 }) {
           Button(this.pendingOperation === 'copy' ? '复制到此处' : '移动到此处').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).layoutWeight(1)
             .enabled(!this.model.busy && this.destinationAllowed()).onClick((): void => { this.applyDestination(); })
@@ -654,7 +656,7 @@ struct Index {
             this.breadcrumbBar()
             if (this.choosingDownloadTarget) {
               Text('选择 NAS 下载的保存目录').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
-              Text('请打开一个共享文件夹或子目录，文件将由 NAS 下载。').fontSize(13).fontColor($r('sys.color.font_secondary'))
+              Text('打开一个共享文件夹或子目录后确认。').fontSize(14).fontColor($r('sys.color.font_secondary'))
               Row({ space: 8 }) {
                 Button('保存到此目录').constraintSize({ minHeight: 48 }).enabled(!this.model.busy && this.model.directory.length > 0)
                   .onClick((): void => { this.useDownloadDirectory(); })
@@ -698,15 +700,16 @@ struct Index {
             Column() {
               Row({ space: 4 }) {
                 Button() {
-                  Row({ space: 14 }) {
-                    SymbolGlyph(entry.isDirectory ? $r('sys.symbol.folder') : $r('sys.symbol.doc'))
-                      .fontSize(28).fontColor([entry.isDirectory ? $r('sys.color.icon_emphasize') : $r('sys.color.font_secondary')])
-                      .width(44).height(44).borderRadius(12).backgroundColor($r('app.color.workbench_subtle'))
-                    Column({ space: 6 }) {
+                  Row({ space: 12 }) {
+                    WorkbenchIconTile({ icon: entry.isDirectory ? $r('sys.symbol.folder') : $r('sys.symbol.doc'),
+                      iconSize: 24, tileSize: 44, tileRadius: 12,
+                      iconColor: entry.isDirectory ? $r('sys.color.icon_emphasize') : $r('sys.color.font_secondary'),
+                      tileColor: $r('app.color.workbench_subtle') })
+                    Column({ space: 4 }) {
                       Text(entry.name).fontSize(16).fontWeight(FontWeight.Medium).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
                         .fontColor($r('sys.color.font_primary')).width('100%')
                       Text(entry.isDirectory ? '文件夹' : workbenchBytes(entry.bytes))
-                        .fontSize(13).fontColor($r('sys.color.font_secondary'))
+                        .fontSize(14).fontColor($r('sys.color.font_secondary'))
                     }.layoutWeight(1).alignItems(HorizontalAlign.Start)
                   }.width('100%').padding({ left: 16, top: 12, bottom: 12, right: 8 })
                 }.layoutWeight(1).type(ButtonType.Normal).backgroundColor(Color.Transparent).enabled(!this.model.busy)
@@ -719,7 +722,7 @@ struct Index {
                   .enabled(!this.model.busy).onClick((): void => { this.openForm('actions', entry); })
                   .accessibilityText(entry.name + '，更多操作').margin({ right: 8 })
               }.width('100%')
-              Divider().color($r('app.color.workbench_divider')).margin({ left: 74, right: 16 })
+              Divider().color($r('app.color.workbench_divider')).margin({ left: 72, right: 16 })
             }.width('100%').backgroundColor($r('app.color.workbench_surface'))
           }
         }, (entry: NasFileEntry): string => this.model.address + ':' + this.model.account + ':' + entry.path)
@@ -727,7 +730,7 @@ struct Index {
           Row({ space: 8 }) {
             Button('上一页').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
               .enabled(!this.model.busy && this.model.pageOffset > 0).onClick((): void => { this.model.previousPage(); })
-            Text(this.fileCountText()).fontSize(13).fontColor($r('sys.color.font_secondary'))
+            Text(this.fileCountText()).fontSize(12).fontColor($r('sys.color.font_secondary'))
               .layoutWeight(1).textAlign(TextAlign.Center)
             Button('下一页').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
               .enabled(!this.model.busy && this.model.pageOffset + this.model.entries.length < this.model.total)
@@ -745,7 +748,7 @@ struct Index {
       if (this.backup.sources.length === 0) {
         Column() {
           WorkbenchActionRow({ icon: $r('sys.symbol.arrow_up_circle'), label: '备份照片与视频',
-            description: this.backup.selecting ? '正在选择…' : '选择本机内容，确认位置后上传',
+            description: this.backup.selecting ? '正在选择…' : '选择内容，确认位置后上传',
             available: !this.backup.selecting && !this.backup.submitting && !this.model.busy,
             onAction: (): void => { this.selectBackup(); } })
           WorkbenchNotice({ text: this.backup.errorText, warning: true })
@@ -754,19 +757,20 @@ struct Index {
       } else {
       Column({ space: 12 }) {
         Row({ space: 12 }) {
-          SymbolGlyph($r('sys.symbol.arrow_up_circle')).fontSize(28).fontColor([$r('sys.color.icon_emphasize')])
-          Column({ space: 4 }) {
-            Text('备份照片与视频').fontSize(17).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
-            Text(this.backup.sources.length === 0 ? '选择要备份的内容，由你确认上传位置' :
+          WorkbenchIconTile({ icon: $r('sys.symbol.arrow_up_circle'), iconSize: 22, tileSize: 40, tileRadius: 12,
+            iconColor: $r('sys.color.icon_emphasize'), tileColor: $r('app.color.workbench_subtle') })
+          Column({ space: 2 }) {
+            Text('备份照片与视频').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
+            Text(this.backup.sources.length === 0 ? '选择内容，确认位置后上传' :
               '已选择 ' + this.backup.sources.length.toString() + ' 项，等待确认')
-              .fontSize(13).fontColor($r('sys.color.font_secondary'))
+              .fontSize(14).fontColor($r('sys.color.font_secondary'))
           }.layoutWeight(1).alignItems(HorizontalAlign.Start)
         }.width('100%')
         if (this.backup.errorText.length > 0) {
           Text(this.backup.errorText).fontSize(14).fontColor($r('sys.color.font_primary')).width('100%')
         }
         if (this.backup.status.length > 0) {
-          Text(this.backup.status).fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
+          Text(this.backup.status).fontSize(12).fontColor($r('sys.color.font_secondary')).width('100%')
         }
         Flex({ wrap: FlexWrap.Wrap }) {
           Button(this.backup.selecting ? '正在选择…' : this.backup.sources.length > 0 ? '继续选择' : '选择照片与视频')
@@ -784,7 +788,7 @@ struct Index {
         }.width('100%')
         if (this.backup.sources.length > 0) {
           Text(this.backup.sources.map((item: TransferUploadSource): string => item.name).join('、'))
-            .fontSize(13).maxLines(3).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('sys.color.font_secondary')).width('100%')
+            .fontSize(12).maxLines(3).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('sys.color.font_secondary')).width('100%')
           Button('查看所选内容').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
             .onClick((): void => { this.openForm('backup'); })
         }
@@ -823,14 +827,14 @@ struct Index {
   @Builder
   albumCard(album: NasPhotoAlbum) {
     Button() {
-      Column({ space: 10 }) {
+      Column({ space: 8 }) {
         Stack() {
-          SymbolGlyph($r('sys.symbol.picture')).fontSize(40).fontColor([$r('sys.color.icon_emphasize')])
+          SymbolGlyph($r('sys.symbol.picture')).fontSize(32).fontColor([$r('sys.color.icon_emphasize')])
         }.width('100%').aspectRatio(1).borderRadius(WorkbenchMetrics.innerRadius)
           .backgroundColor($r('app.color.workbench_accent_surface'))
         Text(album.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
           .width('100%').maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(album.itemCount.toString() + ' 项').fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
+        Text(album.itemCount.toString() + ' 项').fontSize(12).fontColor($r('sys.color.font_secondary')).width('100%')
       }.width('100%').alignItems(HorizontalAlign.Start)
     }.layoutWeight(1).type(ButtonType.Normal).backgroundColor(Color.Transparent)
       .enabled(!this.model.photoLibrary.busy)
@@ -853,7 +857,7 @@ struct Index {
               Row({ space: 8 }) {
                 Button('返回相册').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.photoLibrary.busy)
                   .onClick((): void => { this.model.photoLibrary.backToLibrary(); })
-                Text(this.model.photoLibrary.selectedAlbum.name).fontSize(20).fontWeight(FontWeight.Bold)
+                Text(this.model.photoLibrary.selectedAlbum.name).fontSize(18).fontWeight(FontWeight.Medium)
                   .fontColor($r('sys.color.font_primary')).layoutWeight(1)
               }.width('100%')
             } else if (this.model.photoLibrary.space !== PhotosSpace.WithMe) {
@@ -869,14 +873,14 @@ struct Index {
               }.width('100%')
             } else {
               Row({ space: 8 }) {
-                Text('与你共享的相册').fontSize(18).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).layoutWeight(1)
+                Text('与你共享的相册').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).layoutWeight(1)
                 Button('刷新').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.photoLibrary.busy)
                   .onClick((): void => { this.model.photoLibrary.refresh(); })
               }.width('100%')
             }
             this.backupCard()
             if (this.model.photoLibrary.thumbnailErrorText.length > 0) {
-              Text(this.model.photoLibrary.thumbnailErrorText).fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
+              Text(this.model.photoLibrary.thumbnailErrorText).fontSize(12).fontColor($r('sys.color.font_secondary')).width('100%')
             }
             if (this.model.photoLibrary.errorText.length > 0) {
               Text(this.model.photoLibrary.errorText).fontSize(14).fontColor($r('sys.color.font_primary')).width('100%').padding(16)
@@ -913,7 +917,7 @@ struct Index {
           ListItem() {
             Column({ space: 12 }) {
               if (row.item.title.length > 0) {
-                Text(row.item.title).fontSize(20).fontWeight(FontWeight.Bold).fontColor($r('sys.color.font_primary')).width('100%').padding({ top: 12 })
+                Text(row.item.title).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_secondary')).width('100%').padding({ top: 8 })
               }
               Row({ space: 6 }) {
                 ForEach(row.item.items, (item: NasPhotoItem): void => { this.photoCard(item) },
@@ -933,8 +937,6 @@ struct Index {
                 Button(this.model.photoLibrary.busy ? '正在加载…' : '加载更多').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).width('100%')
                   .buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.photoLibrary.busy)
                   .onClick((): void => { this.model.photoLibrary.loadMore(); })
-              } else if (this.model.photoLibrary.items.length > 0 || this.model.photoLibrary.albums.length > 0) {
-                Text('已显示全部可见项目').fontSize(13).fontColor($r('sys.color.font_secondary')).padding(16)
               }
             }.width('100%').padding({ top: 8, bottom: 8 })
           }
@@ -947,7 +949,7 @@ struct Index {
   @Builder
   photoDetailView() {
     Scroll(this.detailScroller) {
-      Column({ space: 20 }) {
+      Column({ space: 16 }) {
         if (this.model.photoLibrary.detail !== undefined) {
           Stack() {
             SymbolGlyph($r('sys.symbol.picture')).fontSize(48).fontColor([$r('sys.color.font_tertiary')])
@@ -962,17 +964,17 @@ struct Index {
             if (this.model.photoLibrary.loadingMedia) { LoadingProgress().width(40).height(40) }
           }.width('100%').height(Math.max(220, Math.min(480, this.contentWidth))).borderRadius(WorkbenchMetrics.innerRadius).clip(true)
             .backgroundColor($r('app.color.workbench_subtle'))
-          Column({ space: 10 }) {
-            Text(this.model.photoLibrary.detail.filename).fontSize(22).fontWeight(FontWeight.Bold).fontColor($r('sys.color.font_primary')).width('100%')
-            Text(photoTakenDate(this.model.photoLibrary.detail)).fontSize(15).fontColor($r('sys.color.font_secondary')).width('100%')
+          Column({ space: 6 }) {
+            Text(this.model.photoLibrary.detail.filename).fontSize(20).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
+            Text(photoTakenDate(this.model.photoLibrary.detail)).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
             Text(photoMediaLabel(this.model.photoLibrary.detail) + ' · ' + workbenchBytes(this.model.photoLibrary.detail.bytes))
-              .fontSize(15).fontColor($r('sys.color.font_secondary')).width('100%')
+              .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
             if (this.model.photoLibrary.detail.width !== undefined && this.model.photoLibrary.detail.height !== undefined) {
               Text(this.model.photoLibrary.detail.width.toString() + ' × ' + this.model.photoLibrary.detail.height.toString())
-                .fontSize(15).fontColor($r('sys.color.font_secondary')).width('100%')
+                .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
             }
             if (this.model.photoLibrary.detail.mediaType === 'live') {
-              Text('当前展示静态预览。动态照片的组合播放暂不可用。').fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
+              Text('动态照片仅显示静态预览。').fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
             }
           }.width('100%').alignItems(HorizontalAlign.Start)
           if (this.mediaDecodeFailed) {
@@ -992,8 +994,8 @@ struct Index {
             Button('另存原文件').width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.photoLibrary.loadingMedia)
               .onClick((): void => { this.model.photoLibrary.exportOriginal(); })
           }
-          Text('原文件在此页面读取，离开页面会结束读取。较大文件请使用文件页的持久下载任务。')
-            .fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
+          Text('原文件在本页读取，离开即结束。')
+            .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
         }
       }.width('100%').constraintSize({ maxWidth: 840 }).padding({ left: 16, right: 16, top: 16, bottom: 32 })
         .alignItems(HorizontalAlign.Start)
@@ -1181,7 +1183,7 @@ struct Index {
         ListItem() {
           Column({ space: 8 }) {
             Row({ space: 12 }) {
-              Text('文件整理').fontSize(20).fontWeight(FontWeight.Bold).fontColor($r('sys.color.font_primary')).layoutWeight(1)
+              Text('文件整理').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).layoutWeight(1)
               if (!this.model.fileTasksReady) {
                 Button('重新加载').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
                   .onClick((): void => { this.model.reloadFileTasks(); })
@@ -1196,9 +1198,9 @@ struct Index {
         }
         Repeat<FileTaskItem>(this.model.fileTasks).each((task: RepeatItem<FileTaskItem>): void => {
           ListItem() {
-            Column({ space: 8 }) {
-              Text(task.item.label).fontSize(17).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
-              Text(this.fileTaskStateText(task.item)).fontSize(15).fontColor($r('sys.color.font_primary')).width('100%')
+            Column({ space: 6 }) {
+              Text(task.item.label).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
+              Text(this.fileTaskStateText(task.item)).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
               if (task.item.errorText.length > 0) {
                 WorkbenchNotice({ text: task.item.errorText, warning: true })
               }
@@ -1206,14 +1208,14 @@ struct Index {
                 Button('查询结果').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
                   .onClick((): void => { this.model.checkFileTask(task.item.id); })
               }
-            }.width('100%').padding(20).borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_surface'))
+            }.width('100%').padding(16).borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_surface'))
           }
         }).key((item: FileTaskItem): string => item.id).virtualScroll()
         } else {
         ListItem() {
           Column({ space: 8 }) {
             Row({ space: 12 }) {
-              Text('传输队列').fontSize(20).fontWeight(FontWeight.Bold).fontColor($r('sys.color.font_primary')).layoutWeight(1)
+              Text('传输队列').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).layoutWeight(1)
               Button(this.model.queue.ready ? '刷新状态' : '重新加载').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
                 .enabled(!this.model.queue.busy && !this.model.busy && !this.transferSubmitting)
                 .onClick((): void => { this.runTransfer(async (): Promise<void> => { await this.model.queue.reconcile(); }); })
@@ -1222,8 +1224,6 @@ struct Index {
                 .enabled(!this.model.queue.busy && !this.model.busy && !this.transferSubmitting)
                 .bindMenu(this.taskPageMenu()).accessibilityText('任务，更多操作')
             }.width('100%')
-            Text('上传到 NAS · 下载到此设备').fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
-            Text('通过非计费网络传输。').fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
             Flex({ wrap: FlexWrap.Wrap }) {
               ForEach(['all', 'active', 'finished'], (filter: string): void => {
                 WorkbenchChoice({ label: filter === 'all' ? '全部' : filter === 'active' ? '待处理' : '已结束',
@@ -1245,10 +1245,10 @@ struct Index {
           ListItem() {
             Row({ space: 4 }) {
               Button() {
-                Row({ space: 10 }) {
-                  SymbolGlyph(task.item.direction === 'upload' ? $r('sys.symbol.arrow_up_circle') : $r('sys.symbol.arrow_down_circle'))
-                    .fontSize(22).fontColor([$r('sys.color.icon_emphasize')])
-                    .width(36).height(36).borderRadius(10).backgroundColor($r('app.color.workbench_accent_surface'))
+                Row({ space: 12 }) {
+                  WorkbenchIconTile({ icon: task.item.direction === 'upload' ? $r('sys.symbol.arrow_up_circle') : $r('sys.symbol.arrow_down_circle'),
+                    iconSize: 20, tileSize: 40, tileRadius: 12,
+                    iconColor: $r('sys.color.icon_emphasize'), tileColor: $r('app.color.workbench_accent_surface') })
                   Column({ space: 4 }) {
                     Text(task.item.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
                       .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
@@ -1393,7 +1393,7 @@ struct Index {
   @Builder
   fileSheet() {
     Scroll() {
-      Column({ space: 20 }) {
+      Column({ space: 16 }) {
         if (this.sheetKind === 'device') {
           this.deviceSheet()
         } else if (this.sheetKind === 'task') {
@@ -1417,9 +1417,9 @@ struct Index {
           WorkbenchInfoRow({ label: this.sheetKind === 'create' ? '位置' : '原名称',
             value: this.sheetKind === 'create' ? this.model.directory : (this.selectedEntry?.name ?? '') })
           TextInput({ text: this.formName, placeholder: this.sheetKind === 'create' ? '文件夹名称' : '新名称' })
-            .constraintSize({ minHeight: 52 }).enabled(!this.formSubmitting && !this.model.busy)
+            .constraintSize({ minHeight: 48 }).enabled(!this.formSubmitting && !this.model.busy)
             .onChange((text: string): void => { this.formName = text; }).accessibilityText('名称')
-          Text('名称不能包含斜杠、冒号或控制字符。').fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
+          Text('名称不能包含斜杠、冒号或控制字符。').fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
           Button(this.formSubmitting ? '正在保存…' : '保存').width('100%').constraintSize({ minHeight: 48 })
             .enabled(this.validName() && !this.formSubmitting && !this.model.busy).onClick((): void => { this.submitName(); })
         } else if (this.sheetKind === 'backup') {
@@ -1431,11 +1431,11 @@ struct Index {
             }.width('100%')
           }, (backupSource: TransferUploadSource): string => backupSource.uri)
         } else if (this.selectedEntry !== undefined) {
-          Row({ space: 16 }) {
-            SymbolGlyph(this.selectedEntry.isDirectory ? $r('sys.symbol.folder') : $r('sys.symbol.doc'))
-              .fontSize(32).fontColor([$r('sys.color.icon_emphasize')])
-              .width(48).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).borderRadius(16).backgroundColor($r('app.color.workbench_accent_surface'))
-            Text(this.selectedEntry.name).fontSize(20).fontWeight(FontWeight.Medium)
+          Row({ space: 12 }) {
+            WorkbenchIconTile({ icon: this.selectedEntry.isDirectory ? $r('sys.symbol.folder') : $r('sys.symbol.doc'),
+              iconSize: 26, tileSize: 48, tileRadius: 12,
+              iconColor: $r('sys.color.icon_emphasize'), tileColor: $r('app.color.workbench_accent_surface') })
+            Text(this.selectedEntry.name).fontSize(18).fontWeight(FontWeight.Medium)
               .fontColor($r('sys.color.font_primary')).layoutWeight(1)
           }.width('100%')
           if (this.sheetKind === 'actions') {
@@ -1450,7 +1450,7 @@ struct Index {
             }.width('100%').padding(16).borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_subtle'))
             this.fileActions(this.selectedEntry)
             if (!this.selectedEntry.isDirectory && this.model.supports('SYNO.FileStation.Download')) {
-              Text('下载完成后，可在任务页另存到系统文件。').fontSize(13).fontColor($r('sys.color.font_secondary'))
+              Text('下载完成后，可在任务页另存到系统文件。').fontSize(12).fontColor($r('sys.color.font_tertiary'))
             }
           }
         }
@@ -1487,10 +1487,13 @@ struct Index {
       }.width('100%').height('100%').backgroundColor($r('app.color.workbench_background')).mode(NavigationMode.Stack).hideBackButton(true)
         .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.BOTTOM])
         .navDestination(this.destinationBuilder).bindToScrollable(this.activeScrollers())
-        .titleMode(HdsNavigationTitleMode.MINI).titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: this.pageTitle() } },
-          style: { scrollEffectOpts: { scrollEffectType: ScrollEffectType.GRADIENT_BLUR },
+        .titleMode(HdsNavigationTitleMode.FREE).titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: this.pageTitle() } },
+          style: { scrollEffectOpts: { enableScrollEffect: true, scrollEffectType: ScrollEffectType.GRADIENT_BLUR,
+              blurEffectiveStartOffset: LengthMetrics.vp(0), blurEffectiveEndOffset: LengthMetrics.vp(8) },
+            systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE },
             originalStyle: { contentStyle: { titleStyle: { mainTitleColor: $r('sys.color.font_primary') } } },
-            scrollEffectStyle: { contentStyle: { titleStyle: { mainTitleColor: $r('sys.color.font_primary') } } } } })
+            scrollEffectStyle: { backgroundStyle: { backgroundColor: $r('app.color.workbench_background') },
+              contentStyle: { titleStyle: { mainTitleColor: $r('sys.color.font_primary') } } } } })
     }.width('100%').height('100%').backgroundColor($r('app.color.workbench_background'))
       .onAreaChange((oldArea: Area, newArea: Area): void => { this.windowWidth = Number(newArea.width); })
       .bindSheet($$this.sheetVisible, this.fileSheet(), {

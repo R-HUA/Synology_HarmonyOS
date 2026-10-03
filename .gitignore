@@ -4,6 +4,7 @@
 /.idea
 **/build
 /.hvigor
+/.workbuddy/
 .cxx
 /.clangd
 /.clang-format

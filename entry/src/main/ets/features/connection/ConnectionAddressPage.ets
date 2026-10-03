@@ -2,7 +2,7 @@ import { ConnectionViewModel } from './ConnectionViewModel';
 import { NasConnectionAddress, NasConnectionRouteKind } from '../../core/domain/ConnectionRoutes';
 import { telemetryTimestamp } from '../../core/domain/TelemetryProtocol';
 
-import { WorkbenchMetrics, WorkbenchSectionTitle, WorkbenchInfoRow, WorkbenchNotice } from '../workbench/WorkbenchUi';
+import { WorkbenchMetrics, WorkbenchIconTile, WorkbenchSectionTitle, WorkbenchInfoRow, WorkbenchNotice } from '../workbench/WorkbenchUi';
 
 @ComponentV2
 export struct NasConnectionAddressPage {
@@ -40,11 +40,11 @@ export struct NasConnectionAddressPage {
       WorkbenchSectionTitle({ title: this.model.authenticated ? '当前连接' : '登录与地址切换' })
       if (this.model.authenticated) {
         WorkbenchInfoRow({ label: '地址', value: this.model.address })
-        Text(this.model.deviceCheckText).fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
+        Text(this.model.deviceCheckText).fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
       }
       Text('选择可信 HTTPS 地址。切换地址需要重新登录，当前账号的任务与照片记录保留在原连接下。')
-        .fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
-    }.width('100%').padding(20).borderRadius(WorkbenchMetrics.cardRadius).alignItems(HorizontalAlign.Start)
+        .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
+    }.width('100%').padding(16).borderRadius(WorkbenchMetrics.cardRadius).alignItems(HorizontalAlign.Start)
       .backgroundColor($r('app.color.workbench_surface'))
   }
 
@@ -52,26 +52,26 @@ export struct NasConnectionAddressPage {
   addressForm() {
     Column({ space: 12 }) {
       Row({ space: 12 }) {
-        Text('保存连接地址').fontSize(18).fontWeight(FontWeight.Bold).fontColor($r('sys.color.font_primary')).layoutWeight(1)
+        Text('保存连接地址').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).layoutWeight(1)
         Button('收起').constraintSize({ minHeight: 48 }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.disabled())
           .onClick((): void => { this.formVisible = false; })
       }.width('100%')
       TextInput({ text: this.model.addressBook.draftName, placeholder: '名称，例如家中 NAS' }).maxLength(40)
-        .constraintSize({ minHeight: 52 }).enabled(!this.disabled())
+        .constraintSize({ minHeight: 48 }).enabled(!this.disabled())
         .onChange((text: string): void => { this.model.addressBook.draftName = text; }).accessibilityText('连接地址名称')
       TextInput({ text: this.model.addressBook.draftOrigin, placeholder: 'https://nas.example.com:5001' }).maxLength(512)
-        .constraintSize({ minHeight: 52 }).enabled(!this.disabled())
+        .constraintSize({ minHeight: 48 }).enabled(!this.disabled())
         .onChange((text: string): void => { this.model.addressBook.setDraftOrigin(text); }).accessibilityText('连接 HTTPS 地址')
       Row({ space: 12 }) {
-        Text('地址类型').fontSize(15).fontColor($r('sys.color.font_secondary')).layoutWeight(1)
+        Text('地址类型').fontSize(14).fontColor($r('sys.color.font_secondary')).layoutWeight(1)
         Select([{ value: '局域网' }, { value: '远程访问' }, { value: '专网' }])
           .selected(this.kindIndex()).value(this.kindLabel(this.model.addressBook.draftKind)).enabled(!this.disabled())
           .onSelect((index: number, text: string): void => {
             this.model.addressBook.draftKind = index === 0 ? 'lan' : index === 1 ? 'remote' : 'private';
           })
       }.width('100%')
-      Text('类型仅作标记，不会自动连接 Wi-Fi、VPN 或发现服务器。证书错误不能通过关闭验证绕过。')
-        .fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
+      Text('类型仅作标记，不会自动连接 Wi-Fi、VPN 或发现服务器；证书错误不能关闭验证绕过。')
+        .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
       Row({ space: 12 }) {
         Button('测试连接').layoutWeight(1).constraintSize({ minHeight: 48 }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.disabled())
           .onClick((): void => { this.model.addressBook.probe(); })
@@ -88,10 +88,10 @@ export struct NasConnectionAddressPage {
         Button('保存当前连接并登记设备').width('100%').constraintSize({ minHeight: 48 })
           .buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.disabled() && this.model.addressBook.ready)
           .onClick((): void => { this.model.saveCurrentAddress(); })
-        Text('此操作保存当前已登录的地址，使用上方名称与类型；标识不可读取时仅保存地址，不冒称身份已核验。')
-          .fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
+        Text('使用上方名称与类型保存当前地址；标识不可读取时仅保存地址。')
+          .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
       }
-    }.width('100%').padding(20).borderRadius(WorkbenchMetrics.cardRadius).alignItems(HorizontalAlign.Start)
+    }.width('100%').padding(16).borderRadius(WorkbenchMetrics.cardRadius).alignItems(HorizontalAlign.Start)
       .backgroundColor($r('app.color.workbench_surface'))
   }
 
@@ -113,14 +113,14 @@ export struct NasConnectionAddressPage {
 
   @Builder
   savedAddress(address: NasConnectionAddress) {
-    Column({ space: 12 }) {
+    Column({ space: 8 }) {
       Row({ space: 12 }) {
-        SymbolGlyph($r('sys.symbol.externaldrive')).fontSize(24).fontColor([$r('sys.color.icon_emphasize')])
-          .width(44).height(44).borderRadius(12).backgroundColor($r('app.color.workbench_accent_surface'))
-        Column({ space: 4 }) {
-          Text(address.name).fontSize(17).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
+        WorkbenchIconTile({ icon: $r('sys.symbol.externaldrive'), iconSize: 24, tileSize: 44, tileRadius: 12,
+          iconColor: $r('sys.color.icon_emphasize'), tileColor: $r('app.color.workbench_accent_surface') })
+        Column({ space: 2 }) {
+          Text(address.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
           Text(this.kindLabel(address.kind) + (this.model.authenticated && this.model.address === address.origin ? ' · 当前连接' : ''))
-            .fontSize(13).fontColor($r('sys.color.font_secondary'))
+            .fontSize(12).fontColor($r('sys.color.font_secondary'))
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
         Button() { SymbolGlyph($r('sys.symbol.ellipsis_circle')).fontSize(22).fontColor([$r('sys.color.font_secondary')]) }
           .width(48).height(48).type(ButtonType.Circle).backgroundColor(Color.Transparent)
@@ -129,9 +129,9 @@ export struct NasConnectionAddressPage {
       Text(address.origin).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%').copyOption(CopyOptions.InApp)
       if (address.device !== undefined) {
         Text(address.device.model + ' · ' + address.device.account + ' · 登录时重新核验')
-          .fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
+          .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
       } else {
-        Text('尚未登记设备身份').fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
+        Text('尚未登记设备身份').fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
       }
       if (this.model.addressBook.probeResult?.origin === address.origin) {
         WorkbenchNotice({ text: this.model.addressBook.probeResult?.message ?? '',
@@ -148,42 +148,42 @@ export struct NasConnectionAddressPage {
 
   build() {
     Scroll(this.scroller) {
-      Column({ space: 20 }) {
+      Column({ space: 12 }) {
         this.currentConnection()
         if (this.model.errorText.length > 0) {
           WorkbenchNotice({ text: this.model.errorText, warning: true })
         }
         if (!this.model.addressBook.ready) {
           Text(this.model.addressBook.errorText.length > 0 ? this.model.addressBook.errorText : '连接地址配置尚未读取成功。')
-            .fontSize(15).fontColor($r('sys.color.font_primary')).width('100%')
+            .fontSize(14).fontColor($r('sys.color.font_primary')).width('100%')
           Button('重新读取配置').constraintSize({ minHeight: 48 }).enabled(!this.disabled())
             .onClick((): void => { this.model.reloadAddressBook(); })
         }
         if (this.formVisible) { this.addressForm() }
         if (this.model.addressBook.probeResult !== undefined) {
           Text(this.model.addressBook.probeResult.origin).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
-          Text(this.model.addressBook.probeResult.message).fontSize(15).fontColor($r('sys.color.font_primary')).width('100%')
-          Text('测试时间 ' + telemetryTimestamp(this.model.addressBook.probeResult.observedAt)).fontSize(13)
-            .fontColor($r('sys.color.font_secondary')).width('100%')
+          Text(this.model.addressBook.probeResult.message).fontSize(14).fontColor($r('sys.color.font_primary')).width('100%')
+          Text('测试时间 ' + telemetryTimestamp(this.model.addressBook.probeResult.observedAt)).fontSize(12)
+            .fontColor($r('sys.color.font_tertiary')).width('100%')
         }
         if (this.model.addressBook.errorText.length > 0 && this.model.addressBook.ready) {
           WorkbenchNotice({ text: this.model.addressBook.errorText, warning: true })
         }
         if (this.model.addressBook.notice.length > 0) {
-          Text(this.model.addressBook.notice).fontSize(15).fontColor($r('sys.color.font_secondary')).width('100%')
+          Text(this.model.addressBook.notice).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
         }
         Row({ space: 12 }) {
-          Text('已保存地址').fontSize(18).fontWeight(FontWeight.Bold).fontColor($r('sys.color.font_primary')).layoutWeight(1)
+          Text('已保存地址').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).layoutWeight(1)
           Button('添加地址').constraintSize({ minHeight: 48 }).buttonStyle(ButtonStyleMode.TEXTUAL)
             .enabled(!this.disabled()).onClick((): void => { this.openAddressForm(); })
         }.width('100%')
         if (this.model.addressBook.ready && this.model.addressBook.addresses.length === 0) {
-          Text('尚未保存连接地址。').fontSize(15).fontColor($r('sys.color.font_secondary')).width('100%')
+          Text('尚未保存连接地址。').fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
         }
         ForEach(this.model.addressBook.addresses, (address: NasConnectionAddress): void => {
           this.savedAddress(address)
         }, (address: NasConnectionAddress): string => address.origin)
-      }.width('100%').constraintSize({ maxWidth: 840 }).padding({ left: 16, right: 16, top: 16, bottom: 32 })
+      }.width('100%').constraintSize({ maxWidth: 840 }).padding({ left: 16, right: 16, top: 12, bottom: 32 })
         .alignItems(HorizontalAlign.Start)
     }.width('100%').height('100%').scrollBar(BarState.Auto).backgroundColor($r('app.color.workbench_background'))
   }
