@@ -1,6 +1,6 @@
 import { TelemetryMonitor, NasTelemetryStatus } from './TelemetryMonitor';
 import { NasTelemetryNetwork, NasTelemetryVolume, telemetryBytes, telemetryPercent,
-  telemetryTimestamp, telemetryVolumeLabel, telemetryVolumesSorted } from '../../core/domain/TelemetryProtocol';
+  telemetryVolumeLabel, telemetryVolumesSorted } from '../../core/domain/TelemetryProtocol';
 
 import { WorkbenchMetrics, WorkbenchSectionTitle, WorkbenchInfoRow, WorkbenchMetric } from '../workbench/WorkbenchUi';
 
@@ -41,25 +41,16 @@ struct TelemetrySmallTile {
   }
 }
 
-/** 各监控分区的采样说明。同样必须是 @Param 子组件，采样时间要随轮询刷新。 */
+/** 仅在分区数据不可用或读取失败时显示原因。 */
 @ComponentV2
 struct TelemetrySectionNotice {
   @Param status: NasTelemetryStatus = 'idle';
   @Param notice: string = '';
-  @Param observedAt: number = 0;
-  @Param source: string = '';
 
   build() {
-    Column({ space: 4 }) {
-      if (this.status !== 'ready') {
-        Text(this.notice).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
-      }
-      if (this.observedAt > 0) {
-        Text('上次采样 ' + telemetryTimestamp(this.observedAt) + (this.status === 'stale' ? ' · 已过期' : ''))
-          .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
-      }
-      Text(this.source).fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
-    }.width('100%').alignItems(HorizontalAlign.Start)
+    if (this.status !== 'ready') {
+      Text(this.notice).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
+    }
   }
 }
 
@@ -166,14 +157,10 @@ export struct NasTelemetryStorageCard {
 export struct NasTelemetryDashboard {
   @Param monitor: TelemetryMonitor = new TelemetryMonitor();
   @Param scroller: Scroller = new Scroller();
-  /** 内容区延伸到标题栏之下，首项要让出状态栏 + 标题栏。 */
   @Param topInset: number = 0;
+  @Local private viewportTop: number = 0;
   /** 底部系统安全区高度（导航条）。列表末项必须让开它，否则会被屏幕圆角裁切。 */
   @Param bottomInset: number = 0;
-
-  private metricBytes(bytes: number | undefined): string {
-    return bytes === undefined ? '未提供' : telemetryBytes(bytes);
-  }
 
   private metricPercent(percentage: number | undefined): string {
     return percentage === undefined ? '未提供' : telemetryPercent(percentage);
@@ -207,26 +194,26 @@ export struct NasTelemetryDashboard {
 
   @Builder
   systemCard() {
-    Column({ space: 12 }) {
+    Column({ space: 6 }) {
       WorkbenchSectionTitle({ title: '总览' })
       if (this.monitor.system.data !== undefined) {
-        WorkbenchInfoRow({ label: '设备型号',
+        WorkbenchInfoRow({ label: '设备型号', minHeight: 32,
           value: this.monitor.system.data?.model === undefined ? '未提供' : this.monitor.system.data.model })
-        WorkbenchInfoRow({ label: 'DSM 版本',
+        WorkbenchInfoRow({ label: 'DSM 版本', minHeight: 32,
           value: this.monitor.system.data?.dsmVersion === undefined ? '未提供' : this.monitor.system.data.dsmVersion })
         if (this.monitor.system.data?.temperatureC !== undefined) {
-          WorkbenchInfoRow({ label: '系统温度', value: this.monitor.system.data.temperatureC.toString() + ' °C' })
+          WorkbenchInfoRow({ label: '系统温度', minHeight: 32,
+            value: this.monitor.system.data.temperatureC.toString() + ' °C' })
         }
       }
-      TelemetrySectionNotice({ status: this.monitor.system.status, notice: this.monitor.system.notice,
-        observedAt: this.monitor.system.observedAt, source: 'DSM 系统信息' })
-    }.width('100%').padding(16).borderRadius(WorkbenchMetrics.cardRadius).alignItems(HorizontalAlign.Start)
+      TelemetrySectionNotice({ status: this.monitor.system.status, notice: this.monitor.system.notice })
+    }.width('100%').padding(12).borderRadius(WorkbenchMetrics.cardRadius).alignItems(HorizontalAlign.Start)
       .backgroundColor($r('app.color.workbench_surface'))
   }
 
   @Builder
   utilizationCard() {
-    Column({ space: 12 }) {
+    Column({ space: 8 }) {
       WorkbenchSectionTitle({ title: 'CPU 与内存' })
       if (this.monitor.utilization.data !== undefined) {
         Row({ space: 12 }) {
@@ -235,65 +222,67 @@ export struct NasTelemetryDashboard {
           WorkbenchMetric({ label: '内存', value: this.metricPercent(this.monitor.utilization.data?.memoryUsagePercent),
             percentage: this.monitor.utilization.data?.memoryUsagePercent }).layoutWeight(1)
         }.width('100%').alignItems(VerticalAlign.Top)
-        WorkbenchInfoRow({ label: '物理内存已用 / 总量',
-          value: this.metricBytes(this.monitor.utilization.data?.memoryUsedBytes) + ' / ' +
-            this.metricBytes(this.monitor.utilization.data?.memoryTotalBytes) })
-        Text('含缓存，与 DSM 百分比口径不同。')
-          .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
       }
-      TelemetrySectionNotice({ status: this.monitor.utilization.status, notice: this.monitor.utilization.notice,
-        observedAt: this.monitor.utilization.observedAt, source: 'DSM 利用率' })
-    }.width('100%').padding(16).borderRadius(WorkbenchMetrics.cardRadius).alignItems(HorizontalAlign.Start)
+      TelemetrySectionNotice({ status: this.monitor.utilization.status, notice: this.monitor.utilization.notice })
+    }.width('100%').padding(12).borderRadius(WorkbenchMetrics.cardRadius).alignItems(HorizontalAlign.Start)
       .backgroundColor($r('app.color.workbench_surface'))
   }
 
   @Builder
   networkCard() {
-    Column({ space: 12 }) {
+    Column({ space: 6 }) {
       WorkbenchSectionTitle({ title: '网络' })
       if (this.networks().length === 0 && this.monitor.utilization.data !== undefined) {
         Text('NAS 未提供网络速率').fontSize(14).fontColor($r('sys.color.font_secondary'))
       }
       ForEach(this.networks(), (network: NasTelemetryNetwork): void => {
-        Column({ space: 8 }) {
-          Text(network.id === 'total' ? '全部网络接口' : '网络接口 ' + network.id).fontSize(16)
-            .fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
-          WorkbenchInfoRow({ label: '↓ NAS 接收', value: telemetryBytes(network.receiveBytesPerSecond) + '/s' })
-          WorkbenchInfoRow({ label: '↑ NAS 发送', value: telemetryBytes(network.sendBytesPerSecond) + '/s' })
-          Divider().color($r('app.color.workbench_divider'))
+        Column({ space: 4 }) {
+          if (network.id !== 'total') {
+            Text('网络接口 ' + network.id).fontSize(14)
+              .fontColor($r('sys.color.font_secondary')).width('100%')
+          }
+          WorkbenchInfoRow({ label: '接收', minHeight: 32, value: telemetryBytes(network.receiveBytesPerSecond) + '/s' })
+          WorkbenchInfoRow({ label: '发送', minHeight: 32, value: telemetryBytes(network.sendBytesPerSecond) + '/s' })
         }.width('100%').alignItems(HorizontalAlign.Start)
       }, (network: NasTelemetryNetwork): string => network.id)
-      TelemetrySectionNotice({ status: this.monitor.utilization.status, notice: this.monitor.utilization.notice,
-        observedAt: this.monitor.utilization.observedAt, source: 'DSM 网络速率' })
-    }.width('100%').padding(16).borderRadius(WorkbenchMetrics.cardRadius).alignItems(HorizontalAlign.Start)
+      TelemetrySectionNotice({ status: this.monitor.utilization.status, notice: this.monitor.utilization.notice })
+    }.width('100%').padding(12).borderRadius(WorkbenchMetrics.cardRadius).alignItems(HorizontalAlign.Start)
       .backgroundColor($r('app.color.workbench_surface'))
   }
 
   @Builder
   diskCard() {
-    Column({ space: 12 }) {
+    Column({ space: 6 }) {
       WorkbenchSectionTitle({ title: '硬盘' })
       if (this.monitor.utilization.data !== undefined) {
-        WorkbenchInfoRow({ label: '读取', value: this.metricRate(this.monitor.utilization.data?.diskReadBytesPerSecond) })
-        WorkbenchInfoRow({ label: '写入', value: this.metricRate(this.monitor.utilization.data?.diskWriteBytesPerSecond) })
+        WorkbenchInfoRow({ label: '读取', minHeight: 32, value: this.metricRate(this.monitor.utilization.data?.diskReadBytesPerSecond) })
+        WorkbenchInfoRow({ label: '写入', minHeight: 32, value: this.metricRate(this.monitor.utilization.data?.diskWriteBytesPerSecond) })
       }
-      TelemetrySectionNotice({ status: this.monitor.utilization.status, notice: this.monitor.utilization.notice,
-        observedAt: this.monitor.utilization.observedAt, source: 'DSM 磁盘速率' })
-    }.width('100%').padding(16).borderRadius(WorkbenchMetrics.cardRadius).alignItems(HorizontalAlign.Start)
+      TelemetrySectionNotice({ status: this.monitor.utilization.status, notice: this.monitor.utilization.notice })
+    }.width('100%').padding(12).borderRadius(WorkbenchMetrics.cardRadius).alignItems(HorizontalAlign.Start)
       .backgroundColor($r('app.color.workbench_surface'))
   }
 
   @Builder
   storageCard() {
     Column({ space: 12 }) {
-      WorkbenchSectionTitle({ title: '存储空间' })
+      WorkbenchSectionTitle({ title: '存储空间' }).margin({ bottom: 4 })
       ForEach(this.volumes(), (volume: NasTelemetryVolume): void => {
         Column({ space: 8 }) {
-          Text(telemetryVolumeLabel(volume.id)).fontSize(16).fontWeight(FontWeight.Medium)
-            .fontColor($r('sys.color.font_primary')).width('100%')
-          Text(this.volumeState(volume.status)).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
-          WorkbenchInfoRow({ label: '已用 / 总量',
-            value: telemetryBytes(volume.usedBytes) + ' / ' + telemetryBytes(volume.totalBytes) })
+          Row({ space: 8 }) {
+            Text(telemetryVolumeLabel(volume.id)).fontSize(14).fontWeight(FontWeight.Medium)
+              .fontColor($r('sys.color.font_primary')).flexShrink(0)
+            Text(this.volumeState(volume.status)).fontSize(12).fontColor($r('sys.color.font_secondary'))
+              .flexShrink(1)
+          }.width('100%').alignItems(VerticalAlign.Center)
+          Row({ space: 8 }) {
+            Text(telemetryBytes(volume.usedBytes) + ' / ' + telemetryBytes(volume.totalBytes))
+              .fontSize(12).fontColor($r('sys.color.font_secondary')).layoutWeight(1)
+            if (volume.totalBytes > 0) {
+              Text(telemetryPercent(volume.usedBytes / volume.totalBytes * 100))
+                .fontSize(12).fontColor($r('sys.color.font_tertiary')).flexShrink(0)
+            }
+          }.width('100%').alignItems(VerticalAlign.Center)
           if (volume.totalBytes > 0) {
             Progress({ value: volume.usedBytes / volume.totalBytes * 100, total: 100, type: ProgressType.Linear })
               .width('100%').height(4)
@@ -302,34 +291,30 @@ export struct NasTelemetryDashboard {
           }
         }.width('100%').alignItems(HorizontalAlign.Start)
       }, (volume: NasTelemetryVolume): string => volume.id)
-      TelemetrySectionNotice({ status: this.monitor.storage.status, notice: this.monitor.storage.notice,
-        observedAt: this.monitor.storage.observedAt, source: 'DSM 存储信息' })
-    }.width('100%').padding(16).borderRadius(WorkbenchMetrics.cardRadius).alignItems(HorizontalAlign.Start)
+      TelemetrySectionNotice({ status: this.monitor.storage.status, notice: this.monitor.storage.notice })
+    }.width('100%').padding(12).borderRadius(WorkbenchMetrics.cardRadius).alignItems(HorizontalAlign.Start)
       .backgroundColor($r('app.color.workbench_surface'))
   }
 
   build() {
     Scroll(this.scroller) {
-      Column({ space: 12 }) {
-        Row({ space: 12 }) {
-          Text(this.monitor.busy ? '正在读取 NAS 状态' : '只读监控').fontSize(14)
-            .fontColor($r('sys.color.font_secondary')).layoutWeight(1)
-          Button('刷新').constraintSize({ minHeight: 40 }).buttonStyle(ButtonStyleMode.TEXTUAL).fontSize(14)
-            .enabled(!this.monitor.busy).onClick((): void => { this.monitor.refresh(true); })
-        }.width('100%')
+      Column({ space: 8 }) {
         this.systemCard()
         this.utilizationCard()
         this.networkCard()
         this.diskCard()
         this.storageCard()
-        Text('运行指标约 5 秒更新；未提供的数据不以 0 代替。')
-          .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
       }.width('100%').constraintSize({ maxWidth: 840 })
         // 滚动区本身已延伸到屏幕下沿（见下方 ignoreLayoutSafeArea），末行仍需按底部安全区让位，
         // 否则会贴到屏幕圆角弧线上被裁切；+16 与项目「无悬浮页签页面」的底部让位口径一致。
-        .padding({ left: 16, right: 16, top: this.topInset + 12, bottom: this.bottomInset + 16 })
+        // 只补视口尚未让出的标题区域，避免父容器已避让的部分被重复计算。
+        .padding({ left: 16, right: 16, top: Math.max(0, this.topInset - this.viewportTop) + 8,
+          bottom: this.bottomInset + 16 })
         .alignItems(HorizontalAlign.Start)
     }.width('100%').height('100%').scrollBar(BarState.Auto)
+      .onAreaChange((_oldArea: Area, newArea: Area): void => {
+        this.viewportTop = Number(newArea.globalPosition.y);
+      })
       // 滚动区默认被底部系统安全区（导航条）抬高，底边会留一条内容到不了的灰带；
       // 详情页要沉浸到屏幕下沿，这里显式让滚动区延伸到非安全区域。
       .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.BOTTOM])

@@ -1201,8 +1201,7 @@ struct Index {
           topInset: this.contentTopInset(), bottomInset: this.navigationInset })
       }
         .backgroundColor($r('app.color.workbench_background'))
-        // 与首页同一套标题栏配方：关掉组件级安全区，内容才能铺到标题栏下并被材质折射；
-        // 顶部让位由 topInset 在内容侧补齐。
+        // 内容需滚入标题栏下方，供沉浸材质取样；首项让位由详情页按实际视口位置计算。
         .titleBar({ enableComponentSafeArea: false, content: { title: { mainTitle: '资源监控' } },
           style: { scrollEffectOpts: { enableScrollEffect: false, scrollEffectType: ScrollEffectType.GRADIENT_BLUR },
             systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE,

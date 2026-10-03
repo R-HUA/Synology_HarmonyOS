@@ -57,6 +57,7 @@ export struct WorkbenchSectionTitle {
 export struct WorkbenchInfoRow {
   @Param label: string = '';
   @Param value: string = '';
+  @Param minHeight: number = WorkbenchMetrics.infoRowHeight;
   /** 取值默认可长按复制；放进「整卡可点」的卡片时要关掉，否则这份文本会吞掉点击、卡片点不开。 */
   @Param copyable: boolean = true;
 
@@ -68,7 +69,7 @@ export struct WorkbenchInfoRow {
         .margin({ right: 16 }).flexShrink(0)
       Text(this.value).fontSize(16).fontColor($r('sys.color.font_primary')).textAlign(TextAlign.End)
         .layoutWeight(1).copyOption(this.copyable ? CopyOptions.InApp : CopyOptions.None)
-    }.width('100%').constraintSize({ minHeight: WorkbenchMetrics.infoRowHeight })
+    }.width('100%').constraintSize({ minHeight: this.minHeight })
       .alignItems(VerticalAlign.Center)
   }
 }
