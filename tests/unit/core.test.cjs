@@ -119,11 +119,18 @@ test('environment requests preserve exact package identity and full DSM patch ve
   await assert.rejects(connector.environment(), isKind(K.Protocol));
 });
 
-test('HTTPS origin rejects credential, downgrade, path and URL escape inputs', () => {
+test('origin normalization keeps the declared scheme and rejects credentials, paths and URL escapes', () => {
   assert.equal(protocol.normalizeNasOrigin(' HTTPS://nas.test ' .toLowerCase()), 'https://nas.test');
   assert.equal(protocol.normalizeNasOrigin('https://NAS.test:443/'), 'https://nas.test');
   assert.equal(protocol.normalizeNasOrigin('https://[2001:db8::1]:5001'), 'https://[2001:db8::1]:5001');
-  for (const input of ['http://nas.test', 'https://u:p@nas.test', 'https://nas.test/path',
+  assert.equal(protocol.normalizeNasOrigin('http://nas.test'), 'http://nas.test');
+  assert.equal(protocol.normalizeNasOrigin('http://NAS.test:80'), 'http://nas.test');
+  assert.equal(protocol.normalizeNasOrigin('http://nas.test:5000'), 'http://nas.test:5000');
+  assert.equal(protocol.nasOriginScheme('http://nas.test:8080'), 'http');
+  assert.equal(protocol.nasOriginScheme('https://nas.test'), 'https');
+  assert.equal(protocol.nasOriginHost('https://nas.test:5001'), 'nas.test:5001');
+  assert.equal(protocol.nasOriginHost('http://nas.test'), 'nas.test');
+  for (const input of ['nas.test', 'ftp://nas.test', 'https://u:p@nas.test', 'https://nas.test/path',
     'https://nas.test?next=evil', 'https://nas.test#x', 'https://nas.test:0', 'https://nas.test:65536',
     'https://nas.test\\@evil.test', 'https://.nas.test', 'https://nas..test']) {
     assert.throws(() => protocol.normalizeNasOrigin(input), isKind(K.InvalidInput));

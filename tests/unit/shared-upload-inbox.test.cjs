@@ -9,7 +9,7 @@ const ts = require(path.join(sdkRoot, 'openharmony/ets/build-tools/ets-loader/no
 
 function load(relative, mocks) {
   const source = fs.readFileSync(path.join(__dirname, '../../entry/src/main/ets', relative), 'utf8')
-    .replace(/^@ObservedV2\s*$/gm, '').replace(/@Trace\s+/g, '');
+    .replace(/^@ObservedV2\s*$/gm, '').replace(/@Trace\s+/g, '').replace(/@Computed\s+/g, '');
   const output = ts.transpileModule(source, {
     compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS }, reportDiagnostics: true,
   });

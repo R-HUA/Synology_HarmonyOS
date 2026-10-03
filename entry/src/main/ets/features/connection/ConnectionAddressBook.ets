@@ -1,5 +1,5 @@
 import { common } from '@kit.AbilityKit';
-import { NasErrorKind, NasFailure, normalizeNasOrigin } from '../../core/domain/DsmProtocol';
+import { nasOriginScheme, NasErrorKind, NasFailure, normalizeNasOrigin } from '../../core/domain/DsmProtocol';
 import { NasConnectionAddress, NasConnectionDeviceBinding, NasConnectionRouteKind,
   validateConnectionAddress, decodeNasDeviceIdentity } from '../../core/domain/ConnectionRoutes';
 import { NasConnector } from '../../core/network/NasConnector';
@@ -24,6 +24,7 @@ export class ConnectionAddressBook {
   @Trace draftOrigin: string = '';
   @Trace draftName: string = '';
   @Trace draftKind: NasConnectionRouteKind = 'lan';
+  @Trace draftInsecureTls: boolean = false;
   @Trace probeResult: NasAddressProbeResult | undefined = undefined;
   private store: NasAddressBookStore = new NasAddressBookStore();
   private generation: number = 0;
@@ -49,6 +50,7 @@ export class ConnectionAddressBook {
     } finally { if (ticket === this.generation) { this.busy = false; } }
   }
 
+  /** 逐字输入用；不动证书开关，避免输入法回调把用户刚打开的选择清掉。 */
   setDraftOrigin(origin: string): void {
     this.cancelProbe();
     this.draftOrigin = origin;
@@ -56,27 +58,38 @@ export class ConnectionAddressBook {
     this.notice = '';
   }
 
-  edit(address: NasConnectionAddress): void {
-    if (this.busy) { return; }
-    this.setDraftOrigin(address.origin);
-    this.draftName = address.name;
-    this.draftKind = address.kind;
+  /** 打开表单时重置整份草稿，包含证书校验策略。 */
+  beginDraft(origin: string, name: string, kind: NasConnectionRouteKind, insecureTls: boolean): void {
+    this.cancelProbe();
+    this.draftOrigin = origin;
+    this.draftName = name;
+    this.draftKind = kind;
+    this.draftInsecureTls = insecureTls;
+    this.probeResult = undefined;
+    this.notice = '';
   }
 
-  async probe(origin: string = this.draftOrigin): Promise<void> {
+  edit(address: NasConnectionAddress): void {
+    if (this.busy) { return; }
+    this.beginDraft(address.origin, address.name, address.kind, address.insecureTls === true);
+  }
+
+  async probe(origin: string = this.draftOrigin, insecureTls: boolean = this.draftInsecureTls): Promise<void> {
     if (this.busy || this.probing) { return; }
     const ticket = ++this.probeGeneration;
     this.probing = true;
     this.probeResult = undefined;
-    const connector = new NasConnector(new RcpNasTransport());
+    const connector = new NasConnector(new RcpNasTransport(insecureTls));
     this.probeConnector = connector;
     let normalized = origin;
     try {
       normalized = normalizeNasOrigin(origin);
       await connector.discover(normalized);
       if (ticket !== this.probeGeneration) { return; }
+      const skipped = insecureTls && nasOriginScheme(normalized) === 'https';
       this.probeResult = { origin: normalized, passed: true, observedAt: Date.now(),
-        message: 'HTTPS 与基础接口可用；未发送登录凭据，也未核验设备身份。' };
+        message: (nasOriginScheme(normalized) === 'https' ? 'HTTPS' : 'HTTP') +
+          ' 与基础接口可用；未发送登录凭据，也未核验设备身份。' + (skipped ? '本次已跳过证书校验。' : '') };
     } catch (error) {
       if (ticket === this.probeGeneration) {
         const failure = error instanceof NasFailure ? error : undefined;
@@ -98,10 +111,10 @@ export class ConnectionAddressBook {
   }
 
   async saveDraft(): Promise<boolean> {
-    return this.saveAddress(this.draftOrigin, this.draftName, this.draftKind);
+    return this.saveAddress(this.draftOrigin, this.draftName, this.draftKind, this.draftInsecureTls);
   }
 
-  async saveCurrent(connector: NasConnector, origin: string, account: string): Promise<boolean> {
+  async saveCurrent(connector: NasConnector, origin: string, account: string, insecureTls: boolean): Promise<boolean> {
     if (!this.ready || this.busy || this.probing) { return false; }
     const ticket = this.generation;
     this.busy = true;
@@ -110,7 +123,8 @@ export class ConnectionAddressBook {
     try {
       const normalized = normalizeNasOrigin(origin);
       const existing = this.addresses.find((address: NasConnectionAddress): boolean => address.origin === normalized);
-      validateConnectionAddress({ origin: normalized, name: this.draftName, kind: this.draftKind, device: existing?.device });
+      validateConnectionAddress({ origin: normalized, name: this.draftName, kind: this.draftKind,
+        insecureTls: insecureTls, device: existing?.device });
       let device = existing?.device;
       let verified = false;
       try {
@@ -126,7 +140,8 @@ export class ConnectionAddressBook {
         if (!(error instanceof NasFailure) || ![NasErrorKind.Permission, NasErrorKind.Unsupported].includes(error.kind)) { throw error as Error; }
       }
       if (ticket !== this.generation) { return false; }
-      const address: NasConnectionAddress = { origin: normalized, name: this.draftName, kind: this.draftKind, device: device };
+      const address: NasConnectionAddress = { origin: normalized, name: this.draftName, kind: this.draftKind,
+        insecureTls: insecureTls, device: device };
       const saved = await this.commit(address, ticket);
       if (saved) {
         this.notice = verified ? '地址与当前账号的设备身份已登记，后续登录会重新核验。' :
@@ -163,7 +178,7 @@ export class ConnectionAddressBook {
     return device.model;
   }
 
-  private async saveAddress(origin: string, name: string, kind: NasConnectionRouteKind): Promise<boolean> {
+  private async saveAddress(origin: string, name: string, kind: NasConnectionRouteKind, insecureTls: boolean): Promise<boolean> {
     if (!this.ready || this.busy || this.probing) { return false; }
     const ticket = this.generation;
     this.busy = true;
@@ -172,8 +187,13 @@ export class ConnectionAddressBook {
     try {
       const normalized = normalizeNasOrigin(origin);
       const previous = this.addresses.find((address: NasConnectionAddress): boolean => address.origin === normalized);
-      const saved = await this.commit({ origin: normalized, name: name, kind: kind, device: previous?.device }, ticket);
-      if (saved) { this.notice = '连接地址已保存；不会自动切换地址或复制登录信息。'; }
+      const saved = await this.commit({ origin: normalized, name: name, kind: kind, insecureTls: insecureTls,
+        device: previous?.device }, ticket);
+      if (saved) {
+        this.notice = insecureTls && nasOriginScheme(normalized) === 'https' ?
+          '连接地址已保存，并允许跳过证书校验；登录时不会自动切换地址或复制登录信息。' :
+          '连接地址已保存；不会自动切换地址或复制登录信息。';
+      }
       return saved;
     } catch (error) {
       if (ticket === this.generation) { this.errorText = this.failureText(error as Error, '保存连接地址失败，请重试。'); }

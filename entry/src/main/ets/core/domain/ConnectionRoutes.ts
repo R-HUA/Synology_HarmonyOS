@@ -1,4 +1,4 @@
-import { nasRecord, NasErrorKind, NasFailure, normalizeNasOrigin } from './DsmProtocol';
+import { nasRecord, nasOriginScheme, NasErrorKind, NasFailure, normalizeNasOrigin } from './DsmProtocol';
 
 export type NasConnectionRouteKind = 'lan' | 'remote' | 'private';
 
@@ -8,6 +8,8 @@ export interface NasConnectionAddress {
   origin: string;
   name: string;
   kind: NasConnectionRouteKind;
+  /** 仅 https 地址有效：用户显式选择跳过服务器证书校验。 */
+  insecureTls?: boolean;
   device?: NasConnectionDeviceBinding;
 }
 
@@ -55,21 +57,32 @@ function validateDeviceBinding(input: Object): NasConnectionDeviceBinding {
   };
 }
 
+function addressInsecureTls(input: Object | undefined, origin: string): boolean {
+  if (input === undefined) { return false; }
+  if (typeof input !== 'boolean') {
+    throw new NasFailure(NasErrorKind.InvalidInput, '忽略 SSL 验证标记必须是布尔值。');
+  }
+  // 明文 http 没有证书可校验；保留该标记会造成误导，直接归零。
+  return input === true && nasOriginScheme(origin) === 'https';
+}
+
 export function validateConnectionAddress(input: Object): NasConnectionAddress {
   const row = addressRecord(input);
-  validateFields(row, ['origin', 'name', 'kind', 'device']);
+  validateFields(row, ['origin', 'name', 'kind', 'insecureTls', 'device']);
   if (typeof row['origin'] !== 'string') {
-    throw new NasFailure(NasErrorKind.InvalidInput, '请输入 HTTPS 连接地址。');
+    throw new NasFailure(NasErrorKind.InvalidInput, '请输入连接地址。');
   }
   const kind = row['kind'];
   if (kind !== 'lan' && kind !== 'remote' && kind !== 'private') {
     throw new NasFailure(NasErrorKind.InvalidInput, '请选择局域网、远程或私有网络连接类型。');
   }
+  const origin = normalizeNasOrigin(row['origin'] as string);
   const address: NasConnectionAddress = {
-    origin: normalizeNasOrigin(row['origin'] as string),
+    origin: origin,
     name: addressText(row['name'], '连接名称', 40, true),
     kind: kind as NasConnectionRouteKind
   };
+  if (addressInsecureTls(row['insecureTls'], origin)) { address.insecureTls = true; }
   if (row['device'] !== undefined) { address.device = validateDeviceBinding(row['device']); }
   return address;
 }

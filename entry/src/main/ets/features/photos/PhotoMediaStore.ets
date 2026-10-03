@@ -37,22 +37,26 @@ export class PhotoMediaStore {
   private access: NasPhotoMediaAccess | undefined = undefined;
   private originalFile: string = '';
   private originalBytes: number = 0;
+  /** 与当前连接一致的证书校验策略；跳过校验时缩略图与原图仍可读取。 */
+  private insecureTls: boolean = false;
   cleanupErrorText: string = '';
   private cleanupPaths: string[] = [];
   private changed: () => void = (): void => {};
 
-  attach(context: common.UIAbilityContext | undefined, connector: NasConnector, changed: () => void, access?: NasPhotoMediaAccess): void {
+  attach(context: common.UIAbilityContext | undefined, connector: NasConnector, changed: () => void,
+    insecureTls: boolean = false, access?: NasPhotoMediaAccess): void {
     this.reset();
     this.connector = connector;
     this.context = context;
     this.changed = changed;
+    this.insecureTls = insecureTls;
     this.access = access === undefined ? undefined : { albumId: access.albumId, scope: access.scope, passphrase: access.passphrase };
   }
 
   setAccess(access?: NasPhotoMediaAccess): void {
     const connector = this.connector;
     if (connector === undefined) { return; }
-    this.attach(this.context, connector, this.changed, access);
+    this.attach(this.context, connector, this.changed, this.insecureTls, access);
   }
 
   pinPreview(item: NasPhotoItem, size: 'm' | 'xl' = 'm'): string {
@@ -79,6 +83,7 @@ export class PhotoMediaStore {
     this.context = undefined;
     this.connector = undefined;
     this.access = undefined;
+    this.insecureTls = false;
     const leftovers = this.cleanupPaths.slice();
     this.cleanupPaths = [];
     this.cleanupErrorText = '';
@@ -142,7 +147,7 @@ export class PhotoMediaStore {
     if (item.space === PhotosSpace.WithMe && (access === undefined || access.scope !== this.access?.scope)) { throw this.cancelled(); }
     const plan = connector.photoOriginalPlan(item, access);
     const destination = this.privatePath();
-    const transport = new RcpNasTransport();
+    const transport = new RcpNasTransport(this.insecureTls);
     this.originalTransport = transport;
     const ticket = this.generation;
     const originalTicket = this.originalGeneration;
@@ -207,7 +212,7 @@ export class PhotoMediaStore {
     const connector = this.requireConnector();
     const plan = connector.photoThumbnailPlan(task.item, task.size, task.access);
     const destination = this.privatePath();
-    if (this.transport === undefined) { this.transport = new RcpNasTransport(); }
+    if (this.transport === undefined) { this.transport = new RcpNasTransport(this.insecureTls); }
     try {
       const bytes = await this.transport.downloadMedia(plan, destination, true, undefined,
         (): boolean => task.ticket === this.generation);

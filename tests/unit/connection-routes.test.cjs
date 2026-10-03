@@ -30,8 +30,10 @@ test('route validation trims names and accounts, returns new whitelist-only meta
   assert.deepEqual(routes.validateConnectionAddress({ ...address, device: undefined }), address);
 });
 
-test('HTTP downgrade, credentials, paths, queries and invalid origin types are rejected rather than repaired', () => {
-  for (const origin of ['http://nas.example.test:5000', 'nas.example.test', 'https://alice:secret@nas.example.test',
+test('credentials, paths, queries, missing schemes and invalid origin types are rejected rather than repaired', () => {
+  assert.equal(routes.validateConnectionAddress({ ...address, origin: 'http://nas.example.test:5000' }).origin,
+    'http://nas.example.test:5000');
+  for (const origin of ['nas.example.test', 'https://alice:secret@nas.example.test',
     'https://nas.example.test/webman', 'https://nas.example.test?sid=secret', 'https://nas.example.test#secret',
     'https://nas.example.test:0', 'https://nas.example.test:65536', 42, null, undefined]) {
     assert.throws(() => routes.validateConnectionAddress({ ...address, origin }), isKind(kinds.InvalidInput));

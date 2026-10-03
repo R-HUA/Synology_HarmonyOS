@@ -26,9 +26,7 @@ export struct NasConnectionAddressPage {
   private openAddressForm(address?: NasConnectionAddress): void {
     if (address !== undefined) { this.model.addressBook.edit(address); }
     else {
-      this.model.addressBook.setDraftOrigin(this.model.address);
-      this.model.addressBook.draftName = '';
-      this.model.addressBook.draftKind = 'lan';
+      this.model.addressBook.beginDraft(this.model.address, '', 'lan', false);
     }
     this.formVisible = true;
     this.scroller.scrollTo({ xOffset: 0, yOffset: 0 });
@@ -42,7 +40,7 @@ export struct NasConnectionAddressPage {
         WorkbenchInfoRow({ label: '地址', value: this.model.address })
         Text(this.model.deviceCheckText).fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
       }
-      Text('选择可信 HTTPS 地址。切换地址需要重新登录，当前账号的任务与照片记录保留在原连接下。')
+      Text('地址可写成 http:// 或 https://。切换地址需要重新登录，当前账号的任务与照片记录保留在原连接下。')
         .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
     }.width('100%').padding(16).borderRadius(WorkbenchMetrics.cardRadius).alignItems(HorizontalAlign.Start)
       .backgroundColor($r('app.color.workbench_surface'))
@@ -61,7 +59,7 @@ export struct NasConnectionAddressPage {
         .onChange((text: string): void => { this.model.addressBook.draftName = text; }).accessibilityText('连接地址名称')
       TextInput({ text: this.model.addressBook.draftOrigin, placeholder: 'https://nas.example.com:5001' }).maxLength(512)
         .constraintSize({ minHeight: 48 }).enabled(!this.disabled())
-        .onChange((text: string): void => { this.model.addressBook.setDraftOrigin(text); }).accessibilityText('连接 HTTPS 地址')
+        .onChange((text: string): void => { this.model.addressBook.setDraftOrigin(text); }).accessibilityText('连接地址')
       Row({ space: 12 }) {
         Text('地址类型').fontSize(14).fontColor($r('sys.color.font_secondary')).layoutWeight(1)
         Select([{ value: '局域网' }, { value: '远程访问' }, { value: '专网' }])
@@ -70,7 +68,18 @@ export struct NasConnectionAddressPage {
             this.model.addressBook.draftKind = index === 0 ? 'lan' : index === 1 ? 'remote' : 'private';
           })
       }.width('100%')
-      Text('类型仅作标记，不会自动连接 Wi-Fi、VPN 或发现服务器；证书错误不能关闭验证绕过。')
+      Row({ space: 12 }) {
+        Column({ space: 2 }) {
+          Text('忽略 SSL 验证').fontSize(16).fontColor($r('sys.color.font_primary')).width('100%')
+          Text('仅 https 生效，接受自签名或不受信任的证书').fontSize(12)
+            .fontColor($r('sys.color.font_tertiary')).width('100%')
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        Toggle({ type: ToggleType.Switch, isOn: this.model.addressBook.draftInsecureTls })
+          .enabled(!this.disabled())
+          .onChange((checked: boolean): void => { this.model.addressBook.draftInsecureTls = checked; })
+          .accessibilityText('忽略 SSL 验证')
+      }.width('100%').constraintSize({ minHeight: WorkbenchMetrics.rowMinHeight })
+      Text('类型仅作标记，不会自动连接 Wi-Fi、VPN 或发现服务器；后台传输任务不支持跳过证书校验。')
         .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
       Row({ space: 12 }) {
         Button('测试连接').layoutWeight(1).constraintSize({ minHeight: 48 }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.disabled())
@@ -105,7 +114,7 @@ export struct NasConnectionAddressPage {
   @Builder
   addressMenu(address: NasConnectionAddress) {
     Menu() {
-      MenuItem({ content: '测试连接' }).onClick((): void => { this.model.addressBook.probe(address.origin); })
+      MenuItem({ content: '测试连接' }).onClick((): void => { this.model.addressBook.probe(address.origin, address.insecureTls === true); })
       MenuItem({ content: '编辑地址' }).onClick((): void => { this.openAddressForm(address); })
       MenuItem({ content: '移除地址' }).onClick((): void => { this.confirmRemove(address); })
     }
@@ -119,7 +128,8 @@ export struct NasConnectionAddressPage {
           iconColor: $r('sys.color.icon_emphasize'), tileColor: $r('app.color.workbench_accent_surface') })
         Column({ space: 2 }) {
           Text(address.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
-          Text(this.kindLabel(address.kind) + (this.model.authenticated && this.model.address === address.origin ? ' · 当前连接' : ''))
+          Text(this.kindLabel(address.kind) + (address.insecureTls === true ? ' · 忽略 SSL 验证' : '') +
+            (this.model.authenticated && this.model.address === address.origin ? ' · 当前连接' : ''))
             .fontSize(12).fontColor($r('sys.color.font_secondary'))
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
         Button() { SymbolGlyph($r('sys.symbol.ellipsis_circle')).fontSize(22).fontColor([$r('sys.color.font_secondary')]) }

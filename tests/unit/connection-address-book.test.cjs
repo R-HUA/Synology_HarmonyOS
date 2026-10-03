@@ -127,7 +127,7 @@ test('synthetic probe discovers only the explicitly selected HTTPS origin withou
 });
 
 test('invalid probe origins cause no discovery, credential repair or fallback', async () => {
-  for (const input of ['http://lan.example.test', 'https://alice:password@lan.example.test',
+  for (const input of ['lan.example.test', 'https://alice:password@lan.example.test',
     'https://lan.example.test/webman', 'https://lan.example.test?sid=secret']) {
     const { book, probes, count } = await fixture();
     await book.probe(input);

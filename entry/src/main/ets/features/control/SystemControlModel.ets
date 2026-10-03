@@ -28,6 +28,7 @@ export class SystemControlModel {
   @Trace confirmationText: string = '';
   private store: NasControlRecordStore = new NasControlRecordStore();
   private expectedFingerprint: string = '';
+  private insecureTls: boolean = false;
   private controlConnector: NasConnector | undefined = undefined;
   private authorizedAccount: string = '';
   private generation: number = 0;
@@ -36,7 +37,8 @@ export class SystemControlModel {
   private expiryTimer: number = -1;
   private assertIdle: () => void = (): void => { throw new NasFailure(NasErrorKind.InvalidInput, '请重新进入系统控制页面。'); };
 
-  async open(context: common.UIAbilityContext, current: NasConnector, origin: string, assertIdle: () => void): Promise<NasFailure | undefined> {
+  async open(context: common.UIAbilityContext, current: NasConnector, origin: string, insecureTls: boolean,
+    assertIdle: () => void): Promise<NasFailure | undefined> {
     if (this.busy) { this.errorText = '上次控制操作尚未结束，请稍后重新读取。'; return undefined; }
     this.deactivate();
     const ticket = ++this.generation;
@@ -48,6 +50,7 @@ export class SystemControlModel {
     this.notice = '';
     this.model = '';
     this.expectedFingerprint = '';
+    this.insecureTls = insecureTls;
     try {
       this.origin = normalizeNasOrigin(origin);
       const record = await this.store.load(context);
@@ -80,7 +83,7 @@ export class SystemControlModel {
     this.errorText = '';
     this.notice = '';
     this.revokeAuthorization();
-    const connector = new NasConnector(new RcpNasTransport(), 'NasControl');
+    const connector = new NasConnector(new RcpNasTransport(this.insecureTls), 'NasControl');
     this.controlConnector = connector;
     try {
       const capabilities = await connector.discover(this.origin);

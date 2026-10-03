@@ -1,4 +1,4 @@
-import { NasApiDescriptor, NasErrorKind, NasFailure, NasFileEntry, NasFilePage, normalizeNasOrigin } from '../../core/domain/DsmProtocol';
+import { NasApiDescriptor, NasErrorKind, NasFailure, NasFileEntry, NasFilePage, nasOriginScheme, normalizeNasOrigin } from '../../core/domain/DsmProtocol';
 import { NasConnector } from '../../core/network/NasConnector';
 import { RcpNasTransport } from '../../core/network/RcpNasTransport';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -31,6 +31,10 @@ export class ConnectionViewModel {
   @Trace authenticated: boolean = false;
   @Trace savedSession: boolean = false;
   @Trace errorText: string = '';
+  /** 登录页开关：地址未写明协议时使用的协议。 */
+  @Trace useHttps: boolean = true;
+  /** 登录页开关：仅 https 有效，跳过服务器证书校验以支持自签名证书。 */
+  @Trace insecureTls: boolean = false;
   @Trace capabilities: NasApiDescriptor[] = [];
   @Trace entries: NasFileEntry[] = [];
   @Trace directory: string = '';
@@ -51,6 +55,12 @@ export class ConnectionViewModel {
   readonly systemControl: SystemControlModel = new SystemControlModel();
   readonly extensions: NasExtensionsModel = new NasExtensionsModel();
   @Trace deviceCheckText: string = '尚未登记设备身份';
+  /** 首页设备卡：型号与服务器名称（设备名称），任一读不到就留空由界面兜底。 */
+  @Trace deviceModel: string = '';
+  @Trace deviceName: string = '';
+  get deviceTitle(): string {
+    return this.deviceName.length > 0 ? this.deviceName : this.deviceModel.length > 0 ? this.deviceModel : '我的 NAS';
+  }
   @Trace photosOpened: boolean = false;
   get photosErrorText(): string { return this.photoLibrary.errorText; }
   get photosSpace(): PhotosSpace { return this.photoLibrary.space; }
@@ -61,6 +71,8 @@ export class ConnectionViewModel {
   get photosMore(): boolean { return this.photoLibrary.hasMore; }
   private connector: NasConnector | undefined = undefined;
   private generation: number = 0;
+  private connectedOrigin: string = '';
+  private connectedInsecure: boolean = false;
   private history: string[] = [];
   private pageHistory: number[] = [];
   private store: NasSessionStore = new NasSessionStore();
@@ -83,12 +95,17 @@ export class ConnectionViewModel {
       this.savedSession = true;
       this.address = saved.origin;
       this.account = saved.account;
+      this.useHttps = nasOriginScheme(saved.origin) === 'https';
+      this.insecureTls = saved.insecureTls === true && this.useHttps;
       this.connector?.close();
-      const connector = new NasConnector(new RcpNasTransport());
+      const connector = new NasConnector(new RcpNasTransport(saved.insecureTls));
       this.connector = connector;
       const capabilities = await connector.discover(saved.origin);
       if (ticket !== this.generation) { return; }
       this.capabilities = capabilities;
+      this.connected = true;
+      this.connectedOrigin = saved.origin;
+      this.connectedInsecure = saved.insecureTls;
       connector.restoreSession({ sid: saved.sid, synoToken: saved.synoToken });
       await this.verifyDevice(connector, saved.origin, saved.account);
       if (ticket !== this.generation) { return; }
@@ -104,33 +121,111 @@ export class ConnectionViewModel {
         this.connector?.close();
         this.connector = undefined;
         this.connected = false;
+        this.connectedOrigin = '';
         if (error instanceof NasSessionStoreFailure) { this.savedSession = true; }
         await this.showFailure(error as Error, 'restore');
       }
     } finally { if (ticket === this.generation) { this.busy = false; } }
   }
 
-  async connect(): Promise<void> {
-    if (this.busy || this.connected) { return; }
-    if (!this.addressBook.ready) { this.errorText = '请先在连接地址中成功读取配置，再建立连接。'; return; }
+  /** 登录页地址输入；写明的协议会同步 HTTPS 开关。 */
+  setAddress(text: string): void {
+    if (this.busy || this.authenticated) { return; }
+    this.address = text;
+    const match = /^(https?):\/\//i.exec(text.trim());
+    if (match === null) { return; }
+    this.useHttps = match[1].toLowerCase() !== 'http';
+    if (!this.useHttps) { this.insecureTls = false; }
+  }
+
+  /** 切换协议时同步改写已写明的协议前缀，避免开关与输入框不一致。 */
+  setUseHttps(enabled: boolean): void {
+    if (this.busy || this.authenticated) { return; }
+    this.useHttps = enabled;
+    if (!enabled) { this.insecureTls = false; }
+    const raw = this.address.trim();
+    if (/^https?:\/\//i.test(raw)) {
+      this.address = (enabled ? 'https://' : 'http://') + raw.replace(/^https?:\/\//i, '');
+    }
+  }
+
+  /** 仅 https 允许跳过证书校验；http 无证书可校验。 */
+  setInsecureTls(enabled: boolean): void {
+    if (this.busy || this.authenticated || !this.useHttps) { return; }
+    this.insecureTls = enabled;
+  }
+
+  /** 输入框可省略协议；已写明的协议优先，否则按 HTTPS 开关补全。 */
+  private resolveOrigin(): string {
+    const raw = this.address.trim();
+    return normalizeNasOrigin(/^https?:\/\//i.test(raw) ? raw : (this.useHttps ? 'https://' : 'http://') + raw);
+  }
+
+  /** 当前连接是否仍对应当前地址与证书策略；地址或开关改动后需要重建连接。 */
+  private connectionMatchesCurrent(): boolean {
+    if (this.connectedOrigin.length === 0) { return false; }
+    let origin: string;
+    try { origin = this.resolveOrigin(); }
+    catch { return false; }
+    return origin === this.connectedOrigin && this.connectedInsecure === this.insecureTls;
+  }
+
+  /** 退出启动等待；保留已保存的登录信息，交由用户在登录页重试。 */
+  cancelRestore(): void {
+    if (!this.busy || this.authenticated) { return; }
+    this.generation++;
+    this.busy = false;
+    this.connector?.close();
+    this.connector = undefined;
+    this.connected = false;
+    this.connectedOrigin = '';
+    this.capabilities = [];
+  }
+
+  /** 登录页主操作：地址、账号与密码一次提交；地址或证书策略变化时先重建连接。 */
+  async submitLogin(): Promise<void> {
+    if (this.busy || this.authenticated) { return; }
+    if (this.address.trim().length === 0 || this.account.trim().length === 0 || this.password.length === 0) { return; }
+    if (this.connected && !this.connectionMatchesCurrent()) {
+      this.connector?.close();
+      this.connector = undefined;
+      this.connected = false;
+      this.connectedOrigin = '';
+      this.capabilities = [];
+    }
+    if (!this.connected && !await this.connect()) { return; }
+    await this.login();
+  }
+
+  async connect(): Promise<boolean> {
+    if (this.busy) { return false; }
+    if (this.connected) { return this.connectionMatchesCurrent(); }
+    if (!this.addressBook.ready) { this.errorText = '请先在连接地址中成功读取配置，再建立连接。'; return false; }
     const ticket = ++this.generation;
     this.busy = true;
     this.errorText = '';
     try {
-      this.address = normalizeNasOrigin(this.address);
+      const origin = this.resolveOrigin();
+      this.address = origin;
       this.connector?.close();
-      const connector = new NasConnector(new RcpNasTransport());
+      const connector = new NasConnector(new RcpNasTransport(this.insecureTls));
       this.connector = connector;
-      const capabilities = await connector.discover(this.address);
-      if (ticket !== this.generation) { return; }
+      const capabilities = await connector.discover(origin);
+      if (ticket !== this.generation) { return false; }
       this.capabilities = capabilities;
       this.connected = true;
+      this.connectedOrigin = origin;
+      this.connectedInsecure = this.insecureTls;
+      return true;
     } catch (error) {
       if (ticket === this.generation) {
         this.connector?.close();
         this.connector = undefined;
+        this.connected = false;
+        this.connectedOrigin = '';
         await this.showFailure(error as Error, 'discover');
       }
+      return false;
     } finally { if (ticket === this.generation) { this.busy = false; } }
   }
 
@@ -173,7 +268,8 @@ export class ConnectionViewModel {
       if (session === undefined || ticket !== this.generation) { return; }
       this.busy = true;
       try {
-        await this.store.save({ origin: this.address, account: this.account.trim(), sid: session.sid, synoToken: session.synoToken });
+        await this.store.save({ origin: this.address, account: this.account.trim(), sid: session.sid,
+          synoToken: session.synoToken, insecureTls: this.insecureTls });
         if (ticket === this.generation) {
           this.savedSession = true;
           hilog.info(0x0000, 'NasConnection', 'operation=save-session result=success');
@@ -211,10 +307,13 @@ export class ConnectionViewModel {
     await this.disconnect();
     if (this.generation !== previousGeneration + 1 || this.busy || this.authenticated || this.savedSession) { return false; }
     const previousNotice = this.errorText;
+    const saved = this.addressBook.addresses.find((address: NasConnectionAddress): boolean => address.origin === normalized);
     this.address = normalized;
     this.account = '';
     this.password = '';
     this.otp = '';
+    this.useHttps = nasOriginScheme(normalized) === 'https';
+    this.insecureTls = saved?.insecureTls === true && this.useHttps;
     this.actionNotice = previousNotice;
     await this.connect();
     return this.connected;
@@ -226,7 +325,7 @@ export class ConnectionViewModel {
     const ticket = this.generation;
     this.busy = true;
     try {
-      const saved = await this.addressBook.saveCurrent(connector, this.address, this.account);
+      const saved = await this.addressBook.saveCurrent(connector, this.address, this.account, this.insecureTls);
       if (saved && ticket === this.generation) { this.deviceCheckText = this.addressBook.notice; }
     } catch (error) { if (ticket === this.generation) { await this.showFailure(error as Error, 'register-device'); } }
     finally { if (ticket === this.generation) { this.busy = false; } }
@@ -238,6 +337,22 @@ export class ConnectionViewModel {
     if (ticket !== this.generation) { return; }
     this.deviceCheckText = model === undefined ? '当前账号未登记设备身份；地址间不合并登录和任务。' :
       '设备身份已核验 · ' + model;
+    await this.loadDeviceIdentity(connector);
+  }
+
+  /** 首页设备卡用的型号与服务器名称；读不到就留空，不阻塞后续流程。 */
+  private async loadDeviceIdentity(connector: NasConnector): Promise<void> {
+    const ticket = this.generation;
+    try {
+      const identity = await connector.deviceIdentity();
+      if (ticket !== this.generation) { return; }
+      this.deviceModel = identity.model;
+      this.deviceName = identity.serverName;
+    } catch {
+      if (ticket !== this.generation) { return; }
+      this.deviceModel = '';
+      this.deviceName = '';
+    }
   }
 
   async openSystemControl(): Promise<void> {
@@ -245,7 +360,7 @@ export class ConnectionViewModel {
     const context = this.context;
     if (this.busy || !this.authenticated || connector === undefined || context === undefined) { return; }
     const ticket = this.generation;
-    const error = await this.systemControl.open(context, connector, this.address, (): void => {
+    const error = await this.systemControl.open(context, connector, this.address, this.insecureTls, (): void => {
       if (ticket !== this.generation || connector !== this.connector || !this.authenticated) {
         throw new NasFailure(NasErrorKind.Cancelled, '当前 NAS 连接已变化，请重新进入系统控制。');
       }
@@ -522,7 +637,7 @@ export class ConnectionViewModel {
     const photoTicket = this.generation;
     this.photoLibrary.attach(connector, this.context, async (error: NasFailure): Promise<void> => {
       if (photoTicket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'photos'); }
-    });
+    }, this.insecureTls);
     if (this.context === undefined) { return; }
     const ticket = this.generation;
     await this.attachFileTasks();
@@ -714,10 +829,13 @@ export class ConnectionViewModel {
     this.pageOffset = page.offset;
     this.total = page.total;
   }
-  private clearAccount(): void {
+  /** 只清理账号相关的会话状态；地址与证书策略由连接流程单独管理。 */
+  private resetSessionState(): void {
     this.extensions.reset();
     this.systemControl.deactivate();
     this.deviceCheckText = '尚未登记设备身份';
+    this.deviceModel = '';
+    this.deviceName = '';
     this.telemetry.detach();
     this.queue.detach();
     this.fileSort = 'name';
@@ -740,6 +858,12 @@ export class ConnectionViewModel {
     this.pageHistory = [];
     this.pageOffset = 0;
     this.total = 0;
+  }
+
+  private clearAccount(): void {
+    this.resetSessionState();
+    this.connectedOrigin = '';
+    this.connectedInsecure = false;
   }
   private async showFailure(error: Error, operation: string): Promise<void> {
     const ticket = this.generation;

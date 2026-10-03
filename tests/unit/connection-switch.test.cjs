@@ -47,7 +47,7 @@ const { NasFailure, NasErrorKind: K } = protocol;
 const oldOrigin = 'https://lan.example.test:5001';
 const nextOrigin = 'https://remote.example.test';
 const identity = { model: 'Synthetic NAS', serial: 'synthetic-device-serial' };
-const savedSession = { origin: oldOrigin, account: 'alice', sid: 'old-origin-only-sid', synoToken: 'old-origin-only-token' };
+const savedSession = { origin: oldOrigin, account: 'alice', sid: 'old-origin-only-sid', synoToken: 'old-origin-only-token', insecureTls: false };
 const newSession = { sid: 'new-login-sid', synoToken: 'new-login-token' };
 const context = { filesDir: '/synthetic-private' };
 const plain = value => JSON.parse(JSON.stringify(value));
@@ -224,7 +224,7 @@ for (const operation of ['restore', 'login']) {
     assert.equal(count('session.save'), operation === 'login' ? 1 : 0);
     if (operation === 'login') {
       assert.ok(calls.findIndex(call => call.method === 'session.save') > calls.findIndex(call => call.method === 'queue.attach'));
-      assert.deepEqual(state.session, { origin: oldOrigin, account: 'alice', ...newSession });
+      assert.deepEqual(state.session, { origin: oldOrigin, account: 'alice', ...newSession, insecureTls: false });
     } else {
       assert.deepEqual(calls.find(call => call.method === 'restoreSession').args, [{ sid: savedSession.sid, synoToken: savedSession.synoToken }]);
     }
@@ -469,6 +469,50 @@ for (const failedStep of ['stop', 'clear']) {
     assert.ok(model.errorText);
   });
 }
+
+test('the certificate policy follows the address scheme and round-trips through the saved session', async () => {
+  const { model, state } = await fixture();
+  model.setAddress('http://lan.example.test:5000');
+  assert.equal(model.useHttps, false);
+  assert.equal(model.insecureTls, false);
+  model.setAddress('https://lan.example.test:5001');
+  assert.equal(model.useHttps, true);
+  model.setInsecureTls(true);
+  assert.equal(model.insecureTls, true);
+  model.setUseHttps(false);
+  assert.equal(model.useHttps, false);
+  assert.equal(model.insecureTls, false);
+  assert.equal(model.address, 'http://lan.example.test:5001');
+  model.setUseHttps(true);
+  assert.equal(model.address, 'https://lan.example.test:5001');
+
+  model.account = 'alice';
+  model.password = 'typed-password';
+  model.address = 'nas.example.test:5001';
+  model.setInsecureTls(true);
+  state.session = undefined;
+  await model.submitLogin();
+  assert.equal(model.authenticated, true);
+  assert.equal(model.address, 'https://nas.example.test:5001');
+  assert.deepEqual(state.session, { origin: 'https://nas.example.test:5001', account: 'alice',
+    sid: newSession.sid, synoToken: newSession.synoToken, insecureTls: true });
+});
+
+test('a submitted login keeps a self-signed https policy but never keeps it for a plain http origin', async () => {
+  const insecure = await fixture();
+  insecure.state.session = { ...plain(savedSession), origin: 'https://self-signed.example.test:5001', insecureTls: true };
+  await insecure.model.restore(context);
+  assert.equal(insecure.model.authenticated, true);
+  assert.equal(insecure.model.useHttps, true);
+  assert.equal(insecure.model.insecureTls, true);
+
+  const downgraded = await fixture();
+  downgraded.state.session = { ...plain(savedSession), origin: 'http://lan.example.test:5000', insecureTls: true };
+  await downgraded.model.restore(context);
+  assert.equal(downgraded.model.authenticated, true);
+  assert.equal(downgraded.model.useHttps, false);
+  assert.equal(downgraded.model.insecureTls, false);
+});
 
 test('an unknown saved route cannot disconnect the current account or issue discovery', async () => {
   const { model, calls, connectors } = await fixture();

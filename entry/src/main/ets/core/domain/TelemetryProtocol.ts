@@ -22,6 +22,9 @@ export interface NasTelemetryUtilization {
   memoryTotalBytes?: number;
   memoryUsedBytes?: number;
   memoryUsagePercent?: number;
+  /** 磁盘读写速率取自 disk.total，仅当 NAS 返回磁盘采样时才存在。 */
+  diskReadBytesPerSecond?: number;
+  diskWriteBytesPerSecond?: number;
   networks: NasTelemetryNetwork[];
 }
 
@@ -60,7 +63,8 @@ function telemetryMemoryBytes(input: Object | undefined): number | undefined {
   return input === undefined ? undefined : nasInteger(nasInteger(input) * 1024);
 }
 
-function telemetryVolumeBytes(input: Object | undefined): number | undefined {
+/** 字节数：DSM 同一含义的字段可能给十进制字符串（卷容量）或数字（磁盘读写速率），两种形态都按非负安全整数校验。 */
+function telemetryByteCount(input: Object | undefined): number | undefined {
   if (input === undefined) { return undefined; }
   if (typeof input === 'string') {
     if (!/^[0-9]{1,256}$/.test(input)) { throw telemetryFailure(); }
@@ -140,6 +144,16 @@ export function decodeTelemetryUtilization(input: Record<string, Object>): NasTe
     }
     if (usage !== undefined) { utilization.memoryUsagePercent = usage; }
   }
+  if (data['disk'] !== undefined) {
+    const disk = nasRecord(data['disk']);
+    if (disk['total'] !== undefined) {
+      const total = nasRecord(disk['total']);
+      const read = telemetryByteCount(total['read_byte']);
+      const write = telemetryByteCount(total['write_byte']);
+      if (read !== undefined) { utilization.diskReadBytesPerSecond = read; }
+      if (write !== undefined) { utilization.diskWriteBytesPerSecond = write; }
+    }
+  }
   return utilization;
 }
 
@@ -153,8 +167,8 @@ export function decodeTelemetryVolumes(input: Record<string, Object>): NasTeleme
     const volume = nasRecord(row);
     const identity = telemetryId(volume['id'], identities);
     const size = volume['size'] === undefined ? undefined : nasRecord(volume['size']);
-    const total = size === undefined ? undefined : telemetryVolumeBytes(size['total']);
-    const used = size === undefined ? undefined : telemetryVolumeBytes(size['used']);
+    const total = size === undefined ? undefined : telemetryByteCount(size['total']);
+    const used = size === undefined ? undefined : telemetryByteCount(size['used']);
     const status = telemetryText(volume['status']);
     if (total !== undefined && used !== undefined && used > total) { throw telemetryFailure(); }
     if (identity !== undefined && total !== undefined && used !== undefined) {
@@ -168,6 +182,36 @@ export function decodeTelemetryVolumes(input: Record<string, Object>): NasTeleme
 
 function telemetryDecimal(value: number): string {
   return value.toFixed(1).replace(/\.0$/, '');
+}
+
+/** DSM 的卷身份原文形如 volume_1（小写、真实返回值即此形态）。 */
+const VOLUME_IDENTITY_PATTERN = /^volume_([0-9]{1,6})$/;
+
+function telemetryVolumeNumber(identity: string): number | undefined {
+  const matched = VOLUME_IDENTITY_PATTERN.exec(identity);
+  if (matched === null) { return undefined; }
+  const parsed = Number(matched[1]);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
+/** 卷标号 → 展示名：volume_1 显示为「存储空间 1」；无法解析出标号时原样返回，不猜含义。 */
+export function telemetryVolumeLabel(identity: string): string {
+  const volumeNumber = telemetryVolumeNumber(identity);
+  return volumeNumber === undefined ? identity : '存储空间 ' + volumeNumber.toString();
+}
+
+/** 按「存储空间」标号从小到大排序；无法解析标号的卷保持原有相对顺序并排在其后。 */
+export function telemetryVolumesSorted(volumes: NasTelemetryVolume[]): NasTelemetryVolume[] {
+  const ordered = volumes.slice();
+  ordered.sort((left: NasTelemetryVolume, right: NasTelemetryVolume): number => {
+    const leftNumber = telemetryVolumeNumber(left.id);
+    const rightNumber = telemetryVolumeNumber(right.id);
+    if (leftNumber === undefined || rightNumber === undefined) {
+      return leftNumber === rightNumber ? 0 : (leftNumber === undefined ? 1 : -1);
+    }
+    return leftNumber - rightNumber;
+  });
+  return ordered;
 }
 
 export function telemetryBytes(bytes: number): string {

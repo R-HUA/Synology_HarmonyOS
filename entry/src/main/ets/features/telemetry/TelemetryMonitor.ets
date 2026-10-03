@@ -17,7 +17,7 @@ export interface NasTelemetrySection<Payload> {
 export class TelemetryMonitor {
   @Trace system: NasTelemetrySection<NasTelemetrySystem> = { observedAt: 0, status: 'idle', notice: '尚未读取系统信息' };
   @Trace utilization: NasTelemetrySection<NasTelemetryUtilization> = { observedAt: 0, status: 'idle', notice: '尚未读取运行状态' };
-  @Trace storage: NasTelemetrySection<NasTelemetryVolume[]> = { observedAt: 0, status: 'idle', notice: '尚未读取卷容量' };
+  @Trace storage: NasTelemetrySection<NasTelemetryVolume[]> = { observedAt: 0, status: 'idle', notice: '尚未读取存储空间' };
   @Trace busy: boolean = false;
   @Trace mode: NasTelemetryMode = 'hidden';
   private connector: NasConnector | undefined = undefined;
@@ -48,7 +48,7 @@ export class TelemetryMonitor {
     this.busy = false;
     this.system = { observedAt: 0, status: 'idle', notice: '尚未读取系统信息' };
     this.utilization = { observedAt: 0, status: 'idle', notice: '尚未读取运行状态' };
-    this.storage = { observedAt: 0, status: 'idle', notice: '尚未读取卷容量' };
+    this.storage = { observedAt: 0, status: 'idle', notice: '尚未读取存储空间' };
   }
 
   setMode(mode: NasTelemetryMode): void {
@@ -92,7 +92,8 @@ export class TelemetryMonitor {
         const section = await this.readSection('utilization', connector, ticket, this.utilization,
           async (): Promise<NasTelemetryUtilization> => decodeTelemetryUtilization(await connector.telemetryUtilization()),
           (data: NasTelemetryUtilization): boolean => data.cpuPercent !== undefined || data.memoryTotalBytes !== undefined ||
-            data.memoryUsagePercent !== undefined || data.networks.length > 0);
+            data.memoryUsagePercent !== undefined || data.diskReadBytesPerSecond !== undefined ||
+            data.diskWriteBytesPerSecond !== undefined || data.networks.length > 0);
         if (ticket !== this.generation) { return; }
         this.utilization = section;
       }
@@ -111,7 +112,7 @@ export class TelemetryMonitor {
             (data: NasTelemetryVolume[]): boolean => data.length > 0);
           if (ticket !== this.generation) { return; }
           this.storage = section.status === 'empty' && section.data !== undefined ?
-            { data: section.data, observedAt: section.observedAt, status: 'empty', notice: 'NAS 返回的卷列表为空' } : section;
+            { data: section.data, observedAt: section.observedAt, status: 'empty', notice: 'NAS 未返回存储空间' } : section;
         }
         this.staticReadAt = Date.now();
       }

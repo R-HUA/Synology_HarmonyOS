@@ -1,13 +1,15 @@
 import { asset } from '@kit.AssetStoreKit';
 import { util } from '@kit.ArkTS';
 import { BusinessError } from '@kit.BasicServicesKit';
-import { decodeNasSession, nasRecord, nasString, normalizeNasOrigin } from '../../core/domain/DsmProtocol';
+import { decodeNasSession, nasOriginScheme, nasRecord, nasString, normalizeNasOrigin } from '../../core/domain/DsmProtocol';
 
 export interface SavedNasSession {
   origin: string;
   account: string;
   sid: string;
   synoToken: string;
+  /** 仅 https 会话有效：恢复连接时沿用用户显式选择的跳过证书校验。 */
+  insecureTls: boolean;
 }
 
 export class NasSessionStoreFailure extends Error {
@@ -44,15 +46,18 @@ function validateSession(input: Object): SavedNasSession {
   const account = nasString(row['account']);
   const sid = nasString(row['sid']);
   const synoToken = row['synoToken'];
+  const insecureTls = row['insecureTls'];
   if (account.trim().length === 0 || /[\u0000-\u001f\u007f]/.test(account) ||
     /[\u0000-\u0020\u007f]/.test(sid) || typeof synoToken !== 'string' ||
-    /[\u0000-\u0020\u007f]/.test(synoToken as string)) {
+    /[\u0000-\u0020\u007f]/.test(synoToken as string) ||
+    (insecureTls !== undefined && typeof insecureTls !== 'boolean')) {
     throw invalidSession();
   }
   const authorization: SessionPayload = { sid: sid };
   if ((synoToken as string).length > 0) { authorization.synotoken = synoToken as string; }
   decodeNasSession(nasRecord(authorization));
-  return { origin: origin, account: account, sid: sid, synoToken: synoToken as string };
+  return { origin: origin, account: account, sid: sid, synoToken: synoToken as string,
+    insecureTls: insecureTls === true && nasOriginScheme(origin) === 'https' };
 }
 
 function storageFailure(operation: string, error: BusinessError): NasSessionStoreFailure {

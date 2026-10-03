@@ -77,8 +77,12 @@ export function workbenchBottomInset(navigationInset: number, barHeight: number 
   return Math.max(0, navigationInset) + barHeight + 16;
 }
 
+/**
+ * 快捷入口列数：固定一行五个。width 预留给将来的宽屏分档；目前不按宽度分档，
+ * 免得同一台设备换个窗口就改分组、让第二行只落一项。
+ */
 export function workbenchShortcutColumns(width: number): number {
-  return width >= 600 ? 4 : 2;
+  return 5;
 }
 
 export function photoAlbumColumns(width: number): number {
@@ -92,4 +96,46 @@ export function photoAlbumRows(albums: NasPhotoAlbum[], columns: number): PhotoA
     rows.push({ key: album.space.toString() + ':' + album.id.toString(), albums: albums.slice(offset, offset + columns) });
   }
   return rows;
+}
+
+/** 取出 origin 里的主机（含 IPv6 方括号），非法输入返回空串。 */
+function originHost(origin: string): string {
+  const trimmed = origin.trim();
+  const marker = trimmed.indexOf('://');
+  const rest = marker < 0 ? trimmed : trimmed.slice(marker + 3);
+  const end = rest.search(/[\/?#]/);
+  const authority = end < 0 ? rest : rest.slice(0, end);
+  const at = authority.lastIndexOf('@');
+  return (at < 0 ? authority : authority.slice(at + 1)).toLowerCase();
+}
+
+/** 内网地址：IPv4 私有段、IPv6 link-local/ULA、单段主机名、.local/.lan/.home 后缀。 */
+function isPrivateHost(host: string): boolean {
+  if (host.length === 0) { return false; }
+  if (host.startsWith('[')) {
+    const inside = host.slice(1, host.indexOf(']') < 0 ? undefined : host.indexOf(']'));
+    return /^fe80:/i.test(inside) || /^f[cd][0-9a-f]{2}:/i.test(inside) || inside === '::1';
+  }
+  const name = host.split(':')[0];
+  if (name.endsWith('.local') || name.endsWith('.lan') || name.endsWith('.home') || name.endsWith('.internal')) { return true; }
+  const parts = name.split('.');
+  if (parts.length === 1) { return true; }
+  if (parts.length === 4 && parts.every((part: string): boolean => /^\d{1,3}$/.test(part))) {
+    const first = Number(parts[0]);
+    const second = Number(parts[1]);
+    return first === 10 || first === 127 || (first === 169 && second === 254) ||
+      (first === 172 && second >= 16 && second <= 31) || (first === 192 && second === 168);
+  }
+  return false;
+}
+
+/**
+ * 连接方式文案（四字以内）：优先用地址簿登记的类型，否则按主机判断内网/公网。
+ * 类型只是标记，不会真正探测链路，所以文案不带"连接"这类承诺性后缀。
+ */
+export function connectionRouteLabel(origin: string, kind?: string): string {
+  if (kind === 'lan') { return '局域网'; }
+  if (kind === 'remote') { return '公网'; }
+  if (kind === 'private') { return '专网'; }
+  return isPrivateHost(originHost(origin)) ? '局域网' : '公网';
 }

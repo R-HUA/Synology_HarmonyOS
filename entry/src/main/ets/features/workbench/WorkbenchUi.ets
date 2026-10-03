@@ -1,5 +1,11 @@
 export class WorkbenchMetrics {
   static readonly pageMargin: number = 16;
+  /** 半模态内容与标题栏共用的水平边距，保证标题左边缘与卡片左边缘对齐。 */
+  static readonly sheetMargin: number = 24;
+  /** 系统为半模态自定义标题栏（title 传 CustomBuilder）预留的左右内衬。实测 16vp。 */
+  static readonly sheetTitleInset: number = 16;
+  /** HDS 半模态标题栏高度（实测 63.7vp），内容区按它再加常规上边距让位。 */
+  static readonly sheetTitleBarHeight: number = 64;
   static readonly sectionGap: number = 12;
   static readonly itemGap: number = 12;
   static readonly cardRadius: number = 16;
@@ -7,6 +13,10 @@ export class WorkbenchMetrics {
   static readonly touchSize: number = 48;
   static readonly rowMinHeight: number = 56;
   static readonly chipHeight: number = 40;
+  /** 信息行行高（左标签 + 右取值），与官方设置列表的单行条目一致。 */
+  static readonly infoRowHeight: number = 48;
+  /** 信息卡片的上下内边距，避免首末行紧贴卡片边缘。 */
+  static readonly infoCardPadding: number = 8;
 }
 
 /** 统一图标容器：固定尺寸 + 居中，避免图标在底板中偏移。 */
@@ -47,13 +57,19 @@ export struct WorkbenchSectionTitle {
 export struct WorkbenchInfoRow {
   @Param label: string = '';
   @Param value: string = '';
+  /** 取值默认可长按复制；放进「整卡可点」的卡片时要关掉，否则这份文本会吞掉点击、卡片点不开。 */
+  @Param copyable: boolean = true;
 
   build() {
-    Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.SpaceBetween, alignItems: ItemAlign.Center }) {
-      Text(this.label).fontSize(14).fontColor($r('sys.color.font_secondary')).margin({ right: 16 })
+    // 用 Row + layoutWeight 取代带换行的 Flex：FlexWrap.Wrap 下单行内容会贴行首（顶部），
+    // 中文看起来“靠上”且行间留白不均；Row 的 VerticalAlign.Center 才能保证文字垂直居中。
+    Row() {
+      Text(this.label).fontSize(14).fontColor($r('sys.color.font_secondary'))
+        .margin({ right: 16 }).flexShrink(0)
       Text(this.value).fontSize(16).fontColor($r('sys.color.font_primary')).textAlign(TextAlign.End)
-        .constraintSize({ maxWidth: '100%' }).copyOption(CopyOptions.InApp)
-    }.width('100%').constraintSize({ minHeight: 44 }).padding({ top: 4, bottom: 4 })
+        .layoutWeight(1).copyOption(this.copyable ? CopyOptions.InApp : CopyOptions.None)
+    }.width('100%').constraintSize({ minHeight: WorkbenchMetrics.infoRowHeight })
+      .alignItems(VerticalAlign.Center)
   }
 }
 

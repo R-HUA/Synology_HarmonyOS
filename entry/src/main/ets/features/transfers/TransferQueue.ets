@@ -360,6 +360,8 @@ export class TransferQueue {
     await this.save(session);
     this.ensureCurrent(session);
     const marker: QueueMarker = { transferQueue: record.id, transferScope: session.scope, transferAttempt: record.attempts.toString() };
+    // 系统后台传输代理没有跳过证书校验的开关：http 地址不受影响，
+    // 自签名证书的 https 地址只能在前台（rcp）路径使用，后台传输会因证书错误失败。
     const config: request.agent.Config = { action: record.direction === 'upload' ? request.agent.Action.UPLOAD : request.agent.Action.DOWNLOAD,
       url: plan.address, method: 'POST', mode: request.agent.Mode.BACKGROUND,
       title: record.direction === 'upload' ? '上传文件' : '下载文件', headers: this.headers(plan, record.direction === 'download'),

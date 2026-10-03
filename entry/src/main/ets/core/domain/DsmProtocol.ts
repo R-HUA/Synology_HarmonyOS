@@ -40,20 +40,42 @@ export interface NasLoginSession {
 
 export interface NasFormField { name: string; content: string; }
 
-/** 连接只接受 HTTPS origin；禁止凭证、路径和跨 origin 跳转入口。 */
+export type NasOriginScheme = 'http' | 'https';
+
+function defaultNasPort(scheme: NasOriginScheme): number {
+  return scheme === 'http' ? 80 : 443;
+}
+
+/**
+ * 连接地址只接受 HTTP(S) origin；禁止凭证、路径、查询和跨 origin 跳转入口。
+ * HTTP 与 HTTPS 都保留在 origin 中，证书校验策略由连接层单独记录。
+ */
 export function normalizeNasOrigin(input: string): string {
-  const match = /^https:\/\/(\[[0-9a-fA-F:]+\]|[a-zA-Z0-9.-]+)(?::([0-9]{1,5}))?\/?$/.exec(input.trim());
+  const match = /^(https?):\/\/(\[[0-9a-fA-F:]+\]|[a-zA-Z0-9.-]+)(?::([0-9]{1,5}))?\/?$/.exec(input.trim());
   if (match === null) {
-    throw new NasFailure(NasErrorKind.InvalidInput, '请输入 HTTPS 地址，可包含端口，不包含路径或账号密码。');
+    throw new NasFailure(NasErrorKind.InvalidInput, '请输入 http:// 或 https:// 开头的地址，可包含端口，不包含路径或账号密码。');
   }
-  const host = match[1].toLowerCase();
+  const scheme: NasOriginScheme = match[1] === 'http' ? 'http' : 'https';
+  const host = match[2].toLowerCase();
   if (!host.startsWith('[') && !host.split('.').every((part: string): boolean =>
     /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(part) && part.length <= 63)) {
     throw new NasFailure(NasErrorKind.InvalidInput, '服务器域名格式不正确。');
   }
-  const port = match[2] === undefined ? 443 : Number(match[2]);
+  const fallback = defaultNasPort(scheme);
+  const port = match[3] === undefined ? fallback : Number(match[3]);
   if (port < 1 || port > 65535) { throw new NasFailure(NasErrorKind.InvalidInput, '端口必须在 1 到 65535 之间。'); }
-  return 'https://' + host + (port === 443 ? '' : ':' + port.toString());
+  return scheme + '://' + host + (port === fallback ? '' : ':' + port.toString());
+}
+
+/** 取规范 origin 的协议；非法地址抛出 InvalidInput。 */
+export function nasOriginScheme(origin: string): NasOriginScheme {
+  return normalizeNasOrigin(origin).startsWith('http://') ? 'http' : 'https';
+}
+
+/** 取去掉协议的主机与端口，供地址输入框与提示复用；非法地址抛出 InvalidInput。 */
+export function nasOriginHost(origin: string): string {
+  const normalized = normalizeNasOrigin(origin);
+  return normalized.slice(normalized.indexOf('://') + 3);
 }
 
 export function validateApiPath(path: string): string {

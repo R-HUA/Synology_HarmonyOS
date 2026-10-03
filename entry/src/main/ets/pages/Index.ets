@@ -1,8 +1,8 @@
 import { common } from '@kit.AbilityKit';
-import { SymbolGlyphModifier, window } from '@kit.ArkUI';
+import { LengthMetrics, SymbolGlyphModifier, uiMaterial, window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileUri } from '@kit.CoreFileKit';
-import { HdsNavigation, HdsNavigationTitleMode, HdsNavDestination, HdsTabs, HdsTabsController, hdsMaterial, ScrollEffectType } from '@kit.UIDesignKit';
+import { HdsNavigation, HdsNavigationTitleMode, HdsNavDestination, HdsTabs, HdsTabsController, hdsMaterial, IconStyleMode, ScrollEffectType } from '@kit.UIDesignKit';
 import { NasFailure, NasFileEntry } from '../core/domain/DsmProtocol';
 import { NasPhotoItem, NasPhotoAlbum, PhotosSpace } from '../core/domain/PhotosProtocol';
 import { PhotoBackup } from '../features/backup/PhotoBackup';
@@ -14,9 +14,11 @@ import { NasConnectionAddress } from '../core/domain/ConnectionRoutes';
 import { NasSystemControlPage } from '../features/control/SystemControlPage';
 import { ShareLinksPage } from '../features/fileSharing/ShareLinksPage';
 import { DownloadStationPage } from '../features/downloadStation/DownloadStationPage';
-import { NasTelemetrySummary, NasTelemetryDashboard } from '../features/telemetry/TelemetryDashboard';
+import { NasTelemetrySummary, NasTelemetryStorageCard, NasTelemetryDashboard } from '../features/telemetry/TelemetryDashboard';
 import { WorkbenchBreadcrumb, PhotoTimelineRow, photoGridColumns, photoTimelineRows, photoTakenDate, photoMediaLabel, workbenchBreadcrumbs, workbenchBytes,
-  workbenchCanUseDestination, workbenchBottomInset, workbenchShortcutColumns, photoAlbumColumns, photoAlbumRows, PhotoAlbumRow } from '../features/workbench/WorkbenchPresentation';
+  workbenchCanUseDestination, workbenchBottomInset, workbenchShortcutColumns, photoAlbumColumns, photoAlbumRows, PhotoAlbumRow,
+  connectionRouteLabel } from '../features/workbench/WorkbenchPresentation';
+import { bundledDeviceArtwork, fallbackDeviceArtwork, hasModelArtwork, deviceArtworkPath } from '../features/workbench/NasDeviceArtwork';
 
 import { WorkbenchMetrics, WorkbenchIconTile, WorkbenchSectionTitle, WorkbenchInfoRow, WorkbenchNotice, WorkbenchChoice, WorkbenchActionRow } from '../features/workbench/WorkbenchUi';
 
@@ -27,6 +29,10 @@ struct Index {
   @Local private activeTab: number = 0;
   @Local private navigationInset: number = 0;
   @Local private statusInset: number = 0;
+  /** 启动恢复期间只呈现加载页；恢复结束后才显示登录表单或主界面。 */
+  @Local private bootPending: boolean = true;
+  @Local private bootEscapable: boolean = false;
+  private bootTimer: number = -1;
   private mainWindow: window.Window | undefined = undefined;
   private pageActive: boolean = false;
   private foreground: boolean = true;
@@ -36,6 +42,8 @@ struct Index {
   @Local private systemControlOpened: boolean = false;
   @Local private extensionsOpened: boolean = false;
   @Local private choosingDownloadTarget: boolean = false;
+  /** 半模态内容滚动控制器：既供嵌套滚动使用，也绑定给 HDS 半模态标题栏。 */
+  private sheetScroller: Scroller = new Scroller();
   private sharesScroller: Scroller = new Scroller();
   private downloadsScroller: Scroller = new Scroller();
   private telemetryScroller: Scroller = new Scroller();
@@ -68,11 +76,23 @@ struct Index {
   @Local private photosInitialized: boolean = false;
   @Local private contentWidth: number = 360;
   @Local private windowWidth: number = 360;
+  @Local private windowHeight: number = 800;
   @Local private deviceInfo: string[] = [];
   @Local private selectedTaskId: string = '';
   @Local private taskFilter: string = 'all';
+  /**
+   * 半模态背板的沉浸式系统材质。官方《开启沉浸光感》给半模态/弹窗的推荐档位就是 ULTRA_THICK。
+   * 注意材质层在 backgroundColor 之下，所以背板要设成透明色，否则材质被不透明背景盖住看不见。
+   */
+  private sheetMaterial: uiMaterial.Material =
+    new uiMaterial.ImmersiveMaterial({ style: uiMaterial.ImmersiveStyle.ULTRA_THICK });
+  /** 设备是否支持 ImmersiveMaterial；不支持时退回不透明背板，避免得到一块全透明的弹层。 */
+  private sheetMaterialAvailable: boolean = uiMaterial.isImmersiveMaterialSupported();
   @Local private taskSection: string = 'transfers';
   @Local private mediaDecodeFailed: boolean = false;
+  /** 未收录型号联网取回的产品图路径；为空时用内置图。 */
+  @Local private deviceArtworkPath: string = '';
+  private readonly artworkSize: number = 64;
   private navStack: NavPathStack = new NavPathStack();
   private homeScroller: Scroller = new Scroller();
   private filesScroller: Scroller = new Scroller();
@@ -87,7 +107,7 @@ struct Index {
     this.abilityContext = context;
     context.eventHub.on('nas-foreground-change', this.foregroundChanged);
     this.updateTelemetryMode();
-    this.model.restore(context);
+    this.restoreSession(context);
     window.getLastWindow(context).then((mainWindow: window.Window): void => {
       if (!this.pageActive) { return; }
       this.mainWindow = mainWindow;
@@ -98,6 +118,7 @@ struct Index {
   }
   aboutToDisappear(): void {
     this.pageActive = false;
+    this.stopBootTimer();
     this.updateTelemetryMode();
     this.abilityContext?.eventHub.off('nas-foreground-change', this.foregroundChanged);
     this.abilityContext = undefined;
@@ -107,7 +128,30 @@ struct Index {
     this.model.dispose();
   }
 
+  /** 启动先恢复上次会话；期间用户只看到加载页，不会先看到登录表单。 */
+  private async restoreSession(context: common.UIAbilityContext): Promise<void> {
+    this.bootEscapable = false;
+    if (this.bootTimer === -1) { this.bootTimer = setTimeout((): void => { this.bootEscapable = true; }, 3000); }
+    try { await this.model.restore(context); }
+    finally {
+      this.stopBootTimer();
+      if (this.pageActive) { this.bootPending = false; this.bootEscapable = false; }
+    }
+  }
+
+  private stopBootTimer(): void {
+    if (this.bootTimer !== -1) { clearTimeout(this.bootTimer); this.bootTimer = -1; }
+  }
+
+  private leaveBootScreen(): void {
+    this.stopBootTimer();
+    this.model.cancelRestore();
+    this.bootPending = false;
+    this.bootEscapable = false;
+  }
+
   onBackPress(): boolean {
+    if (this.bootPending) { this.leaveBootScreen(); return true; }
     if (this.sheetVisible) { if (!this.formSubmitting) { this.sheetVisible = false; } return true; }
     if (this.navStack.size() > 0) { this.navStack.pop(); return true; }
     if (this.choosingDownloadTarget) { this.choosingDownloadTarget = false; this.openNasDownloads(); return true; }
@@ -149,6 +193,7 @@ struct Index {
       this.pendingOperation = '';
       this.formName = '';
       this.transferErrorText = '';
+      this.deviceArtworkPath = '';
       this.activeTab = 0;
       this.tabsController.changeIndex(0);
     }
@@ -157,6 +202,26 @@ struct Index {
   @Monitor('model.busy')
   private pageLoadFinished(): void {
     if (!this.model.busy && this.model.authenticated && this.activeTab === 2) { this.ensurePhotosOpen(); }
+  }
+
+  @Monitor('model.deviceModel')
+  private deviceModelChanged(): void { this.resolveDeviceArtwork(); }
+
+  /** 连接方式文案：优先用地址簿登记的类型，否则按地址判断内网/公网。 */
+  private routeLabel(): string {
+    const saved = this.model.addressBook.addresses.find((address: NasConnectionAddress): boolean =>
+      address.origin === this.model.address);
+    return connectionRouteLabel(this.model.address, saved?.kind);
+  }
+
+  /** 未收录的型号才联网取官方产品图；取不到就保持内置图，不报错、不占位闪烁。 */
+  private async resolveDeviceArtwork(): Promise<void> {
+    const model = this.model.deviceModel;
+    this.deviceArtworkPath = '';
+    const context = this.abilityContext;
+    if (context === undefined || model.length === 0) { return; }
+    const path = await deviceArtworkPath(context, model);
+    if (this.pageActive && this.model.deviceModel === model && path.length > 0) { this.deviceArtworkPath = path; }
   }
 
   private pageTitle(): string {
@@ -189,6 +254,11 @@ struct Index {
   private supportsPhotos(): boolean {
     return this.model.supports('SYNO.Foto.Browse.Item') || this.model.supports('SYNO.FotoTeam.Browse.Item') ||
       this.model.supports('SYNO.Foto.Sharing.Misc');
+  }
+
+  /** 首页「资源监控」与「存储空间」卡片整卡可点，进入同一张只读监控详情页。 */
+  private openTelemetry(): void {
+    this.navStack.pushPath({ name: 'telemetry' });
   }
 
   private openNasDownloads(): void {
@@ -256,6 +326,24 @@ struct Index {
     return this.statusInset + 56;
   }
 
+  /** 未登录时隐藏了标题栏，顶部只需让出状态栏。 */
+  private loginTopInset(): number {
+    return this.statusInset + 8;
+  }
+
+  /** 登录页没有悬浮页签，底部不必预留页签高度。 */
+  private loginBottomInset(): number {
+    return Math.max(0, this.navigationInset) + 16;
+  }
+
+  /**
+   * 登录页内容的居中基准：视口高度。内容比它矮时被居中，比它高时自动撑开并可滚动，
+   * 键盘顶起窗口后仍然成立。
+   */
+  private loginMinHeight(): number {
+    return Math.max(0, this.windowHeight - this.loginTopInset() - this.loginBottomInset());
+  }
+
   private selectedTask(): TransferQueueItem | undefined {
     return this.model.queue.items.find((item: TransferQueueItem): boolean => item.id === this.selectedTaskId);
   }
@@ -275,9 +363,8 @@ struct Index {
   private openConnectionAddresses(): void {
     if (this.model.busy) { return; }
     const saved = this.model.addressBook.addresses.find((address: NasConnectionAddress): boolean => address.origin === this.model.address);
-    this.model.addressBook.setDraftOrigin(this.model.address);
-    this.model.addressBook.draftName = saved?.name ?? (this.model.authenticated ? '我的 NAS' : '');
-    this.model.addressBook.draftKind = saved?.kind ?? 'lan';
+    this.model.addressBook.beginDraft(this.model.address, saved?.name ?? (this.model.authenticated ? '我的 NAS' : ''),
+      saved?.kind ?? 'lan', saved?.insecureTls === true);
     this.navStack.pushPath({ name: 'connection-addresses' });
   }
 
@@ -308,10 +395,24 @@ struct Index {
     if (this.sheetKind === 'rename') { return '重命名'; }
     if (this.sheetKind === 'sort') { return '排序'; }
     if (this.sheetKind === 'backup') { return '备份内容'; }
-    if (this.sheetKind === 'device') { return '设备与账号'; }
+    if (this.sheetKind === 'device') { return '设备信息'; }
     if (this.sheetKind === 'actions') { return '文件操作'; }
     if (this.sheetKind === 'task') { return '任务详情'; }
     return '文件详情';
+  }
+
+  /**
+   * 只有内容可能很长、用 SheetSize.LARGE 的弹层才挂 HDS 半模态标题栏：
+   * HdsNavigation 需要有确定高度，FIT_CONTENT 的小弹层给不出来。
+   */
+  private sheetUsesModalTitleBar(): boolean {
+    return this.sheetKind === 'device' || this.sheetKind === 'task' || this.sheetKind === 'backup';
+  }
+
+  /** 连接方式按当前实际连接策略呈现，避免 http 连接被写死成“HTTPS 安全连接”。 */
+  private connectionSecurityText(): string {
+    if (!this.model.useHttps) { return 'HTTP 明文连接'; }
+    return this.model.insecureTls ? 'HTTPS 未校验证书' : 'HTTPS 安全连接';
   }
 
   private validName(): boolean {
@@ -415,56 +516,92 @@ struct Index {
     }.width('100%').padding({ top: 32, bottom: 32, left: 24, right: 24 })
   }
 
+  /** 启动等待页：只呈现居中的加载指示，不提前暴露表单或半成品状态。 */
   @Builder
-  connectionForm() {
-    Scroll(this.homeScroller) {
-      Column({ space: 16 }) {
-        Column({ space: 8 }) {
-          WorkbenchIconTile({ icon: $r('sys.symbol.externaldrive'), iconSize: 30, tileSize: 56, tileRadius: 16,
-            iconColor: $r('sys.color.icon_emphasize'), tileColor: $r('app.color.workbench_accent_surface') })
-          Text(this.model.savedSession ? '重新连接设备' : this.model.connected ? '登录你的 NAS' : '连接你的 NAS')
-            .fontSize(24).fontWeight(FontWeight.Bold).fontColor($r('sys.color.font_primary'))
-          Text(this.model.savedSession ? '已保存的账号会在连接后恢复。' : '安全访问文件、相册和传输任务。')
-            .fontSize(14).fontColor($r('sys.color.font_secondary'))
-        }.width('100%').alignItems(HorizontalAlign.Start).padding({ top: 8, bottom: 4 })
+  bootView() {
+    Column({ space: 16 }) {
+      LoadingProgress().width(48).height(48).color($r('sys.color.icon_emphasize'))
+        .accessibilityText('正在恢复连接')
+      Text('正在恢复上次的连接').fontSize(14).fontColor($r('sys.color.font_secondary'))
+      if (this.bootEscapable) {
+        Column({ space: 4 }) {
+          Text('仍在等待服务器响应。').fontSize(12).fontColor($r('sys.color.font_tertiary'))
+          Button('改用其他地址').constraintSize({ minHeight: WorkbenchMetrics.touchSize })
+            .buttonStyle(ButtonStyleMode.TEXTUAL).onClick((): void => { this.leaveBootScreen(); })
+        }.margin({ top: 24 })
+      }
+    }.width('100%').height('100%').justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
+      .padding({ left: WorkbenchMetrics.pageMargin * 2, right: WorkbenchMetrics.pageMargin * 2,
+        top: this.statusInset + 8, bottom: this.loginBottomInset() })
+  }
+
+  /** 开关设置行：整行标签 + 右侧系统开关，原地生效。 */
+  @Builder
+  switchRow(label: string, checked: boolean, onToggle: (checked: boolean) => void) {
+    Row({ space: 12 }) {
+      Text(label).fontSize(16).fontColor($r('sys.color.font_primary')).layoutWeight(1)
+      Toggle({ type: ToggleType.Switch, isOn: checked }).enabled(!this.model.busy).onChange(onToggle)
+        .accessibilityText(label)
+    }.width('100%').constraintSize({ minHeight: WorkbenchMetrics.rowMinHeight })
+  }
+
+  /** 登录页：地址、用户名、密码与协议开关整体居中。 */
+  @Builder
+  loginView() {
+    Column() {
+      Scroll(this.homeScroller) {
         Column({ space: 16 }) {
-          Text('设备地址').fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
-          TextInput({ text: this.model.address, placeholder: 'https://nas.example.com:5001' })
-            .constraintSize({ minHeight: 48 }).enabled(!this.model.connected && !this.model.busy && !this.model.savedSession)
-            .onChange((text: string): void => { this.model.address = text; }).accessibilityText('NAS HTTPS 地址')
-          if (this.model.savedSession) {
-            Text(this.model.account).fontSize(16).width('100%').fontColor($r('sys.color.font_primary'))
-            Button(this.model.busy ? '正在连接…' : '重试连接').width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).enabled(!this.model.busy)
-              .onClick((): void => { this.model.restore(); })
-            Button('重新登录').width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
-              .onClick((): void => { this.model.disconnect(); })
-          } else if (!this.model.connected) {
-            Button(this.model.busy ? '正在连接…' : '连接 NAS').width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize })
-              .enabled(!this.model.busy && this.model.address.trim().length > 0).onClick((): void => { this.model.connect(); })
-          } else {
-            TextInput({ text: this.model.account, placeholder: 'NAS 账号' }).constraintSize({ minHeight: 48 }).enabled(!this.model.busy)
-              .onChange((text: string): void => { this.model.account = text; }).accessibilityText('NAS 账号')
-            TextInput({ text: this.model.password, placeholder: '密码' }).constraintSize({ minHeight: 48 })
-              .type(InputType.Password).enabled(!this.model.busy)
+          Column({ space: 12 }) {
+            WorkbenchIconTile({ icon: $r('sys.symbol.externaldrive'), iconSize: 34, tileSize: 72, tileRadius: 20,
+              iconColor: $r('sys.color.icon_emphasize'), tileColor: $r('app.color.workbench_accent_surface') })
+            Text(this.model.savedSession ? '重新登录你的 NAS' : '连接你的 NAS')
+              .fontSize(24).fontWeight(FontWeight.Bold).fontColor($r('sys.color.font_primary'))
+          }.width('100%').alignItems(HorizontalAlign.Center)
+          Column({ space: 12 }) {
+            TextInput({ text: this.model.address, placeholder: '地址或域名' })
+              .maxLength(512).constraintSize({ minHeight: 48 }).enabled(!this.model.busy && !this.model.authenticated)
+              .onChange((text: string): void => { this.model.setAddress(text); }).accessibilityText('NAS 服务器地址')
+            TextInput({ text: this.model.account, placeholder: '用户名' })
+              .maxLength(128).constraintSize({ minHeight: 48 }).enabled(!this.model.busy)
+              .onChange((text: string): void => { this.model.account = text; }).accessibilityText('NAS 用户名')
+            TextInput({ text: this.model.password, placeholder: '密码' })
+              .constraintSize({ minHeight: 48 }).type(InputType.Password).enabled(!this.model.busy)
+              .enterKeyType(EnterKeyType.Go).onSubmit((): void => { this.model.submitLogin(); })
               .onChange((text: string): void => { this.model.password = text; }).accessibilityText('NAS 密码')
             if (this.model.needsOtp) {
               TextInput({ text: this.model.otp, placeholder: '6 位动态码' }).constraintSize({ minHeight: 48 })
                 .type(InputType.Number).maxLength(6).enabled(!this.model.busy)
                 .onChange((text: string): void => { this.model.otp = text; }).accessibilityText('双重验证动态码')
             }
-            Button(this.model.busy ? '正在登录…' : '登录').width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize })
-              .enabled(!this.model.busy && this.model.account.trim().length > 0 && this.model.password.length > 0)
-              .onClick((): void => { this.model.login(); })
-            Button('更换设备').width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
+            Divider().color($r('app.color.workbench_divider'))
+            Column() {
+              this.switchRow('HTTPS 安全访问', this.model.useHttps,
+                (checked: boolean): void => { this.model.setUseHttps(checked); })
+              if (this.model.useHttps) {
+                this.switchRow('忽略 SSL 验证', this.model.insecureTls,
+                  (checked: boolean): void => { this.model.setInsecureTls(checked); })
+              }
+            }.width('100%')
+          }.width('100%').padding(16).borderRadius(WorkbenchMetrics.cardRadius)
+            .backgroundColor($r('app.color.workbench_surface')).alignItems(HorizontalAlign.Start)
+          Button(this.model.busy ? '正在登录…' : '登录')
+            .width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize })
+            .enabled(!this.model.busy && this.model.address.trim().length > 0 &&
+              this.model.account.trim().length > 0 && this.model.password.length > 0)
+            .onClick((): void => { this.model.submitLogin(); })
+          if (this.model.savedSession || this.model.connected) {
+            Button('清除已保存的登录信息').width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize })
+              .buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
               .onClick((): void => { this.model.disconnect(); })
           }
-        }.width('100%').padding(16).borderRadius(WorkbenchMetrics.cardRadius)
-          .backgroundColor($r('app.color.workbench_surface')).alignItems(HorizontalAlign.Start)
-        Button('连接地址').width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
-          .onClick((): void => { this.openConnectionAddresses(); })
-        this.notices()
-      }.width('100%').constraintSize({ maxWidth: 560 }).padding({ left: 16, right: 16, top: this.contentTopInset() + 16, bottom: 32 }).alignItems(HorizontalAlign.Start)
-    }.width('100%').layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Auto)
+          this.notices()
+        }.width('100%').constraintSize({ maxWidth: 560, minHeight: this.loginMinHeight() })
+          .justifyContent(FlexAlign.Center)
+          .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin, top: 16, bottom: 16 })
+          .alignItems(HorizontalAlign.Start)
+      }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
+    }.width('100%').height('100%')
+      .padding({ top: this.loginTopInset(), bottom: this.loginBottomInset() })
   }
 
   @Builder
@@ -476,25 +613,52 @@ struct Index {
         Text(label).fontSize(14).fontColor($r('sys.color.font_primary')).textAlign(TextAlign.Center)
           .width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       }.width('100%').padding({ top: 12, bottom: 12, left: 4, right: 4 })
-    }.width(workbenchShortcutColumns(this.windowWidth) === 4 ? '25%' : '50%')
+    }.width((100 / workbenchShortcutColumns(this.windowWidth)).toString() + '%')
       .type(ButtonType.Normal).backgroundColor(Color.Transparent).enabled(!this.model.busy)
       .onClick(action).accessibilityText(label)
+  }
+
+  /** 首页设备区：直接落在页面底色上，不用白底卡片，上下留白压到最小。 */
+  @Builder
+  deviceHeader() {
+    Row({ space: 12 }) {
+      Column({ space: 2 }) {
+        Text(this.routeLabel()).fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        Row({ space: 6 }) {
+          Text(this.model.deviceTitle).fontSize(24).fontWeight(FontWeight.Bold)
+            .fontColor($r('sys.color.font_primary')).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .flexShrink(1)
+          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([$r('sys.color.font_tertiary')])
+        }.width('100%').alignItems(VerticalAlign.Center)
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      this.deviceArtwork()
+    }.width('100%').padding({ left: 8, top: 4 }).enabled(!this.model.busy)
+      .onClick((): void => { this.showDeviceInfo(); })
+      .accessibilityText(this.routeLabel() + '，' + this.model.deviceTitle + '，查看设备信息')
+  }
+
+  /** 联网取回的产品图 → 内置型号图 → 官方通用线性图。 */
+  @Builder
+  deviceArtwork() {
+    if (this.deviceArtworkPath.length > 0) {
+      Image(fileUri.getUriFromPath(this.deviceArtworkPath)).width(this.artworkSize).height(this.artworkSize)
+        .objectFit(ImageFit.Contain).accessibilityLevel('no')
+    } else if (hasModelArtwork(this.model.deviceModel)) {
+      Image(bundledDeviceArtwork(this.model.deviceModel)).width(this.artworkSize).height(this.artworkSize)
+        .objectFit(ImageFit.Contain).accessibilityLevel('no')
+    } else {
+      // 官方线性 NAS 图按原样渲染：它是描边图，fillColor 只影响填充点，会把图标染成两色。
+      Image(fallbackDeviceArtwork()).width(this.artworkSize * 0.72).height(this.artworkSize * 0.72)
+        .objectFit(ImageFit.Contain).accessibilityLevel('no')
+    }
   }
 
   @Builder
   homeView() {
     Scroll(this.homeScroller) {
       Column({ space: WorkbenchMetrics.sectionGap }) {
-        Row({ space: 12 }) {
-          WorkbenchIconTile({ icon: $r('sys.symbol.externaldrive'), iconSize: 26, tileSize: 48, tileRadius: 12,
-            iconColor: $r('sys.color.icon_emphasize'), tileColor: $r('app.color.workbench_accent_surface') })
-          Column({ space: 2 }) {
-            Text(this.model.telemetry.system.data?.model ?? '我的 NAS').fontSize(20).fontWeight(FontWeight.Medium)
-              .fontColor($r('sys.color.font_primary')).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-            Text(this.model.account + ' · 已连接').fontSize(14).fontColor($r('sys.color.font_secondary'))
-              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-        }.width('100%').padding(16).borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
+        this.deviceHeader()
         Flex({ wrap: FlexWrap.Wrap }) {
           this.shortcut($r('sys.symbol.folder'), '文件', (): void => { this.switchTab(1); })
           if (this.supportsPhotos()) {
@@ -511,7 +675,8 @@ struct Index {
             this.shortcut($r('sys.symbol.arrow_down_circle'), 'NAS 下载', (): void => { this.openNasDownloads(); })
           }
         }.width('100%').padding(4).borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
-        NasTelemetrySummary({ monitor: this.model.telemetry, onOpen: (): void => { this.navStack.pushPath({ name: 'telemetry' }); } })
+        NasTelemetrySummary({ monitor: this.model.telemetry, onOpen: (): void => { this.openTelemetry(); } })
+        NasTelemetryStorageCard({ monitor: this.model.telemetry, onOpen: (): void => { this.openTelemetry(); } })
         Column() {
           WorkbenchActionRow({ icon: $r('sys.symbol.arrow_down_circle'), label: '任务进展',
             description: this.model.queue.ready ?
@@ -521,7 +686,7 @@ struct Index {
         Column({ space: 12 }) {
           WorkbenchSectionTitle({ title: '设备管理' })
           Column() {
-            WorkbenchActionRow({ icon: $r('sys.symbol.externaldrive'), label: '设备与账号', description: this.model.account,
+            WorkbenchActionRow({ icon: $r('sys.symbol.externaldrive'), label: '设备信息', description: this.model.account,
               available: !this.model.busy, onAction: (): void => { this.showDeviceInfo(); } })
             Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
             WorkbenchActionRow({ icon: $r('sys.symbol.externaldrive'), label: '连接地址', description: this.model.address,
@@ -535,8 +700,8 @@ struct Index {
         }.width('100%')
         this.notices()
       }.width('100%').constraintSize({ maxWidth: 840 })
-        .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin, top: this.contentTopInset() + 16, bottom: this.bottomInset() })
-    }.width('100%').height('100%').align(Alignment.Top).scrollBar(BarState.Auto)
+        .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin, top: this.contentTopInset() + 8, bottom: this.bottomInset() })
+    }.width('100%').height('100%').align(Alignment.Top).scrollBar(BarState.Off)
   }
 
   @Builder
@@ -903,7 +1068,7 @@ struct Index {
                 Text('正在读取照片…').fontSize(14).fontColor($r('sys.color.font_secondary'))
               }.width('100%').padding(12)
             }
-          }.width('100%').alignItems(HorizontalAlign.Start).padding({ top: this.contentTopInset() + 8 })
+          }.width('100%').alignItems(HorizontalAlign.Start).padding({ left: 16, right: 16, top: this.contentTopInset() + 8 })
         }
         if (!this.supportsPhotos()) {
           ListItem() { this.emptyState($r('sys.symbol.picture'), '相册暂不可用', '当前设备未提供可用的相册服务。仍可选择本机照片备份到文件夹。') }
@@ -919,7 +1084,7 @@ struct Index {
                 (album: NasPhotoAlbum): string => album.space.toString() + ':' + album.id.toString())
               ForEach([0, 1, 2, 3].slice(0, photoAlbumColumns(this.contentWidth) - row.item.albums.length),
                 (slot: number): void => { Blank().layoutWeight(1) }, (slot: number): string => slot.toString())
-            }.width('100%').alignItems(VerticalAlign.Top).padding({ top: 8, bottom: 8 })
+            }.width('100%').alignItems(VerticalAlign.Top).padding({ left: 16, right: 16, top: 8, bottom: 8 })
           }
         }).key((row: PhotoAlbumRow): string => row.key).virtualScroll()
         Repeat<PhotoTimelineRow>(photoTimelineRows(this.model.photoLibrary.items, photoGridColumns(this.contentWidth))).each((row: RepeatItem<PhotoTimelineRow>): void => {
@@ -936,7 +1101,7 @@ struct Index {
                     (slot: number): void => { Blank().layoutWeight(1) }, (slot: number): string => slot.toString())
                 }
               }.width('100%')
-            }.width('100%').alignItems(HorizontalAlign.Start)
+            }.width('100%').alignItems(HorizontalAlign.Start).padding({ left: 16, right: 16 })
           }
         }).key((row: PhotoTimelineRow): string => row.key).virtualScroll()
         if (this.supportsPhotos() && this.model.photoLibrary.errorText.length === 0) {
@@ -947,11 +1112,11 @@ struct Index {
                   .buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.photoLibrary.busy)
                   .onClick((): void => { this.model.photoLibrary.loadMore(); })
               }
-            }.width('100%').padding({ top: 8, bottom: 8 })
+            }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: 8 })
           }
         }
       }.width('100%').height('100%').scrollBar(BarState.Auto).contentEndOffset(this.bottomInset())
-    }.width('100%').constraintSize({ maxWidth: 960 }).height('100%').padding({ left: 16, right: 16 })
+    }.width('100%').constraintSize({ maxWidth: 960 }).height('100%')
       .onAreaChange((oldArea: Area, newArea: Area): void => { this.contentWidth = Number(newArea.width); })
   }
 
@@ -1031,10 +1196,22 @@ struct Index {
         .onShown((): void => { this.extensionsOpened = true; this.updateTelemetryMode(); this.model.extensions.refreshDownloads(); })
         .onHidden((): void => { this.extensionsOpened = false; this.updateTelemetryMode(); })
     } else if (name === 'telemetry') {
-      HdsNavDestination() { NasTelemetryDashboard({ monitor: this.model.telemetry, scroller: this.telemetryScroller }) }
+      HdsNavDestination() {
+        NasTelemetryDashboard({ monitor: this.model.telemetry, scroller: this.telemetryScroller,
+          topInset: this.contentTopInset(), bottomInset: this.navigationInset })
+      }
         .backgroundColor($r('app.color.workbench_background'))
-        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: '运行状态' } } })
+        // 与首页同一套标题栏配方：关掉组件级安全区，内容才能铺到标题栏下并被材质折射；
+        // 顶部让位由 topInset 在内容侧补齐。
+        .titleBar({ enableComponentSafeArea: false, content: { title: { mainTitle: '资源监控' } },
+          style: { scrollEffectOpts: { enableScrollEffect: false, scrollEffectType: ScrollEffectType.GRADIENT_BLUR },
+            systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE,
+              materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE },
+            originalStyle: { backgroundStyle: { blurRadius: 12, maskExtraHeight: 16 },
+              contentStyle: { titleStyle: { mainTitleColor: $r('sys.color.font_primary') } } } } })
         .bindToScrollable([this.telemetryScroller])
+        // 详情页要沉浸到屏幕下沿：内容区不被底部系统安全区（导航条）抬高，否则底边留一条灰带。
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.BOTTOM])
         .onShown((): void => { this.telemetryOpened = true; this.updateTelemetryMode(); })
         .onHidden((): void => { this.telemetryOpened = false; this.updateTelemetryMode(); })
     } else if (name === 'connection-addresses') {
@@ -1375,34 +1552,74 @@ struct Index {
       .enabled(!this.model.queue.busy && !this.model.busy && !this.transferSubmitting).bindMenu(this.taskMenu(item))
   }
 
+  /**
+   * 小弹层（FIT_CONTENT）的标题行，放在滚动内容首行。
+   * 这类弹层不挂 HDS 半模态标题栏，而 SheetOptions.title 只要传了 builder，
+   * 即使里面什么都不画，系统仍会按标题栏占位（实测留出约 72vp 空白带），
+   * 所以干脆不给 title，标题由内容自己画。
+   */
   @Builder
-  deviceSheet() {
-    Column() {
-      WorkbenchInfoRow({ label: '账号', value: this.model.account })
-      WorkbenchInfoRow({ label: '连接地址', value: this.model.address })
-      WorkbenchInfoRow({ label: '连接方式', value: 'HTTPS 安全连接' })
-      if (this.deviceInfo.length > 0) {
-        Divider().color($r('app.color.workbench_divider'))
-        WorkbenchInfoRow({ label: '设备型号', value: this.deviceInfo[0] })
-        WorkbenchInfoRow({ label: 'DSM 版本', value: this.deviceInfo[1] })
-        WorkbenchInfoRow({ label: '文件服务', value: this.deviceInfo[2] })
-        WorkbenchInfoRow({ label: '照片服务', value: this.deviceInfo[3] })
-        WorkbenchInfoRow({ label: '文件权限', value: this.deviceInfo[4] })
-      } else if (this.model.busy) {
-        LoadingProgress().width(32).height(32).margin(12)
-      } else {
-        Button('重新读取设备信息').constraintSize({ minHeight: 48 }).buttonStyle(ButtonStyleMode.TEXTUAL)
-          .onClick((): void => { this.showDeviceInfo(); })
-      }
-    }.width('100%').padding(16).borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_subtle'))
-    Button('退出当前账号').constraintSize({ minHeight: 48 }).width('100%').buttonStyle(ButtonStyleMode.TEXTUAL)
-      .fontColor($r('app.color.workbench_danger')).enabled(!this.model.busy).onClick((): void => { this.confirmLogout(); })
+  sheetPlainTitle() {
+    Row() {
+      Text(this.sheetTitle()).fontSize(20).fontWeight(FontWeight.Medium)
+        .fontColor($r('sys.color.font_primary')).layoutWeight(1)
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      // 给右上角的系统关闭按钮让出宽度，长标题在按钮前省略。
+      Row().width(WorkbenchMetrics.touchSize).height(32)
+    }.width('100%').constraintSize({ minHeight: 56 })
+      .alignItems(VerticalAlign.Center)
   }
 
+  /** 设备信息：按信息类型分成多张卡片区格，卡片内同类信息用细分隔线，卡片外不加分组标题。 */
   @Builder
-  fileSheet() {
-    Scroll() {
+  deviceSheet() {
+    Column({ space: WorkbenchMetrics.sectionGap }) {
+      Column() {
+        WorkbenchInfoRow({ label: '账号', value: this.model.account })
+        this.infoDivider()
+        WorkbenchInfoRow({ label: '连接地址', value: this.model.address })
+        this.infoDivider()
+        WorkbenchInfoRow({ label: '连接方式', value: this.connectionSecurityText() })
+      }.width('100%').padding({ left: 16, right: 16, top: WorkbenchMetrics.infoCardPadding, bottom: WorkbenchMetrics.infoCardPadding })
+        .borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_subtle'))
+      Column() {
+        if (this.deviceInfo.length > 0) {
+          WorkbenchInfoRow({ label: '设备型号', value: this.deviceInfo[0] })
+          this.infoDivider()
+          WorkbenchInfoRow({ label: 'DSM 版本', value: this.deviceInfo[1] })
+          this.infoDivider()
+          WorkbenchInfoRow({ label: '文件服务', value: this.deviceInfo[2] })
+          this.infoDivider()
+          WorkbenchInfoRow({ label: '照片服务', value: this.deviceInfo[3] })
+          this.infoDivider()
+          WorkbenchInfoRow({ label: '文件权限', value: this.deviceInfo[4] })
+        } else if (this.model.busy) {
+          LoadingProgress().width(32).height(32).margin(12)
+        } else {
+          Button('重新读取设备信息').constraintSize({ minHeight: 48 }).buttonStyle(ButtonStyleMode.TEXTUAL)
+            .onClick((): void => { this.showDeviceInfo(); })
+        }
+      }.width('100%').padding({ left: 16, right: 16, top: WorkbenchMetrics.infoCardPadding, bottom: WorkbenchMetrics.infoCardPadding })
+        .borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_subtle'))
+      Button('退出当前账号').constraintSize({ minHeight: 48 }).width('100%').buttonStyle(ButtonStyleMode.TEXTUAL)
+        .fontColor($r('app.color.workbench_danger')).enabled(!this.model.busy).onClick((): void => { this.confirmLogout(); })
+    }.width('100%').alignItems(HorizontalAlign.Start)
+  }
+
+  /** 卡片内相邻信息行之间的细分隔线，与信息文字左边缘对齐。 */
+  @Builder
+  infoDivider() {
+    Divider().color($r('app.color.workbench_divider'))
+  }
+
+  /** 半模态内容：所有弹层共用的滚动容器。 */
+  @Builder
+  sheetScroll() {
+    Scroll(this.sheetScroller) {
       Column({ space: 16 }) {
+        if (!this.sheetUsesModalTitleBar()) {
+          this.sheetPlainTitle()
+        }
         if (this.sheetKind === 'device') {
           this.deviceSheet()
         } else if (this.sheetKind === 'task') {
@@ -1464,36 +1681,92 @@ struct Index {
           }
         }
         this.notices()
-      }.width('100%').padding({ left: 24, right: 24, top: 16, bottom: 32 }).alignItems(HorizontalAlign.Start)
+      }.width('100%').padding({ left: WorkbenchMetrics.sheetMargin, right: WorkbenchMetrics.sheetMargin,
+        // HDS 半模态标题栏悬浮在内容之上，内容要按标题栏高度让位，否则首行被盖住。
+        top: 16 + (this.sheetUsesModalTitleBar() ? WorkbenchMetrics.sheetTitleBarHeight : 0), bottom: 32 })
+        .alignItems(HorizontalAlign.Start)
     }.width('100%').scrollBar(BarState.Auto)
+      // 官方《绑定半模态页面》要求：面板内容里自带滚动容器时，必须显式声明嵌套滚动，
+      // 否则手势会被内层 Scroll 吞掉，只有标题栏区域能拖动整个半模态。默认 {PARENT_FIRST, SELF_FIRST}。
+      .nestedScroll({
+        scrollForward: NestedScrollMode.PARENT_FIRST,
+        scrollBackward: NestedScrollMode.SELF_FIRST
+      })
+  }
+
+  /**
+   * 官方「半模态样式」：半模态内挂 HdsNavigation、titleMode 用 MODAL，
+   * 标题栏按钮的沉浸光感走 TitleBarStyleOptions.systemMaterialEffect。
+   */
+  @Builder
+  sheetWithModalTitleBar() {
+    HdsNavigation() {
+      this.sheetScroll()
+    }.width('100%').height('100%')
+      .hideBackButton(true)
+      .titleMode(HdsNavigationTitleMode.MODAL)
+      .bindToScrollable([this.sheetScroller])
+      .titleBar({
+        enableComponentSafeArea: false,
+        // HDS 半模态标题栏本体没有额外左缩进（实测标题落在 x=0），给 sheetMargin 即与卡片左边缘对齐。
+        padding: {
+          start: LengthMetrics.vp(WorkbenchMetrics.sheetMargin),
+          end: LengthMetrics.vp(WorkbenchMetrics.sheetMargin)
+        },
+        content: {
+          title: { mainTitle: this.sheetTitle() },
+          menu: {
+            value: [{ content: { icon: $r('sys.symbol.xmark'), type: IconStyleMode.SMALL,
+              action: (): void => { this.sheetVisible = false; } } }]
+          }
+        },
+        style: {
+          systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE,
+            materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE }
+        }
+      })
+  }
+
+  @Builder
+  fileSheet() {
+    if (this.sheetUsesModalTitleBar()) {
+      this.sheetWithModalTitleBar()
+    } else {
+      this.sheetScroll()
+    }
   }
 
   build() {
     Column() {
       HdsNavigation(this.navStack) {
         Column() {
-          this.sharedInboxCard()
-          if (this.model.authenticated) {
-            HdsTabs({ controller: this.tabsController, index: this.activeTab }) {
-              TabContent() { this.homeView() }
-                .tabBar(new BottomTabBarStyle({ normal: new SymbolGlyphModifier($r('sys.symbol.house')) }, '首页'))
-              TabContent() { this.filesView() }
-                .tabBar(new BottomTabBarStyle({ normal: new SymbolGlyphModifier($r('sys.symbol.folder')) }, '文件'))
-              TabContent() { this.photosView() }
-                .tabBar(new BottomTabBarStyle({ normal: new SymbolGlyphModifier($r('sys.symbol.picture')) }, '相册'))
-              TabContent() { this.tasksView() }
-                .tabBar(new BottomTabBarStyle({ normal: new SymbolGlyphModifier($r('sys.symbol.arrow_down_circle')) }, '任务'))
-            }.width('100%').layoutWeight(1).barPosition(BarPosition.End).scrollable(false)
-              .barOverlap(true).vertical(false)
-              .barFloatingStyle({ barBottomMargin: this.navigationInset, systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE,
-                materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE }, thermoCtrl: true })
-              .onTabBarClick((index: number): void => {
-                if (index === this.activeTab) { this.activeScrollers()[0].scrollTo({ xOffset: 0, yOffset: 0 }); }
-              })
-              .onChange((index: number): void => { this.activeTab = index; if (index === 2) { this.ensurePhotosOpen(); } })
-          } else { this.connectionForm() }
+          if (this.bootPending && !this.model.authenticated) {
+            this.bootView()
+          } else {
+            this.sharedInboxCard()
+            if (this.model.authenticated) {
+              HdsTabs({ controller: this.tabsController, index: this.activeTab }) {
+                TabContent() { this.homeView() }
+                  .tabBar(new BottomTabBarStyle({ normal: new SymbolGlyphModifier($r('sys.symbol.house')) }, '首页'))
+                TabContent() { this.filesView() }
+                  .tabBar(new BottomTabBarStyle({ normal: new SymbolGlyphModifier($r('sys.symbol.folder')) }, '文件'))
+                TabContent() { this.photosView() }
+                  .tabBar(new BottomTabBarStyle({ normal: new SymbolGlyphModifier($r('sys.symbol.picture')) }, '相册'))
+                TabContent() { this.tasksView() }
+                  .tabBar(new BottomTabBarStyle({ normal: new SymbolGlyphModifier($r('sys.symbol.arrow_down_circle')) }, '任务'))
+              }.width('100%').layoutWeight(1).barPosition(BarPosition.End).scrollable(false)
+                .barOverlap(true).vertical(false)
+                .barFloatingStyle({ barBottomMargin: this.navigationInset, systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE,
+                  materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE }, thermoCtrl: true })
+                .onTabBarClick((index: number): void => {
+                  if (index === this.activeTab) { this.activeScrollers()[0].scrollTo({ xOffset: 0, yOffset: 0 }); }
+                })
+                .onChange((index: number): void => { this.activeTab = index; if (index === 2) { this.ensurePhotosOpen(); } })
+            } else { this.loginView() }
+          }
         }.width('100%').height('100%')
       }.width('100%').height('100%').backgroundColor($r('app.color.workbench_background')).mode(NavigationMode.Stack).hideBackButton(true)
+        .hideTitleBar(!this.model.authenticated)
         .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
         .navDestination(this.destinationBuilder).bindToScrollable(this.activeScrollers())
         .titleMode(HdsNavigationTitleMode.MINI).titleBar({ enableComponentSafeArea: false,
@@ -1503,12 +1776,22 @@ struct Index {
             originalStyle: { backgroundStyle: { blurRadius: 12, maskExtraHeight: 16 },
               contentStyle: { titleStyle: { mainTitleColor: $r('sys.color.font_primary') } } } } })
     }.width('100%').height('100%').backgroundColor($r('app.color.workbench_background'))
-      .onAreaChange((oldArea: Area, newArea: Area): void => { this.windowWidth = Number(newArea.width); })
+      .onAreaChange((oldArea: Area, newArea: Area): void => {
+        this.windowWidth = Number(newArea.width);
+        this.windowHeight = Number(newArea.height);
+      })
       .bindSheet($$this.sheetVisible, this.fileSheet(), {
         height: this.sheetKind === 'backup' || this.sheetKind === 'device' || this.sheetKind === 'task' ? SheetSize.LARGE : SheetSize.FIT_CONTENT,
-        preferType: this.windowWidth < 600 ? SheetType.BOTTOM : SheetType.CENTER, showClose: true,
-        backgroundColor: $r('app.color.workbench_surface'),
-        title: { title: this.sheetTitle() }, keyboardAvoidMode: SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL
+        preferType: this.windowWidth < 600 ? SheetType.BOTTOM : SheetType.CENTER,
+        // 关闭按钮由 sheetTitleBar() 自绘，系统关闭图标关闭，避免出现两个关闭入口。
+        // HDS 半模态标题栏自带关闭按钮时关掉系统的那个，避免两个关闭入口。
+        showClose: !this.sheetUsesModalTitleBar(),
+        backgroundColor: this.sheetMaterialAvailable ? Color.Transparent : $r('app.color.workbench_surface'),
+        systemMaterial: this.sheetMaterial,
+        // 不给 title：传任何 builder 系统都会按标题栏占位，HDS 弹层的标题由 HdsNavigation 提供，
+        // 小弹层的标题画在内容首行（sheetPlainTitle）。
+        title: undefined,
+        keyboardAvoidMode: SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL
       })
   }
 }

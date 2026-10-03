@@ -138,9 +138,11 @@ test('SYNTHETIC account/model text enforce trimmed account, nonempty model and 1
   assert.equal(control.validateNasControlRecord({ ...SYNTHETIC_RECORD, model: ' Synthetic NAS ' }).model, ' Synthetic NAS ');
 });
 
-test('SYNTHETIC record origins use the established HTTPS-only normalization boundary', () => {
+test('SYNTHETIC record origins keep the declared scheme at the normalization boundary', () => {
   assert.equal(control.validateNasControlRecord({ ...SYNTHETIC_RECORD, origin: 'https://[2001:DB8::1]:5001/' }).origin, 'https://[2001:db8::1]:5001');
-  for (const origin of ['http://nas.example.test', 'https://u:p@nas.example.test', 'https://nas.example.test/path',
+  assert.equal(control.validateNasControlRecord({ ...SYNTHETIC_RECORD, origin: 'http://nas.example.test:5000' }).origin,
+    'http://nas.example.test:5000');
+  for (const origin of ['nas.example.test', 'https://u:p@nas.example.test', 'https://nas.example.test/path',
     'https://nas.example.test?token=x', 'https://nas.example.test:0', 'https://nas.example.test:65536', '', null, {}]) {
     rejectsInput(() => control.validateNasControlRecord({ ...SYNTHETIC_RECORD, origin }));
   }

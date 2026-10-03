@@ -8,10 +8,20 @@ import { PHOTO_ORIGINAL_MAX_BYTES, PHOTO_THUMBNAIL_MAX_BYTES, validatePhotoMedia
 import { NasHttpReply, NasTransport, NasTransferPlan } from './NasConnector';
 
 export class RcpNasTransport implements NasTransport {
-  private session: rcp.Session = rcp.createSession({
-    requestConfiguration: { transfer: { autoRedirect: false, timeout: { connectMs: 10000, transferMs: 20000 } } }
-  });
+  private session: rcp.Session;
   private closed: boolean = false;
+
+  /**
+   * insecureTls 只在用户显式选择“忽略 SSL 验证”时为 true；此时跳过服务器证书校验，
+   * 用于自签名证书的内网 NAS。默认仍使用系统 CA。
+   */
+  constructor(insecureTls: boolean = false) {
+    const requestConfiguration: rcp.Configuration = {
+      transfer: { autoRedirect: false, timeout: { connectMs: 10000, transferMs: 20000 } }
+    };
+    if (insecureTls) { requestConfiguration.security = { remoteValidation: 'skip' }; }
+    this.session = rcp.createSession({ requestConfiguration: requestConfiguration });
+  }
 
   async post(address: string, body: string, authorization?: NasLoginSession): Promise<NasHttpReply> {
     const request = this.request(address, body, authorization, 'application/json');
@@ -149,7 +159,7 @@ export class RcpNasTransport implements NasTransport {
     if (error instanceof NasFailure) { return error; }
     const code = (error as BusinessError).code;
     if ([1007900035, 1007900058, 1007900059, 1007900060, 1007900077, 1007900090].includes(code)) {
-      return new NasFailure(NasErrorKind.Tls, 'HTTPS 证书验证失败，请检查域名、证书链和有效期。', code);
+      return new NasFailure(NasErrorKind.Tls, '服务器证书校验未通过。请检查域名与证书有效期；内网自签名证书可在登录页开启“忽略 SSL 验证”；也可改用 http 地址。', code);
     }
     return new NasFailure(NasErrorKind.Network, '连接 NAS 失败，请检查网络与服务器地址。', code);
   }

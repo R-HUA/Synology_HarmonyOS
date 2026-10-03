@@ -39,11 +39,11 @@ export class PhotoLibrary {
   private expired: (error: NasFailure) => Promise<void> = async (): Promise<void> => {};
 
   attach(connector: NasConnector, context: common.UIAbilityContext | undefined,
-    expired: (error: NasFailure) => Promise<void>): void {
+    expired: (error: NasFailure) => Promise<void>, insecureTls: boolean = false): void {
     this.reset();
     this.connector = connector;
     this.expired = expired;
-    this.media.attach(context, connector, (): void => this.updateThumbnailPaths());
+    this.media.attach(context, connector, (): void => this.updateThumbnailPaths(), insecureTls);
     this.thumbnailErrorText = this.media.cleanupErrorText;
   }
 

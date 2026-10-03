@@ -24,11 +24,13 @@ import type { NasTransport } from './DsmRpcClient';
 export type { NasHttpReply, NasTransport } from './DsmRpcClient';
 
 export interface NasEnvironment { model: string; dsmVersion: string; fileStationVersion: string; photosVersion: string; administrator: boolean; }
+/** 首页设备卡所需的身份信息；读不到的字段一律留空串，由界面兜底。 */
+export interface NasDeviceIdentity { model: string; serverName: string; }
 export interface NasTransferPlan { address: string; fields: NasFormField[]; session: NasLoginSession; }
 
 export const NAS_DISCOVERY_QUERY = 'SYNO.API.Auth,SYNO.FileStation.List,SYNO.FileStation.Info,' +
   'SYNO.FileStation.Upload,SYNO.FileStation.Download,SYNO.Foto.Browse.Item,SYNO.FotoTeam.Browse.Item,' +
-  'SYNO.DSM.Info,SYNO.Core.Package,SYNO.Foto.Sharing.Misc,' +
+  'SYNO.DSM.Info,SYNO.Core.Package,SYNO.Foto.Sharing.Misc,SYNO.Core.Network,' +
   'SYNO.Foto.Browse.Album,SYNO.FotoTeam.Browse.Album,SYNO.Foto.Thumbnail,SYNO.FotoTeam.Thumbnail,SYNO.Foto.Download,SYNO.FotoTeam.Download,' +
   'SYNO.FileStation.CreateFolder,SYNO.FileStation.Rename,SYNO.FileStation.Delete,SYNO.FileStation.CopyMove,SYNO.FileStation.MD5,' +
   'SYNO.FileStation.Sharing,SYNO.DownloadStation.Task,' +
@@ -267,6 +269,33 @@ export class NasConnector {
   async telemetryStorage(): Promise<Record<string, Object>> {
     this.requireSession();
     return this.call('SYNO.Storage.CGI.Storage', 1, 'load_info', []);
+  }
+
+  /**
+   * 首页设备卡需要的型号与服务器名称（控制面板 → 网络 → 常规 → 服务器名称）。
+   * 服务器名称来自 SYNO.Core.Network v1 get 的 server_name；旧固件没有该接口或字段时留空。
+   * 两个字段各自独立兜底，任一失败都不影响另一个。
+   */
+  async deviceIdentity(): Promise<NasDeviceIdentity> {
+    this.requireSession();
+    let model = '';
+    let serverName = '';
+    try {
+      const info = await this.call('SYNO.Core.System', 1, 'info', []);
+      model = this.identityText(info['model'], 128);
+    } catch { model = ''; }
+    try {
+      const network = await this.call('SYNO.Core.Network', 1, 'get', []);
+      serverName = this.identityText(network['server_name'], 64);
+    } catch { serverName = ''; }
+    return { model: model, serverName: serverName };
+  }
+
+  private identityText(value: Object | undefined, limit: number): string {
+    if (typeof value !== 'string') { return ''; }
+    const text = (value as string).trim();
+    if (text.length === 0 || text.length > limit || /[\u0000-\u001f\u007f-\u009f]/.test(text)) { return ''; }
+    return text;
   }
 
   async environment(): Promise<NasEnvironment> {
