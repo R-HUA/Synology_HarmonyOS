@@ -1,5 +1,5 @@
 import { common } from '@kit.AbilityKit';
-import { LengthMetrics, SymbolGlyphModifier, window } from '@kit.ArkUI';
+import { SymbolGlyphModifier, window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileUri } from '@kit.CoreFileKit';
 import { HdsNavigation, HdsNavigationTitleMode, HdsNavDestination, HdsTabs, HdsTabsController, hdsMaterial, ScrollEffectType } from '@kit.UIDesignKit';
@@ -26,6 +26,7 @@ struct Index {
   @Local private model: ConnectionViewModel = new ConnectionViewModel();
   @Local private activeTab: number = 0;
   @Local private navigationInset: number = 0;
+  @Local private statusInset: number = 0;
   private mainWindow: window.Window | undefined = undefined;
   private pageActive: boolean = false;
   private foreground: boolean = true;
@@ -49,6 +50,8 @@ struct Index {
   private navigationAreaChanged = (options: window.AvoidAreaOptions): void => {
     if (options.type === window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR) {
       this.navigationInset = this.getUIContext().px2vp(options.area.bottomRect.height);
+    } else if (options.type === window.AvoidAreaType.TYPE_SYSTEM) {
+      this.statusInset = this.getUIContext().px2vp(options.area.topRect.height);
     }
   };
   @Local private sheetVisible: boolean = false;
@@ -89,6 +92,7 @@ struct Index {
       if (!this.pageActive) { return; }
       this.mainWindow = mainWindow;
       this.navigationInset = this.getUIContext().px2vp(mainWindow.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR).bottomRect.height);
+      this.statusInset = this.getUIContext().px2vp(mainWindow.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM).topRect.height);
       mainWindow.on('avoidAreaChange', this.navigationAreaChanged);
     }).catch((): void => { hilog.error(0x0000, 'NasLayout', 'operation=navigation_avoid_area result=failed'); });
   }
@@ -245,6 +249,11 @@ struct Index {
 
   private bottomInset(): number {
     return workbenchBottomInset(this.navigationInset);
+  }
+
+  /** 内容区延伸到标题栏之下，首项需要让出状态栏与单行标题栏的高度。 */
+  private contentTopInset(): number {
+    return this.statusInset + 56;
   }
 
   private selectedTask(): TransferQueueItem | undefined {
@@ -454,7 +463,7 @@ struct Index {
         Button('连接地址').width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
           .onClick((): void => { this.openConnectionAddresses(); })
         this.notices()
-      }.width('100%').constraintSize({ maxWidth: 560 }).padding({ left: 16, right: 16, top: 16, bottom: 32 }).alignItems(HorizontalAlign.Start)
+      }.width('100%').constraintSize({ maxWidth: 560 }).padding({ left: 16, right: 16, top: this.contentTopInset() + 16, bottom: 32 }).alignItems(HorizontalAlign.Start)
     }.width('100%').layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Auto)
   }
 
@@ -526,7 +535,7 @@ struct Index {
         }.width('100%')
         this.notices()
       }.width('100%').constraintSize({ maxWidth: 840 })
-        .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin, top: 16, bottom: this.bottomInset() })
+        .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin, top: this.contentTopInset() + 16, bottom: this.bottomInset() })
     }.width('100%').height('100%').align(Alignment.Top).scrollBar(BarState.Auto)
   }
 
@@ -690,7 +699,7 @@ struct Index {
                 Text('正在处理…').fontSize(14).fontColor($r('sys.color.font_secondary'))
               }.width('100%').padding(12)
             }
-          }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: 12 })
+          }.width('100%').padding({ left: 16, right: 16, top: this.contentTopInset() + 8, bottom: 12 })
         }
         if (!this.model.busy && this.model.entries.length === 0 && this.model.errorText.length === 0) {
           ListItem() { this.emptyState($r('sys.symbol.folder'), '此位置为空', '此文件夹没有可显示的项目。') }
@@ -894,7 +903,7 @@ struct Index {
                 Text('正在读取照片…').fontSize(14).fontColor($r('sys.color.font_secondary'))
               }.width('100%').padding(12)
             }
-          }.width('100%').alignItems(HorizontalAlign.Start).padding({ top: 8 })
+          }.width('100%').alignItems(HorizontalAlign.Start).padding({ top: this.contentTopInset() + 8 })
         }
         if (!this.supportsPhotos()) {
           ListItem() { this.emptyState($r('sys.symbol.picture'), '相册暂不可用', '当前设备未提供可用的相册服务。仍可选择本机照片备份到文件夹。') }
@@ -1177,7 +1186,7 @@ struct Index {
             if (this.model.supports('SYNO.DownloadStation.Task')) {
               WorkbenchChoice({ label: 'NAS 下载', selected: false, onSelect: (): void => { this.openNasDownloads(); } })
             }
-          }.width('100%').padding({ top: 8 })
+          }.width('100%').padding({ top: this.contentTopInset() + 8 })
         }
         if (this.taskSection === 'files') {
         ListItem() {
@@ -1332,7 +1341,7 @@ struct Index {
             .onClick((): void => { this.model.discardSharedFiles(); })
         }.width('100%')
       }.width('100%').constraintSize({ maxWidth: 960 }).padding(16).borderRadius(WorkbenchMetrics.innerRadius)
-        .backgroundColor($r('app.color.workbench_surface')).margin({ left: 16, right: 16, bottom: 8 })
+        .backgroundColor($r('app.color.workbench_surface')).margin({ left: 16, right: 16, top: this.contentTopInset() + 8, bottom: 8 })
     }
   }
 
@@ -1485,14 +1494,13 @@ struct Index {
           } else { this.connectionForm() }
         }.width('100%').height('100%')
       }.width('100%').height('100%').backgroundColor($r('app.color.workbench_background')).mode(NavigationMode.Stack).hideBackButton(true)
-        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.BOTTOM])
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
         .navDestination(this.destinationBuilder).bindToScrollable(this.activeScrollers())
-        .titleMode(HdsNavigationTitleMode.FREE).titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: this.pageTitle() } },
-          style: { scrollEffectOpts: { enableScrollEffect: true, scrollEffectType: ScrollEffectType.GRADIENT_BLUR,
-              blurEffectiveStartOffset: LengthMetrics.vp(0), blurEffectiveEndOffset: LengthMetrics.vp(8) },
+        .titleMode(HdsNavigationTitleMode.MINI).titleBar({ enableComponentSafeArea: false,
+          content: { title: { mainTitle: this.pageTitle() } },
+          style: { scrollEffectOpts: { enableScrollEffect: false, scrollEffectType: ScrollEffectType.GRADIENT_BLUR },
             systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE },
-            originalStyle: { contentStyle: { titleStyle: { mainTitleColor: $r('sys.color.font_primary') } } },
-            scrollEffectStyle: { backgroundStyle: { blurRadius: 24, maskExtraHeight: 32 },
+            originalStyle: { backgroundStyle: { blurRadius: 24 },
               contentStyle: { titleStyle: { mainTitleColor: $r('sys.color.font_primary') } } } } })
     }.width('100%').height('100%').backgroundColor($r('app.color.workbench_background'))
       .onAreaChange((oldArea: Area, newArea: Area): void => { this.windowWidth = Number(newArea.width); })
