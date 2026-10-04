@@ -1,4 +1,4 @@
-param([string]$ReportPath = 'work/lint/report.json')
+﻿param([string]$ReportPath = 'work/lint/report.json')
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Push-Location -LiteralPath $projectRoot

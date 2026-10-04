@@ -1,4 +1,4 @@
-param([string]$SdkRoot = 'C:\Program Files\command-line-tools\sdk\default')
+﻿param([string]$SdkRoot = 'C:\Program Files\command-line-tools\sdk\default')
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $compilerPath = Join-Path $SdkRoot 'openharmony\ets\build-tools\ets-loader\node_modules\typescript\bin\tsc'
