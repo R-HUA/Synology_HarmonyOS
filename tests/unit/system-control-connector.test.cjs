@@ -60,7 +60,7 @@ test('ordinary FileStation login remains unchanged and cannot execute control ev
 test('only shutdown sends local=true; no session or unsafe extra business fields are added', async () => {
   const { connector, calls } = fixture();
   await connector.discover(origin);
-  connector.restoreSession(session);
+  connector.restoreSession([{ name: 'NasControl', sid: session.sid, synoToken: session.synoToken }]);
   await connector.systemControl('shutdown');
   assert.deepEqual(calls[1].fields, { api: 'SYNO.Core.System', version: '1', method: 'shutdown', local: 'true' });
 });
@@ -69,7 +69,7 @@ test('unknown actions and missing login cannot issue a control request', async (
   const { connector, calls } = fixture();
   await connector.discover(origin);
   await assert.rejects(connector.systemControl('reboot'), error => error.kind === K.SessionExpired);
-  connector.restoreSession(session);
+  connector.restoreSession([{ name: 'NasControl', sid: session.sid, synoToken: session.synoToken }]);
   for (const action of ['restart', 'upgrade', 'Reboot', '', undefined]) {
     await assert.rejects(connector.systemControl(action), error => error.kind === K.InvalidInput);
   }
@@ -87,7 +87,7 @@ test('a valid DSM rejection is distinguished from HTTP errors, malformed envelop
   ]) {
     const { connector, calls, state } = fixture();
     await connector.discover(origin);
-    connector.restoreSession(session);
+    connector.restoreSession([{ name: 'NasControl', sid: session.sid, synoToken: session.synoToken }]);
     Object.assign(state, scenario);
     await assert.rejects(connector.systemControl('reboot'), error => (error instanceof NasControlRejection) === scenario.rejected);
     assert.equal(calls.filter(call => call.fields.method === 'reboot').length, 1);
@@ -97,7 +97,7 @@ test('a valid DSM rejection is distinguished from HTTP errors, malformed envelop
 test('closing a control connection during dispatch leaves cancellation uncertain rather than fabricating a rejection', async () => {
   const { connector, calls, state } = fixture();
   await connector.discover(origin);
-  connector.restoreSession(session);
+  connector.restoreSession([{ name: 'NasControl', sid: session.sid, synoToken: session.synoToken }]);
   let release;
   state.gate = new Promise(resolve => { release = resolve; });
   const pending = connector.systemControl('reboot');

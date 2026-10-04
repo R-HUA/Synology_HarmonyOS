@@ -47,8 +47,10 @@ const { NasFailure, NasErrorKind: K } = protocol;
 const oldOrigin = 'https://lan.example.test:5001';
 const nextOrigin = 'https://remote.example.test';
 const identity = { model: 'Synthetic NAS', serial: 'synthetic-device-serial' };
-const savedSession = { origin: oldOrigin, account: 'alice', sid: 'old-origin-only-sid', synoToken: 'old-origin-only-token', insecureTls: false };
+const savedSession = { origin: oldOrigin, account: 'alice', insecureTls: false,
+  sessions: [{ name: 'FileStation', sid: 'old-origin-only-sid', synoToken: 'old-origin-only-token' }] };
 const newSession = { sid: 'new-login-sid', synoToken: 'new-login-token' };
+const newSessionRecord = { name: 'FileStation', sid: newSession.sid, synoToken: newSession.synoToken };
 const context = { filesDir: '/synthetic-private' };
 const plain = value => JSON.parse(JSON.stringify(value));
 const failure = kind => new NasFailure(kind, '合成测试失败', 105);
@@ -108,10 +110,12 @@ async function fixture(options = {}) {
       this.origin = args[0];
       this.event('discover', args);
       if (state.discoverError) { throw state.discoverError; }
-      return [{ name: 'SYNO.API.Auth', minVersion: 6, maxVersion: 6 }];
+      const apis = [{ name: 'SYNO.API.Auth', minVersion: 6, maxVersion: 6 }];
+      if (options.fileStation !== false) { apis.push({ name: 'SYNO.FileStation.List', minVersion: 2, maxVersion: 2 }); }
+      return apis;
     }
     restoreSession(input) { this.event('restoreSession', [plain(input)]); this.session = plain(input); }
-    async login(...args) { this.event('login', args); this.session = plain(newSession); }
+    async login(...args) { this.event('login', args); this.session = [plain(newSessionRecord)]; }
     async telemetrySystem(...args) {
       this.event('identity', args);
       if (state.identityGate) { await state.identityGate.promise; }
@@ -120,9 +124,10 @@ async function fixture(options = {}) {
     }
     async list(...args) {
       this.event('list', args);
+      if (state.listError) { throw state.listError; }
       return { entries: [{ name: '旧目录', path: '/old-share', isDirectory: true }], offset: 0, total: 1 };
     }
-    sessionSnapshot() { this.event('snapshot'); return this.session === undefined ? undefined : plain(this.session); }
+    sessionSnapshot() { this.event('snapshot'); return this.session === undefined ? [] : plain(this.session); }
     async logout() {
       this.event('logout');
       try { if (state.logoutError) { throw state.logoutError; } } finally { this.close(); }
@@ -224,9 +229,9 @@ for (const operation of ['restore', 'login']) {
     assert.equal(count('session.save'), operation === 'login' ? 1 : 0);
     if (operation === 'login') {
       assert.ok(calls.findIndex(call => call.method === 'session.save') > calls.findIndex(call => call.method === 'queue.attach'));
-      assert.deepEqual(state.session, { origin: oldOrigin, account: 'alice', ...newSession, insecureTls: false });
+      assert.deepEqual(state.session, { origin: oldOrigin, account: 'alice', insecureTls: false, sessions: [newSessionRecord] });
     } else {
-      assert.deepEqual(calls.find(call => call.method === 'restoreSession').args, [{ sid: savedSession.sid, synoToken: savedSession.synoToken }]);
+      assert.deepEqual(calls.find(call => call.method === 'restoreSession').args, [savedSession.sessions]);
     }
   });
 
@@ -291,6 +296,38 @@ test('an explicitly unbound login is allowed but cannot claim that the device wa
   assert.equal(count('identity'), 0);
   assert.match(model.deviceCheckText, /未登记设备身份.*不合并登录和任务/);
   assert.equal(count('session.save'), 1);
+});
+
+test('login without File Station still saves the session, attaches tasks and explains the file tab', async () => {
+  const { model, count } = await fixture({ fileStation: false });
+  await model.connect();
+  await model.login();
+  assert.equal(model.authenticated, true);
+  assert.equal(count('session.save'), 1);
+  assert.equal(count('queue.attach'), 1);
+  assert.equal(count('list'), 0);
+  assert.match(model.directoryErrorText, /File Station/);
+});
+
+test('restore without File Station completes the account entry without listing files', async () => {
+  const { model, count } = await fixture({ fileStation: false });
+  await model.restore(context);
+  assert.equal(model.authenticated, true);
+  assert.equal(model.savedSession, true);
+  assert.equal(count('list'), 0);
+  assert.match(model.directoryErrorText, /File Station/);
+});
+
+test('a file permission failure after login does not block session persistence or queue attachment', async () => {
+  const { model, state, count } = await fixture();
+  state.listError = failure(K.Permission);
+  await model.connect();
+  await model.login();
+  assert.equal(model.authenticated, true);
+  assert.equal(count('session.save'), 1);
+  assert.equal(count('queue.attach'), 1);
+  assert.equal(count('list'), 1);
+  assert.ok(model.directoryErrorText.length > 0);
 });
 
 for (const operation of ['restore', 'login']) {
@@ -495,7 +532,7 @@ test('the certificate policy follows the address scheme and round-trips through 
   assert.equal(model.authenticated, true);
   assert.equal(model.address, 'https://nas.example.test:5001');
   assert.deepEqual(state.session, { origin: 'https://nas.example.test:5001', account: 'alice',
-    sid: newSession.sid, synoToken: newSession.synoToken, insecureTls: true });
+    insecureTls: true, sessions: [newSessionRecord] });
 });
 
 test('a submitted login keeps a self-signed https policy but never keeps it for a plain http origin', async () => {

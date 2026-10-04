@@ -69,7 +69,7 @@ test('connector marks root browsing available only after decoding and does not g
   replies.push(ok({ 'SYNO.API.Auth': { path: 'auth.cgi', minVersion: 1, maxVersion: 7 },
     'SYNO.FileStation.List': { path: 'entry.cgi', minVersion: 1, maxVersion: 2 } }));
   await connector.discover('https://nas.example');
-  connector.restoreSession({ sid: 'synthetic-sid', synoToken: '' });
+  connector.restoreSession([{ name: 'FileStation', sid: 'synthetic-sid', synoToken: '' }]);
   const files = () => connector.capabilitySnapshots().find(value => value.feature === 'fileBrowse');
   assert.equal(files().state, 'unverified');
   replies.push(ok({ shares: [], total: 0, offset: 0 }));

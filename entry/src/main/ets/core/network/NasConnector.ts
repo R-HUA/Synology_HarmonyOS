@@ -20,6 +20,8 @@ import { decodeExtensionResponse } from '../domain/ExtensionProtocol';
 import { selectVerifiedApi } from './ApiVersionPolicy';
 import { CapabilityRegistry } from '../capabilities/CapabilityRegistry';
 import type { CapabilitySnapshot } from '../capabilities/CapabilityRegistry';
+import { SessionRegistry } from './SessionRegistry';
+import type { BusinessSessionName, BusinessSessionRecord } from './SessionRegistry';
 import type { NasTransport } from './DsmRpcClient';
 export type { NasHttpReply, NasTransport } from './DsmRpcClient';
 
@@ -39,7 +41,7 @@ export const NAS_DISCOVERY_QUERY = 'SYNO.API.Auth,SYNO.FileStation.List,SYNO.Fil
 export class NasConnector {
   private origin: string = '';
   private capabilities: NasApiDescriptor[] = [];
-  private session: NasLoginSession | undefined = undefined;
+  private sessions: SessionRegistry = new SessionRegistry();
   private generation: number = 0;
   private disposed: boolean = false;
   private authenticating: boolean = false;
@@ -64,8 +66,8 @@ export class NasConnector {
     this.ensureCurrent(ticket);
     this.capabilities = decodeCapabilities(decodeNasResponse('SYNO.API.Info', reply.status, reply.text));
     this.featureRegistry.discover(this.capabilities);
+    // 连接只依赖认证接口；File Station 未发现或无权限不阻止登录，文件能力保持未验证并按套件降级。
     selectNasApi(this.capabilities, 'SYNO.API.Auth', [6]);
-    selectNasApi(this.capabilities, 'SYNO.FileStation.List', [2]);
     return this.capabilities.slice();
   }
 
@@ -73,22 +75,43 @@ export class NasConnector {
     this.ensureOpen();
     if (account.trim().length === 0 || password.length === 0) { throw new NasFailure(NasErrorKind.InvalidInput, '请输入账号和密码。'); }
     if (otp.length > 0 && !/^[0-9]{6}$/.test(otp)) { throw new NasFailure(NasErrorKind.InvalidInput, '动态码应为 6 位数字。'); }
-    if (this.authenticating || this.session !== undefined) { throw new NasFailure(NasErrorKind.InvalidInput, '当前正在登录或已经登录。'); }
+    if (this.authenticating || this.sessions.has(this.sessionName)) { throw new NasFailure(NasErrorKind.InvalidInput, '当前正在登录或已经登录。'); }
+    this.authenticating = true;
+    try {
+      this.sessions.register(this.sessionName,
+        decodeNasSession(await this.call('SYNO.API.Auth', 6, 'login', this.loginFields(this.sessionName, account, password, otp))));
+      await this.loginDownloadStation(account, password, otp);
+    }
+    finally { this.authenticating = false; }
+  }
+
+  private loginFields(session: BusinessSessionName, account: string, password: string, otp: string): NasFormField[] {
     const fields: NasFormField[] = [
       { name: 'account', content: account.trim() }, { name: 'passwd', content: password },
-      { name: 'session', content: this.sessionName }, { name: 'format', content: 'sid' },
+      { name: 'session', content: session }, { name: 'format', content: 'sid' },
       { name: 'enable_syno_token', content: 'yes' }
     ];
     if (otp.length > 0) { fields.push({ name: 'otp_code', content: otp }); }
-    this.authenticating = true;
-    try { this.session = decodeNasSession(await this.call('SYNO.API.Auth', 6, 'login', fields)); }
-    finally { this.authenticating = false; }
+    return fields;
+  }
+
+  /**
+   * Download Station 按 DSM 规范使用独立套件会话；主会话登录成功后凭同一凭据尽力建立。
+   * 失败不阻止主登录（含动态码一次性导致二次登录被拒的场景），NAS 下载入口在使用时提示重新登录。
+   */
+  private async loginDownloadStation(account: string, password: string, otp: string): Promise<void> {
+    if (this.sessionName !== 'FileStation' ||
+      !this.capabilities.some((api: NasApiDescriptor): boolean => api.name === 'SYNO.DownloadStation.Task')) { return; }
+    try {
+      this.sessions.register('DownloadStation',
+        decodeNasSession(await this.call('SYNO.API.Auth', 6, 'login', this.loginFields('DownloadStation', account, password, otp))));
+    } catch { /* 套件会话未建立，由 NAS 下载能力按未登录降级 */ }
   }
 
   async list(path: string, offset: number = 0, sortBy: NasFileSortBy = NasFileSortBy.Name,
     sortDirection: NasFileSortDirection = NasFileSortDirection.Ascending): Promise<NasFilePage> {
     this.ensureOpen();
-    if (this.session === undefined) { throw new NasFailure(NasErrorKind.SessionExpired, '请先登录 NAS。'); }
+    if (!this.sessions.has(this.sessionName)) { throw new NasFailure(NasErrorKind.SessionExpired, '请先登录 NAS。'); }
     if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(offset + 100)) {
       throw new NasFailure(NasErrorKind.InvalidInput, '分页位置不正确。');
     }
@@ -300,14 +323,28 @@ export class NasConnector {
 
   async environment(): Promise<NasEnvironment> {
     this.requireSession();
-    const administrator = await this.isFileManager();
     const info = await this.call('SYNO.DSM.Info', 2, 'getinfo', []);
     const model = this.metadataText(info['model']);
     const dsmVersion = this.metadataText(info['version_string']);
-    const fileStationVersion = await this.packageVersion('FileStation');
-    const photosVersion = await this.packageVersion('SynologyPhotos');
+    // 套件版本与管理标记按权限降级：无权限或接口缺失时留空，由界面明确提示；
+    // 响应格式不符、网络与会话错误仍然原样上抛，不用空值掩盖。
+    let administrator = false;
+    let fileStationVersion = '';
+    let photosVersion = '';
+    try { administrator = await this.isFileManager(); }
+    catch (error) { this.assertCapabilityUnavailable(error as Object); }
+    try { fileStationVersion = await this.packageVersion('FileStation'); }
+    catch (error) { this.assertCapabilityUnavailable(error as Object); }
+    try { photosVersion = await this.packageVersion('SynologyPhotos'); }
+    catch (error) { this.assertCapabilityUnavailable(error as Object); }
     return { model: model, dsmVersion: dsmVersion, fileStationVersion: fileStationVersion,
       photosVersion: photosVersion, administrator: administrator };
+  }
+
+  /** 套件无权限或未发现时静默降级；其余错误继续抛出，不用空值掩盖。 */
+  private assertCapabilityUnavailable(error: Object): void {
+    if (error instanceof NasFailure && [NasErrorKind.Permission, NasErrorKind.Unsupported].includes(error.kind)) { return; }
+    throw error;
   }
 
   private async packageVersion(id: string): Promise<string> {
@@ -524,39 +561,53 @@ export class NasConnector {
     ] };
   }
 
-  restoreSession(session: NasLoginSession): void {
+  restoreSession(sessions: BusinessSessionRecord[]): void {
     this.ensureOpen();
     selectNasApi(this.capabilities, 'SYNO.API.Auth', [6]);
-    if (this.authenticating || this.session !== undefined) { throw new NasFailure(NasErrorKind.InvalidInput, '当前正在登录或已经登录。'); }
-    const data: Record<string, Object> = { sid: session.sid };
-    if (session.synoToken.length > 0) { data['synotoken'] = session.synoToken; }
-    this.session = decodeNasSession(data);
+    if (this.authenticating || this.sessions.has(this.sessionName)) { throw new NasFailure(NasErrorKind.InvalidInput, '当前正在登录或已经登录。'); }
+    this.sessions.restore(sessions);
     this.featureRegistry.discover(this.capabilities);
   }
 
-  sessionSnapshot(): NasLoginSession | undefined {
+  sessionSnapshot(): BusinessSessionRecord[] {
     this.ensureOpen();
-    return this.session === undefined ? undefined : { sid: this.session.sid, synoToken: this.session.synoToken };
+    return this.sessions.snapshot();
+  }
+
+  /** 是否已建立某个业务会话；供界面区分“未登录套件会话”与“套件拒绝会话”。 */
+  hasBusinessSession(name: BusinessSessionName): boolean {
+    this.ensureOpen();
+    return this.sessions.has(name);
   }
 
   async logout(): Promise<void> {
-    const oldSession = this.session;
-    this.session = undefined;
+    const records = this.sessions.snapshot();
+    this.sessions.clear();
     this.generation++;
     this.featureRegistry.clear();
-    if (this.disposed || oldSession === undefined) { this.close(); return; }
+    if (this.disposed || records.length === 0) { this.close(); return; }
+    // 逐个业务登出：单个失败不阻止其余业务登出，最终把第一个失败交给调用方。
+    let firstFailure: unknown = undefined;
     try {
       const api = selectNasApi(this.capabilities, 'SYNO.API.Auth', [6]);
-      const reply = await this.rpc.request(this.origin, api, 6, 'logout', [{ name: 'session', content: this.sessionName }], oldSession);
-      decodeNasResponse(api.name, reply.status, reply.text);
+      for (const record of records) {
+        try {
+          const reply = await this.rpc.request(this.origin, api, 6, 'logout',
+            [{ name: 'session', content: record.name }], { sid: record.sid, synoToken: record.synoToken });
+          decodeNasResponse(api.name, reply.status, reply.text);
+        } catch (error) {
+          if (firstFailure === undefined) { firstFailure = error; }
+        }
+      }
     } finally { this.close(); }
+    if (firstFailure !== undefined) { throw firstFailure; }
   }
 
   close(): void {
     if (this.disposed) { return; }
     this.disposed = true;
     this.generation++;
-    this.session = undefined;
+    this.sessions.clear();
     this.capabilities = [];
     this.featureRegistry.clear();
     this.transport.close();
@@ -572,7 +623,7 @@ export class NasConnector {
     const ticket = this.generation;
     const fields: NasFormField[] = [];
     if (method === 'shutdown') { fields.push({ name: 'local', content: 'true' }); }
-    const reply = await this.rpc.request(this.origin, api, 1, method, fields, this.session);
+    const reply = await this.rpc.request(this.origin, api, 1, method, fields, this.requireSession());
     this.ensureCurrent(ticket);
     assertNasControlAccepted(reply.status, reply.text);
   }
@@ -582,12 +633,12 @@ export class NasConnector {
     const ticket = this.generation;
     const api = selectNasApi(this.capabilities, name, [version]);
     // 认证参数交由传输层发送 Cookie 和 CSRF 请求头，不进入 URL 或业务表单。
-    const reply = await this.rpc.request(this.origin, api, version, method, parameters, this.session);
+    const reply = await this.rpc.request(this.origin, api, version, method, parameters, this.sessions.get(this.sessionName));
     this.ensureCurrent(ticket);
     try { return decodeNasResponse(name, reply.status, reply.text); }
     catch (error) {
       if (invalidateExpired && error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) {
-        this.session = undefined;
+        this.sessions.invalidate(this.sessionName);
         this.generation++;
         this.featureRegistry.discover(this.capabilities);
       }
@@ -596,17 +647,24 @@ export class NasConnector {
   }
 
   async extensionRequest(feature: 'fileSharing' | 'nasDownloads', method: string, fields: NasFormField[]): Promise<Object> {
-    this.requireSession();
     const name = feature === 'fileSharing' ? 'SYNO.FileStation.Sharing' : 'SYNO.DownloadStation.Task';
     const methods = feature === 'fileSharing' ? ['list', 'getinfo', 'create', 'edit', 'delete'] :
       ['list', 'getinfo', 'create', 'pause', 'resume', 'delete'];
     if (!methods.includes(method)) { throw new NasFailure(NasErrorKind.InvalidInput, '不支持此套件操作。'); }
     const versions = feature === 'fileSharing' || method === 'create' ? [3] : [1, 3];
     const selected = selectVerifiedApi(this.capabilities, name, versions);
+    // NAS 下载使用独立套件会话；未建立时先给出明确的重新登录提示，不发起注定被拒的请求。
+    const sessionName: BusinessSessionName = feature === 'nasDownloads' ? 'DownloadStation' : this.sessionName;
+    const authorization = this.requireSession(sessionName);
     const ticket = this.generation;
-    const reply = await this.rpc.request(this.origin, selected.api, selected.version, method, fields, this.session);
+    const reply = await this.rpc.request(this.origin, selected.api, selected.version, method, fields, authorization);
     this.ensureCurrent(ticket);
-    return decodeExtensionResponse(name, method, reply.status, reply.text);
+    try { return decodeExtensionResponse(name, method, reply.status, reply.text); }
+    catch (error) {
+      // 套件会话被服务器拒绝只失效该业务，不影响其他业务的已建立会话。
+      if (error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) { this.sessions.invalidate(sessionName); }
+      throw error;
+    }
   }
 
   supportsExtensionAction(feature: 'fileSharing' | 'nasDownloads', method: string): boolean {
@@ -628,10 +686,14 @@ export class NasConnector {
   private ensureOpen(): void {
     if (this.disposed) { throw new NasFailure(NasErrorKind.Cancelled, '连接已关闭。'); }
   }
-  private requireSession(): NasLoginSession {
+  private requireSession(name: BusinessSessionName = this.sessionName): NasLoginSession {
     this.ensureOpen();
-    if (this.session === undefined) { throw new NasFailure(NasErrorKind.SessionExpired, '请先登录 NAS。'); }
-    return { sid: this.session.sid, synoToken: this.session.synoToken };
+    const session = this.sessions.get(name);
+    if (session === undefined) {
+      throw new NasFailure(NasErrorKind.SessionExpired,
+        name === this.sessionName ? '请先登录 NAS。' : '该功能的套件会话未建立，请退出后重新登录。');
+    }
+    return session;
   }
   private ensureCurrent(ticket: number): void {
     this.ensureOpen();

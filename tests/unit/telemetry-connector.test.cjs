@@ -25,6 +25,7 @@ const control = load('core/domain/SystemControl.ts', { './DsmProtocol': dsm });
 const { NasConnector, NAS_DISCOVERY_QUERY } = load('core/network/NasConnector.ts', {
   '../domain/ExtensionProtocol': load('core/domain/ExtensionProtocol.ts', { './DsmProtocol': dsm }),
   './ApiVersionPolicy': load('core/network/ApiVersionPolicy.ts', { '../domain/DsmProtocol': dsm }),
+  './SessionRegistry': load('core/network/SessionRegistry.ts', { '../domain/DsmProtocol': dsm }),
   '../capabilities/CapabilityRegistry': load('core/capabilities/CapabilityRegistry.ts', { '../domain/DsmProtocol': dsm,
     '../network/ApiVersionPolicy': load('core/network/ApiVersionPolicy.ts', { '../domain/DsmProtocol': dsm }) }),
   './DsmRpcClient': load('core/network/DsmRpcClient.ts', { '../domain/DsmProtocol': dsm,
@@ -39,6 +40,7 @@ const ok = data => ({ status: 200, text: JSON.stringify({ success: true, data })
 const bad = code => ({ status: 200, text: JSON.stringify({ success: false, error: { code } }) });
 const isKind = (kind, code) => error => error instanceof NasFailure && error.kind === kind && (code === undefined || error.code === code);
 const session = { sid: 'synthetic-private-sid', synoToken: 'synthetic-private-token' };
+const sessions = [{ name: 'FileStation', sid: session.sid, synoToken: session.synoToken }];
 const origin = 'https://nas.example.test:5001';
 const monitorApis = [
   { method: 'telemetrySystem', api: 'SYNO.Core.System', operation: 'info', path: 'synthetic-system.cgi' },
@@ -82,7 +84,7 @@ async function discovered(descriptors = capabilities()) {
 
 async function authenticated(descriptors = capabilities()) {
   const context = await discovered(descriptors);
-  context.connector.restoreSession(session);
+  context.connector.restoreSession(sessions);
   return context;
 }
 
@@ -91,7 +93,7 @@ async function assertFilesRemainUsable(context) {
   const page = await context.connector.list('');
   assert.equal(page.entries[0].path, '/synthetic-share');
   assert.equal(context.transport.calls.at(-1).body.get('api'), 'SYNO.FileStation.List');
-  assert.deepEqual(plain(context.connector.sessionSnapshot()), session);
+  assert.deepEqual(plain(context.connector.sessionSnapshot()), sessions);
 }
 
 test('synthetic (not live NAS) discovery includes monitoring APIs without requiring them for login or files', async () => {
@@ -115,7 +117,7 @@ test('synthetic (not live NAS) discovery includes monitoring APIs without requir
     await assert.rejects(context.connector[descriptor.method](), isKind(K.Unsupported));
   }
   assert.equal(context.transport.calls.length, requestCount);
-  assert.deepEqual(plain(context.connector.sessionSnapshot()), session);
+  assert.deepEqual(plain(context.connector.sessionSnapshot()), sessions);
 });
 
 for (const descriptor of monitorApis) {
@@ -133,7 +135,7 @@ for (const descriptor of monitorApis) {
     }
     assert.equal(request.address.includes('synthetic-private'), false);
     assert.equal(request.rawBody.includes('synthetic-private'), false);
-    assert.deepEqual(plain(context.connector.sessionSnapshot()), session);
+    assert.deepEqual(plain(context.connector.sessionSnapshot()), sessions);
   });
 
   test(descriptor.method + ' refuses undiscovered capability without making a request or clearing the session', async () => {
@@ -173,7 +175,7 @@ for (const descriptor of monitorApis) {
       const context = await authenticated();
       context.transport.replies.push(bad(code));
       await assert.rejects(context.connector[descriptor.method](), isKind(kind, code));
-      assert.deepEqual(plain(context.connector.sessionSnapshot()), session);
+      assert.deepEqual(plain(context.connector.sessionSnapshot()), sessions);
       await assertFilesRemainUsable(context);
     });
   }
@@ -183,7 +185,7 @@ for (const descriptor of monitorApis) {
       const context = await authenticated();
       context.transport.replies.push(bad(code));
       await assert.rejects(context.connector[descriptor.method](), isKind(K.SessionExpired, code));
-      assert.equal(context.connector.sessionSnapshot(), undefined);
+      assert.equal(context.connector.sessionSnapshot().length, 0);
       const requestCount = context.transport.calls.length;
       for (const next of monitorApis) {
         await assert.rejects(context.connector[next.method](), isKind(K.SessionExpired));
@@ -198,7 +200,7 @@ for (const descriptor of monitorApis) {
     const networkError = new NasFailure(K.Network, '合成网络失败');
     context.transport.replies.push(() => { throw networkError; });
     await assert.rejects(context.connector[descriptor.method](), error => error === networkError);
-    assert.deepEqual(plain(context.connector.sessionSnapshot()), session);
+    assert.deepEqual(plain(context.connector.sessionSnapshot()), sessions);
     context.transport.replies.push({ status: 503, text: JSON.stringify({ success: true, data: {} }) });
     await assert.rejects(context.connector[descriptor.method](), isKind(K.Http, 503));
     await assertFilesRemainUsable(context);
@@ -209,7 +211,7 @@ for (const descriptor of monitorApis) {
     for (const text of ['not JSON', '{}', JSON.stringify({ success: true, data: [] })]) {
       context.transport.replies.push({ status: 200, text });
       await assert.rejects(context.connector[descriptor.method](), isKind(K.Protocol));
-      assert.deepEqual(plain(context.connector.sessionSnapshot()), session);
+      assert.deepEqual(plain(context.connector.sessionSnapshot()), sessions);
     }
     await assertFilesRemainUsable(context);
   });

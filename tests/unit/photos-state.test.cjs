@@ -25,6 +25,7 @@ const control = load('core/domain/SystemControl.ts', { './DsmProtocol': dsm });
 const connectorModule = load('core/network/NasConnector.ts', { '../domain/DsmProtocol': dsm,
   '../domain/ExtensionProtocol': load('core/domain/ExtensionProtocol.ts', { './DsmProtocol': dsm }),
   './ApiVersionPolicy': load('core/network/ApiVersionPolicy.ts', { '../domain/DsmProtocol': dsm }),
+  './SessionRegistry': load('core/network/SessionRegistry.ts', { '../domain/DsmProtocol': dsm }),
   '../capabilities/CapabilityRegistry': load('core/capabilities/CapabilityRegistry.ts', { '../domain/DsmProtocol': dsm,
     '../network/ApiVersionPolicy': load('core/network/ApiVersionPolicy.ts', { '../domain/DsmProtocol': dsm }) }),
   './DsmRpcClient': load('core/network/DsmRpcClient.ts', { '../domain/DsmProtocol': dsm,
@@ -59,7 +60,7 @@ async function connected() {
   }, close() {} });
   replies.push(ok(capabilities));
   await connector.discover('https://nas.example.test:5001');
-  connector.restoreSession({ sid: 'private-sid', synoToken: 'private-token' });
+  connector.restoreSession([{ name: 'FileStation', sid: 'private-sid', synoToken: 'private-token' }]);
   return { connector, calls, replies };
 }
 
@@ -141,12 +142,12 @@ test('Photos detail and media expiry first verify the base session and distingui
   const { connector, replies } = await connected();
   replies.push(bad(119), ok({ shares: [], offset: 0, total: 0 }));
   await assert.rejects(connector.photoDetail(item(1)), isKind(K.Unsupported));
-  assert.equal(connector.sessionSnapshot().sid, 'private-sid');
+  assert.equal(connector.sessionSnapshot()[0].sid, 'private-sid');
   replies.push(ok({ shares: [], offset: 0, total: 0 }));
   await assert.rejects(connector.photoMediaFailure(failure(K.SessionExpired)), isKind(K.Unsupported));
   replies.push(bad(119));
   await assert.rejects(connector.photoMediaFailure(failure(K.SessionExpired)), isKind(K.SessionExpired));
-  assert.equal(connector.sessionSnapshot(), undefined);
+  assert.equal(connector.sessionSnapshot().length, 0);
 });
 
 class MockMedia {
@@ -333,12 +334,12 @@ test('shared media HTTP401 and package119 recheck base login; permission refusal
     replies.push(ok({ shares: [], offset: 0, total: 0 }));
     await assert.rejects(connector.photoMediaFailure(error), isKind(error.kind === K.Http ? K.Permission : K.Unsupported));
     assert.equal(calls.at(-1).body.get('api'), 'SYNO.FileStation.List');
-    assert.equal(connector.sessionSnapshot().sid, 'private-sid');
+    assert.equal(connector.sessionSnapshot()[0].sid, 'private-sid');
   }
   const count = calls.length;
   await assert.rejects(connector.photoMediaFailure(new NasFailure(K.Http, 'denied', 403)), isKind(K.Permission));
   assert.equal(calls.length, count);
-  assert.equal(connector.sessionSnapshot().sid, 'private-sid');
+  assert.equal(connector.sessionSnapshot()[0].sid, 'private-sid');
 });
 
 test('shared library details use trusted list metadata, isolate album credential contexts and clear them on close', async () => {

@@ -86,6 +86,7 @@ export class ConnectionViewModel {
     const ticket = ++this.generation;
     this.busy = true;
     this.errorText = '';
+    let restored = false;
     try {
       if (this.context !== undefined && !this.addressBook.ready && !await this.addressBook.load(this.context)) {
         throw new NasFailure(NasErrorKind.Protocol, this.addressBook.errorText);
@@ -106,16 +107,13 @@ export class ConnectionViewModel {
       this.connected = true;
       this.connectedOrigin = saved.origin;
       this.connectedInsecure = saved.insecureTls;
-      connector.restoreSession({ sid: saved.sid, synoToken: saved.synoToken });
+      connector.restoreSession(saved.sessions);
       await this.verifyDevice(connector, saved.origin, saved.account);
       if (ticket !== this.generation) { return; }
-      const page = await connector.list('', 0);
-      if (ticket !== this.generation) { return; }
-      this.applyPage('', page);
-      this.connected = true;
       this.authenticated = true;
       await this.attachQueue(connector);
-      hilog.info(0x0000, 'NasConnection', 'operation=restore result=success');
+      if (ticket !== this.generation) { return; }
+      restored = true;
     } catch (error) {
       if (ticket === this.generation) {
         this.connector?.close();
@@ -126,6 +124,11 @@ export class ConnectionViewModel {
         await this.showFailure(error as Error, 'restore');
       }
     } finally { if (ticket === this.generation) { this.busy = false; } }
+    // 初始目录加载与登录路径一致放在 busy 结束后：目录加载自身会置 busy，恢复期间调用会被忙检查吞掉。
+    if (restored && ticket === this.generation) {
+      await this.loadInitialDirectory();
+      hilog.info(0x0000, 'NasConnection', 'operation=restore result=success');
+    }
   }
 
   /** 登录页地址输入；写明的协议会同步 HTTPS 开关。 */
@@ -260,23 +263,38 @@ export class ConnectionViewModel {
       }
     }
     finally { if (ticket === this.generation) { this.busy = false; } }
-    if (this.authenticated && ticket === this.generation && await this.load('', 0)) {
-      if (ticket !== this.generation) { return; }
+    if (this.authenticated && ticket === this.generation) {
       await this.attachQueue(connector);
       if (ticket !== this.generation) { return; }
-      const session = connector.sessionSnapshot();
-      if (session === undefined || ticket !== this.generation) { return; }
+      const sessions = connector.sessionSnapshot();
+      if (sessions.length === 0 || ticket !== this.generation) { return; }
       this.busy = true;
+      let sessionSaved = false;
       try {
-        await this.store.save({ origin: this.address, account: this.account.trim(), sid: session.sid,
-          synoToken: session.synoToken, insecureTls: this.insecureTls });
+        await this.store.save({ origin: this.address, account: this.account.trim(), sessions: sessions,
+          insecureTls: this.insecureTls });
+        sessionSaved = true;
         if (ticket === this.generation) {
           this.savedSession = true;
           hilog.info(0x0000, 'NasConnection', 'operation=save-session result=success');
         }
       } catch (error) { if (ticket === this.generation) { await this.showFailure(error as Error, 'save-session'); } }
       finally { if (ticket === this.generation) { this.busy = false; } }
+      // 保存失败时保留错误提示：目录加载会重置横幅，保存失败比目录不可用更值得先展示。
+      if (sessionSaved && ticket === this.generation) { await this.loadInitialDirectory(); }
     }
+  }
+
+  /**
+   * 非 File Station 账号入口：文件浏览不可用不阻断登录、会话保存与任务恢复，
+   * 仅在文件页给出明确提示；能力存在时仍按原有目录加载路径执行。
+   */
+  private async loadInitialDirectory(): Promise<void> {
+    if (!this.supports('SYNO.FileStation.List')) {
+      this.directoryErrorText = '当前服务器未提供可用的 File Station 接口，文件浏览暂不可用；其他功能不受影响。';
+      return;
+    }
+    await this.load('', 0);
   }
 
   async openDirectory(entry: NasFileEntry): Promise<void> {
@@ -780,8 +798,10 @@ export class ConnectionViewModel {
       if (ticket !== this.generation) { return ''; }
       hilog.info(0x0000, 'NasEnvironment', 'model=%{public}s dsm=%{public}s fileStation=%{public}s photos=%{public}s administrator=%{public}d',
         info.model, info.dsmVersion, info.fileStationVersion, info.photosVersion, info.administrator ? 1 : 0);
-      return info.model + '\n' + info.dsmVersion + '\nFile Station ' + info.fileStationVersion + '\nPhotos ' + info.photosVersion +
-        '\n' + (info.administrator ? '具有 File Station 管理权限' : '无 File Station 管理权限');
+      return info.model + '\n' + info.dsmVersion +
+        '\nFile Station ' + (info.fileStationVersion.length > 0 ? info.fileStationVersion : '版本未知或未安装') +
+        '\nPhotos ' + (info.photosVersion.length > 0 ? info.photosVersion : '版本未知或未安装') +
+        '\n' + (info.administrator ? '具有 File Station 管理权限' : '无 File Station 管理权限（或未能读取）');
     } catch (error) { if (ticket === this.generation) { await this.showFailure(error as Error, 'environment'); } return ''; }
     finally { if (ticket === this.generation) { this.busy = false; } }
   }

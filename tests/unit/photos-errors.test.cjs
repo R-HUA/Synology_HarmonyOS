@@ -65,7 +65,7 @@ test('missing and incompatible photo capabilities have Chinese errors without ch
         return true;
       });
       assert.equal(transport.calls.length, 2);
-      assert.equal(connector.sessionSnapshot().sid, 'test-sid');
+      assert.equal(connector.sessionSnapshot()[0].sid, 'test-sid');
     }
   }
 });
@@ -76,7 +76,7 @@ test('photo business unsupported errors retain their code and get the same Chine
   await assert.rejects(connector.photoAlbums(PhotosSpace.Shared), error =>
     error instanceof NasFailure && error.kind === NasErrorKind.Unsupported && error.code === 104 &&
     error.message === unsupportedMessage('浏览共享空间相册'));
-  assert.equal(connector.sessionSnapshot().sid, 'test-sid');
+  assert.equal(connector.sessionSnapshot()[0].sid, 'test-sid');
 });
 
 test('generic capability errors remain unchanged outside photo call boundaries', async () => {
@@ -97,5 +97,5 @@ test('photo presentation leaves permission, transport and pre-login errors uncha
   const signedOut = new NasConnector(transport);
   await assert.rejects(signedOut.photos(PhotosSpace.Personal), error =>
     error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired && error.message === '请先登录 NAS。');
-  assert.equal(connector.sessionSnapshot().sid, 'test-sid');
+  assert.equal(connector.sessionSnapshot()[0].sid, 'test-sid');
 });

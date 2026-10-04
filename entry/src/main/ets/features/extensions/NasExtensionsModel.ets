@@ -348,7 +348,7 @@ export class NasExtensionsModel {
         }
         return;
       }
-      if (ticket === this.generation) { this.downloadError = 'Download Station 拒绝当前套件会话，请检查套件权限；NAS 文件会话仍有效。'; }
+      if (ticket === this.generation) { this.downloadError = 'Download Station 套件会话未建立或已失效，请退出并重新登录；NAS 文件会话仍有效。'; }
     } else if (ticket === this.generation) { await this.expired(error); }
   }
 

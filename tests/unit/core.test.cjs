@@ -60,10 +60,10 @@ test('Photos rejection checks File Station before declaring the saved login expi
   const { connector, transport } = await loggedIn();
   transport.replies.push(fail(119), ok({ shares: [], offset: 0, total: 0 }));
   await assert.rejects(connector.photos(PhotosSpace.Personal), isKind(K.Unsupported));
-  assert.equal(connector.sessionSnapshot().sid, 'test-sid');
+  assert.equal(connector.sessionSnapshot()[0].sid, 'test-sid');
   transport.replies.push(fail(119), fail(119));
   await assert.rejects(connector.photos(PhotosSpace.Personal), isKind(K.SessionExpired));
-  assert.equal(connector.sessionSnapshot(), undefined);
+  assert.equal(connector.sessionSnapshot().length, 0);
 });
 
 test('received albums use personal sharing APIs and keep access tokens in authenticated POST fields', async () => {
@@ -85,7 +85,7 @@ test('received albums use personal sharing APIs and keep access tokens in authen
   assert.equal(transport.calls.at(-1).body.has('passphrase'), false);
   transport.replies.push(fail(119), ok({ shares: [], offset: 0, total: 0 }));
   await assert.rejects(connector.sharedAlbums(), isKind(K.Unsupported));
-  assert.ok(connector.sessionSnapshot());
+  assert.equal(connector.sessionSnapshot().length, 1);
 });
 
 test('Photos business errors and invalid pagination do not create an empty success', async () => {
@@ -103,8 +103,9 @@ test('environment requests preserve exact package identity and full DSM patch ve
   capabilities['SYNO.DSM.Info'] = { path: 'entry.cgi', minVersion: 1, maxVersion: 2 };
   capabilities['SYNO.Core.Package'] = { path: 'entry.cgi', minVersion: 1, maxVersion: 2, requestFormat: 'JSON' };
   const transport = new FakeTransport();
-  transport.replies.push(ok(capabilities), ok({ sid: 'sid' }), ok({ is_manager: false }),
-    ok({ model: 'DS3622xs+', version_string: 'DSM 7.2.1-69057 Update 5' }),
+  // environment 先读 DSM 核心信息，再按权限降级探测管理标记与套件版本。
+  transport.replies.push(ok(capabilities), ok({ sid: 'sid' }),
+    ok({ model: 'DS3622xs+', version_string: 'DSM 7.2.1-69057 Update 5' }), ok({ is_manager: false }),
     ok({ id: 'FileStation', version: '1.0.0-1' }), ok({ id: 'SynologyPhotos', version: '1.9.1-10928' }));
   const connector = new NasConnector(transport);
   await connector.discover('https://nas.example.test');
@@ -115,7 +116,7 @@ test('environment requests preserve exact package identity and full DSM patch ve
   assert.equal(info.photosVersion, '1.9.1-10928');
   assert.equal(transport.calls.at(-1).body.get('id'), '"SynologyPhotos"');
   assert.equal(transport.calls.at(-1).body.get('additional'), '[]');
-  transport.replies.push(ok({ is_manager: true }), ok({ model: 'model', version_string: 'DSM 1-1' }), ok({ id: 'WrongPackage', version: '1' }));
+  transport.replies.push(ok({ model: 'model', version_string: 'DSM 1-1' }), ok({ is_manager: true }), ok({ id: 'WrongPackage', version: '1' }));
   await assert.rejects(connector.environment(), isKind(K.Protocol));
 });
 
@@ -253,18 +254,18 @@ test('session parsing rejects Cookie separators and header injection before usin
 
 test('restored sessions must be discovered, are copied, and invalidation removes the snapshot', async () => {
   const unopened = new NasConnector(new FakeTransport());
-  assert.throws(() => unopened.restoreSession({ sid: 'saved-sid', synoToken: 'saved-token' }), isKind(K.Unsupported));
+  assert.throws(() => unopened.restoreSession([{ name: 'FileStation', sid: 'saved-sid', synoToken: 'saved-token' }]), isKind(K.Unsupported));
   const { connector, transport } = await connected();
-  const saved = { sid: 'saved-sid', synoToken: 'saved-token' };
+  const saved = [{ name: 'FileStation', sid: 'saved-sid', synoToken: 'saved-token' }];
   connector.restoreSession(saved);
-  saved.sid = 'mutated';
-  connector.sessionSnapshot().sid = 'also-mutated';
-  assert.deepEqual(connector.sessionSnapshot(), { sid: 'saved-sid', synoToken: 'saved-token' });
+  saved[0].sid = 'mutated';
+  connector.sessionSnapshot()[0].sid = 'also-mutated';
+  assert.deepEqual(connector.sessionSnapshot(), [{ name: 'FileStation', sid: 'saved-sid', synoToken: 'saved-token' }]);
   transport.replies.push(ok({ offset: 0, total: 0, shares: [] }), fail(119));
   await connector.list('');
   assert.equal(transport.calls.at(-1).authorization.sid, 'saved-sid');
   await assert.rejects(connector.list(''), isKind(K.SessionExpired));
-  assert.equal(connector.sessionSnapshot(), undefined);
+  assert.equal(connector.sessionSnapshot().length, 0);
 });
 
 test('late login response after closing connection cannot create a new session', async () => {
@@ -378,7 +379,7 @@ test('transfer plans preserve multipart and JSON special characters without over
     assert.ok(plan.fields.every(field => !['_sid', 'SynoToken', 'passwd'].includes(field.name)));
   }
   upload.session.sid = 'mutated';
-  assert.equal(connector.sessionSnapshot().sid, 'test-sid');
+  assert.equal(connector.sessionSnapshot()[0].sid, 'test-sid');
   assert.equal(transport.calls.length, 2, 'planning must not issue a network request');
 });
 
@@ -390,7 +391,7 @@ test('transfer plans use plain scalar strings when the advertised format is not 
   transport.replies.push(ok(capabilities));
   const connector = new NasConnector(transport);
   await connector.discover('https://nas.example.test:5001');
-  connector.restoreSession({ sid: 'saved-sid', synoToken: '' });
+  connector.restoreSession([{ name: 'FileStation', sid: 'saved-sid', synoToken: '' }]);
   const fields = plan => new Map(plan.fields.map(field => [field.name, field.content]));
   assert.equal(fields(connector.transferUploadPlan('/Archive/Apps/test')).get('path'), '/Archive/Apps/test');
   assert.equal(fields(connector.transferDownloadPlan('/Archive/Apps/test/a.txt')).get('mode'), 'download');
@@ -401,7 +402,7 @@ test('file validation and transfer plans require a live session and reject unsaf
   await assert.rejects(connector.getFileInfo('/Archive/Apps/test/a.txt'), isKind(K.SessionExpired));
   assert.throws(() => connector.transferUploadPlan('/Archive/Apps/test'), isKind(K.SessionExpired));
   assert.throws(() => connector.transferDownloadPlan('/Archive/Apps/test/a.txt'), isKind(K.SessionExpired));
-  connector.restoreSession({ sid: 'saved-sid', synoToken: '' });
+  connector.restoreSession([{ name: 'FileStation', sid: 'saved-sid', synoToken: '' }]);
   for (const path of ['/', '/Archive/../private', '/Archive/Apps/test\u0000']) {
     await assert.rejects(connector.getFileInfo(path), isKind(K.Protocol));
     assert.throws(() => connector.transferUploadPlan(path), isKind(K.Protocol));
