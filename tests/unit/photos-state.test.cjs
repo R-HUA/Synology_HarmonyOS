@@ -31,6 +31,7 @@ const connectorModule = load('core/network/NasConnector.ts', { '../domain/DsmPro
   './DsmRpcClient': load('core/network/DsmRpcClient.ts', { '../domain/DsmProtocol': dsm,
     './ApiVersionPolicy': load('core/network/ApiVersionPolicy.ts', { '../domain/DsmProtocol': dsm }) }),
   '../domain/PhotosProtocol': photos, '../domain/FileOperations': operations, '../domain/TransferQueueState': queueState,
+  '../domain/DriveProtocol': load('core/domain/DriveProtocol.ts', { './DsmProtocol': dsm }),
   '../domain/SystemControl': control });
 const { NasFailure, NasErrorKind: K } = dsm;
 const { PhotosSpace: S } = photos;

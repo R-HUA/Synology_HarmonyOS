@@ -188,6 +188,7 @@ async function fixture(options = {}) {
     './ConnectionAddressBook': { ConnectionAddressBook },
     '../control/SystemControlModel': { SystemControlModel: class { deactivate() {} } },
     '../extensions/NasExtensionsModel': { NasExtensionsModel: class { async attach() {} reset() {} } },
+    '../drive/DriveBrowserModel': { DriveBrowserModel: class { attach() {} detach() {} reset() {} } },
   });
   const model = new ConnectionViewModel();
   Object.assign(model, { context, address: oldOrigin, account: 'alice', password: 'typed-password', otp: '123456' });

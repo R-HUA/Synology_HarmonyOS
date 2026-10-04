@@ -138,6 +138,41 @@ export struct WorkbenchActionRow {
   }
 }
 
+/**
+ * 文件/条目列表行：图标底板 + 主标题 + 副标题。
+ * 作为 @ComponentV2 + @Param 实现，数据后到时能正常刷新（@Builder 按值传参不会刷新）。
+ * P0 的 Drive 条目还没有可选操作，因此不设行内操作入口；P1 起在行内接操作菜单。
+ */
+@ComponentV2
+export struct WorkbenchEntryRow {
+  @Param title: string = '';
+  @Param subtitle: string = '';
+  @Param icon: Resource = $r('sys.symbol.doc');
+  @Param iconColor: ResourceColor = $r('sys.color.font_secondary');
+  @Param available: boolean = true;
+  @Event onOpen: () => void = (): void => {};
+
+  build() {
+    Column() {
+      Row() {
+        Button() {
+          Row({ space: 12 }) {
+            WorkbenchIconTile({ icon: this.icon, iconSize: 24, tileSize: 44, tileRadius: 12,
+              iconColor: this.iconColor, tileColor: $r('app.color.workbench_subtle') })
+            Column({ space: 4 }) {
+              Text(this.title).fontSize(16).fontWeight(FontWeight.Medium).maxLines(2)
+                .textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('sys.color.font_primary')).width('100%')
+              Text(this.subtitle).fontSize(14).fontColor($r('sys.color.font_secondary'))
+            }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+          }.width('100%').padding({ left: 16, top: 12, bottom: 12, right: 16 })
+        }.width('100%').type(ButtonType.Normal).backgroundColor(Color.Transparent).enabled(this.available)
+          .onClick(this.onOpen).accessibilityText(this.title)
+      }.width('100%')
+      Divider().color($r('app.color.workbench_divider')).margin({ left: 72, right: 16 })
+    }.width('100%').backgroundColor($r('app.color.workbench_surface'))
+  }
+}
+
 @ComponentV2
 export struct WorkbenchMetric {
   @Param label: string = '';

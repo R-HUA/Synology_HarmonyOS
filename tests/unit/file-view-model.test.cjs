@@ -95,6 +95,7 @@ async function fixture(options = {}) {
     './ConnectionAddressBook': { ConnectionAddressBook: class { ready = true; dispose() {} } },
     '../control/SystemControlModel': { SystemControlModel: class { deactivate() {} } },
     '../extensions/NasExtensionsModel': { NasExtensionsModel: class { async attach() {} reset() {} } },
+    '../drive/DriveBrowserModel': { DriveBrowserModel: class { attach() {} detach() {} reset() {} } },
     '../transfers/TransferQueue': { TransferQueue: MockQueue },
     '../../core/domain/FileOperations': operations,
     '../sharing/SharedUploadInbox': { sharedUploadInbox: {} },

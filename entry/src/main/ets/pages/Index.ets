@@ -4,6 +4,8 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileUri } from '@kit.CoreFileKit';
 import { HdsNavigation, HdsNavigationTitleMode, HdsNavDestination, HdsTabs, HdsTabsController, hdsMaterial, IconStyleMode, ScrollEffectType } from '@kit.UIDesignKit';
 import { NasFailure, NasFileEntry } from '../core/domain/DsmProtocol';
+import { DriveEntry, DriveEntryKind } from '../core/domain/DriveProtocol';
+import type { DriveTrailItem } from '../features/drive/DriveBrowserModel';
 import { NasPhotoItem, NasPhotoAlbum, PhotosSpace } from '../core/domain/PhotosProtocol';
 import { PhotoBackup } from '../features/backup/PhotoBackup';
 import { TransferUploadSource } from '../features/transfers/TransferQueue';
@@ -20,13 +22,15 @@ import { WorkbenchBreadcrumb, PhotoTimelineRow, photoGridColumns, photoTimelineR
   connectionRouteLabel } from '../features/workbench/WorkbenchPresentation';
 import { bundledDeviceArtwork, fallbackDeviceArtwork, hasModelArtwork, deviceArtworkPath } from '../features/workbench/NasDeviceArtwork';
 
-import { WorkbenchMetrics, WorkbenchIconTile, WorkbenchSectionTitle, WorkbenchInfoRow, WorkbenchNotice, WorkbenchChoice, WorkbenchActionRow } from '../features/workbench/WorkbenchUi';
+import { WorkbenchMetrics, WorkbenchIconTile, WorkbenchSectionTitle, WorkbenchInfoRow, WorkbenchNotice, WorkbenchChoice, WorkbenchActionRow, WorkbenchEntryRow } from '../features/workbench/WorkbenchUi';
 
 @Entry
 @ComponentV2
 struct Index {
   @Local private model: ConnectionViewModel = new ConnectionViewModel();
   @Local private activeTab: number = 0;
+  /** 文件页的数据来源：File Station 或 Synology Drive。切换只影响呈现，不改变已加载内容。 */
+  @Local private fileSource: string = 'station';
   @Local private navigationInset: number = 0;
   @Local private statusInset: number = 0;
   /** 启动恢复期间只呈现加载页；恢复结束后才显示登录表单或主界面。 */
@@ -96,6 +100,8 @@ struct Index {
   private navStack: NavPathStack = new NavPathStack();
   private homeScroller: Scroller = new Scroller();
   private filesScroller: Scroller = new Scroller();
+  /** Drive 来源用独立滚动器：两套列表不能共用同一个 Scroller。 */
+  private driveScroller: Scroller = new Scroller();
   private photosScroller: Scroller = new Scroller();
   private tasksScroller: Scroller = new Scroller();
   private detailScroller: Scroller = new Scroller();
@@ -284,7 +290,18 @@ struct Index {
 
   private activeScrollers(): Scroller[] {
     if (!this.model.authenticated) { return [this.homeScroller]; }
-    return [this.homeScroller, this.filesScroller, this.photosScroller, this.tasksScroller].slice(this.activeTab, this.activeTab + 1);
+    if (this.activeTab === 1) { return [this.fileSource === 'drive' ? this.driveScroller : this.filesScroller]; }
+    if (this.activeTab === 2) { return [this.photosScroller]; }
+    if (this.activeTab === 3) { return [this.tasksScroller]; }
+    return [this.homeScroller];
+  }
+
+  /** 切换数据来源。切到 Drive 时按需首次加载根目录；切回不重载 File Station。 */
+  private switchFileSource(source: string): void {
+    if (this.fileSource === source || this.model.busy || this.model.drive.busy) { return; }
+    if (source === 'drive' && !this.model.drive.available) { return; }
+    this.fileSource = source;
+    if (source === 'drive') { this.model.drive.open(); }
   }
 
   private openPhoto(item: NasPhotoItem): void {
@@ -494,6 +511,10 @@ struct Index {
   private visibleError(): string {
     if (this.activeTab === 3) {
       return this.model.queue.errorText.length > 0 ? this.model.queue.errorText : this.transferErrorText;
+    }
+    // Drive 的错误只属于 Drive：套件不可用或目录被拒时不能污染 File Station 的提示。
+    if (this.activeTab === 1 && this.fileSource === 'drive') {
+      return this.model.drive.errorText.length > 0 ? this.model.drive.errorText : this.transferErrorText;
     }
     return this.model.errorText.length > 0 ? this.model.errorText :
       this.activeTab === 1 && this.model.directoryErrorText.length > 0 ? this.model.directoryErrorText : this.transferErrorText;
@@ -827,6 +848,7 @@ struct Index {
       List({ space: 0, scroller: this.filesScroller }) {
         ListItem() {
           Column({ space: 8 }) {
+            this.fileSourceSwitch()
             this.breadcrumbBar()
             if (this.choosingDownloadTarget) {
               Text('选择 NAS 下载的保存目录').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
@@ -914,6 +936,129 @@ struct Index {
       }.width('100%').height('100%').scrollBar(BarState.Auto).contentEndOffset(this.bottomInset())
     }.width('100%').constraintSize({ maxWidth: 960 }).height('100%')
       .backgroundColor($r('app.color.workbench_surface'))
+  }
+
+  /** 文件页：按来源在 File Station 与 Synology Drive 之间切换，两侧视图各自独立。 */
+  @Builder
+  filesTab() {
+    if (this.fileSource === 'drive') {
+      this.driveFileList()
+    } else {
+      this.filesView()
+    }
+  }
+
+  /**
+   * 数据来源切换。Drive 不可用时保持 File Station，并把原因写在旁边，
+   * 而不是给一个点了没反应的按钮。
+   */
+  @Builder
+  fileSourceSwitch() {
+    Column({ space: 4 }) {
+      Row() {
+        WorkbenchChoice({ label: 'File Station', selected: this.fileSource === 'station',
+          onSelect: (): void => { this.switchFileSource('station'); } })
+        WorkbenchChoice({ label: 'Synology Drive', selected: this.fileSource === 'drive',
+          available: this.model.drive.available,
+          onSelect: (): void => { this.switchFileSource('drive'); } })
+      }.width('100%')
+      if (!this.model.drive.available) {
+        Text('此 NAS 未安装 Synology Drive，或当前账号无权使用；文件页仍可使用 File Station。')
+          .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
+      }
+    }.width('100%')
+  }
+
+  /** Drive 面包屑。直接来自浏览模型自己的导航栈，不会与请求位置不一致。 */
+  @Builder
+  driveBreadcrumb() {
+    Scroll() {
+      Row({ space: 4 }) {
+        ForEach(this.model.drive.trail, (item: DriveTrailItem, index: number): void => {
+          Button(item.name).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
+            .fontColor(index === this.model.drive.trail.length - 1 ? $r('sys.color.font_primary') : $r('sys.color.font_emphasize'))
+            .enabled(!this.model.drive.busy && index < this.model.drive.trail.length - 1)
+            .onClick((): void => { this.model.drive.goToTrail(index); })
+          if (index < this.model.drive.trail.length - 1) {
+            Text('›').fontSize(18).fontColor($r('sys.color.font_tertiary'))
+          }
+        }, (item: DriveTrailItem, index: number): string => item.fileId === undefined ? 'drive-root' : item.fileId)
+      }
+    }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
+  }
+
+  @Builder
+  driveFileList() {
+    Column() {
+      List({ space: 0, scroller: this.driveScroller }) {
+        ListItem() {
+          Column({ space: 8 }) {
+            this.fileSourceSwitch()
+            this.driveBreadcrumb()
+            Row({ space: 8 }) {
+              Text('Synology Drive').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
+              Blank().layoutWeight(1)
+              Button('刷新').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
+                .enabled(!this.model.drive.busy).onClick((): void => { this.model.drive.reload(); })
+            }.width('100%')
+            this.notices()
+            if (this.model.drive.notice.length > 0) { WorkbenchNotice({ text: this.model.drive.notice }) }
+            if (this.model.drive.busy) {
+              Row({ space: 12 }) {
+                LoadingProgress().width(24).height(24)
+                Text('正在读取 Drive 目录…').fontSize(14).fontColor($r('sys.color.font_secondary'))
+              }.width('100%').padding(12)
+            }
+          }.width('100%').padding({ left: 16, right: 16, top: this.contentTopInset() + 8, bottom: 12 })
+        }
+        if (!this.model.drive.busy && this.model.drive.entries.length === 0) {
+          ListItem() {
+            if (this.model.drive.errorText.length > 0) {
+              this.emptyState($r('sys.symbol.exclamationmark_circle'), 'Drive 目录未能读取', '可在上方刷新重试，或切回 File Station。')
+            } else {
+              this.emptyState($r('sys.symbol.folder'), '此位置为空', '这个文件夹里没有可显示的项目。')
+            }
+          }
+        }
+        ForEach(this.model.drive.entries, (entry: DriveEntry): void => {
+          ListItem() {
+            WorkbenchEntryRow({ title: entry.name, subtitle: this.driveRowSubtitle(entry),
+              icon: entry.kind === DriveEntryKind.Folder ? $r('sys.symbol.folder') : $r('sys.symbol.doc'),
+              iconColor: entry.kind === DriveEntryKind.Folder ? $r('sys.color.icon_emphasize') : $r('sys.color.font_secondary'),
+              available: !this.model.drive.busy, onOpen: (): void => { this.openDriveEntry(entry); } })
+          }
+        }, (entry: DriveEntry): string => entry.fileId)
+        ListItem() {
+          Row({ space: 8 }) {
+            Button('上一页').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
+              .enabled(!this.model.drive.busy && this.model.drive.pageOffset > 0)
+              .onClick((): void => { this.model.drive.previousPage(); })
+            Text(this.driveCountText()).fontSize(12).fontColor($r('sys.color.font_secondary'))
+              .layoutWeight(1).textAlign(TextAlign.Center)
+            Button('下一页').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
+              .enabled(!this.model.drive.busy && this.model.drive.more())
+              .onClick((): void => { this.model.drive.nextPage(); })
+          }.width('100%').padding({ top: 16, bottom: 16 })
+        }
+      }.width('100%').height('100%').scrollBar(BarState.Auto).contentEndOffset(this.bottomInset())
+    }.width('100%').constraintSize({ maxWidth: 960 }).height('100%')
+      .backgroundColor($r('app.color.workbench_surface'))
+  }
+
+  private driveRowSubtitle(entry: DriveEntry): string {
+    return entry.kind === DriveEntryKind.Folder ? '文件夹' : workbenchBytes(entry.sizeBytes);
+  }
+
+  private driveCountText(): string {
+    const total = this.model.drive.total;
+    return total === 0 ? '0 项' : (this.model.drive.pageOffset + 1).toString() + '–' +
+      (this.model.drive.pageOffset + this.model.drive.entries.length).toString() + ' / ' + total.toString() + ' 项';
+  }
+
+  /** P0 只做只读浏览：文件的预览与下载属 P2，这里明确说明而不是给一个无反应的入口。 */
+  private openDriveEntry(entry: DriveEntry): void {
+    if (entry.kind === DriveEntryKind.Folder) { this.model.drive.openFolder(entry); return; }
+    this.model.drive.notice = '「' + entry.name + '」的预览与下载将在下一阶段提供，当前阶段只能浏览目录。';
   }
 
   @Builder
@@ -1747,7 +1892,7 @@ struct Index {
               HdsTabs({ controller: this.tabsController, index: this.activeTab }) {
                 TabContent() { this.homeView() }
                   .tabBar(new BottomTabBarStyle({ normal: new SymbolGlyphModifier($r('sys.symbol.house')) }, '首页'))
-                TabContent() { this.filesView() }
+                TabContent() { this.filesTab() }
                   .tabBar(new BottomTabBarStyle({ normal: new SymbolGlyphModifier($r('sys.symbol.folder')) }, '文件'))
                 TabContent() { this.photosView() }
                   .tabBar(new BottomTabBarStyle({ normal: new SymbolGlyphModifier($r('sys.symbol.picture')) }, '相册'))

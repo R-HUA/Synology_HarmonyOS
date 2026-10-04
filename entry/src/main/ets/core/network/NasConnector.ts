@@ -17,12 +17,14 @@ import { decodeTransferChecksumStatus, decodeTransferChecksumTask,
 import type { TransferChecksumStatus } from '../domain/TransferQueueState';
 import { DsmRpcClient } from './DsmRpcClient';
 import { decodeExtensionResponse } from '../domain/ExtensionProtocol';
+import { decodeDriveResponse, DRIVE_FILES_API, DRIVE_LIST_VERSION, driveUnsupportedFailure } from '../domain/DriveProtocol';
 import { selectVerifiedApi } from './ApiVersionPolicy';
 import { CapabilityRegistry } from '../capabilities/CapabilityRegistry';
 import type { CapabilitySnapshot } from '../capabilities/CapabilityRegistry';
 import { SessionRegistry } from './SessionRegistry';
 import type { BusinessSessionName, BusinessSessionRecord } from './SessionRegistry';
 import type { NasTransport } from './DsmRpcClient';
+import type { DriveKernelPort } from './DriveAdapter';
 export type { NasHttpReply, NasTransport } from './DsmRpcClient';
 
 export interface NasEnvironment { model: string; dsmVersion: string; fileStationVersion: string; photosVersion: string; administrator: boolean; }
@@ -36,9 +38,11 @@ export const NAS_DISCOVERY_QUERY = 'SYNO.API.Auth,SYNO.FileStation.List,SYNO.Fil
   'SYNO.Foto.Browse.Album,SYNO.FotoTeam.Browse.Album,SYNO.Foto.Thumbnail,SYNO.FotoTeam.Thumbnail,SYNO.Foto.Download,SYNO.FotoTeam.Download,' +
   'SYNO.FileStation.CreateFolder,SYNO.FileStation.Rename,SYNO.FileStation.Delete,SYNO.FileStation.CopyMove,SYNO.FileStation.MD5,' +
   'SYNO.FileStation.Sharing,SYNO.DownloadStation.Task,' +
+  // Drive 是独立套件，必须单独问；SYNO.API.Info 只回答被问到的名字。
+  'SYNO.SynologyDrive.Files,' +
   'SYNO.Core.System,SYNO.Core.System.Utilization,SYNO.Storage.CGI.Storage';
 
-export class NasConnector {
+export class NasConnector implements DriveKernelPort {
   private origin: string = '';
   private capabilities: NasApiDescriptor[] = [];
   private sessions: SessionRegistry = new SessionRegistry();
@@ -51,7 +55,10 @@ export class NasConnector {
     { feature: 'personalPhotos', api: 'SYNO.Foto.Browse.Item', verifiedVersions: [1] },
     { feature: 'sharedPhotos', api: 'SYNO.FotoTeam.Browse.Item', verifiedVersions: [1] },
     { feature: 'fileSharing', api: 'SYNO.FileStation.Sharing', verifiedVersions: [3] },
-    { feature: 'nasDownloads', api: 'SYNO.DownloadStation.Task', verifiedVersions: [1, 3] }
+    { feature: 'nasDownloads', api: 'SYNO.DownloadStation.Task', verifiedVersions: [1, 3] },
+    // Drive 只读浏览。Files 实测通告 1..10，但按项目规矩只登记已核对版本；版本按方法选，
+    // 因此 list/get 这类不同版本的方法今后各自注册 feature（见 DriveProtocol 的版本常量）。
+    { feature: 'driveBrowse', api: DRIVE_FILES_API, verifiedVersions: [DRIVE_LIST_VERSION] }
   ]);
   constructor(private transport: NasTransport, private sessionName: 'FileStation' | 'NasControl' = 'FileStation') {
     this.rpc = new DsmRpcClient(transport);
@@ -628,14 +635,25 @@ export class NasConnector {
     assertNasControlAccepted(reply.status, reply.text);
   }
 
-  private async call(name: string, version: number, method: string, parameters: NasFormField[], invalidateExpired: boolean = true): Promise<Record<string, Object>> {
+  private async call(name: string, version: number, method: string, parameters: NasFormField[],
+    invalidateExpired: boolean = true): Promise<Record<string, Object>> {
+    return this.callWith(name, version, method, parameters, decodeNasResponse, invalidateExpired);
+  }
+
+  /**
+   * 传输、会话失效与代际校验只保留一份实现，解码器可替换：
+   * Drive 需要在解析入口做保精度预处理，并使用自己的错误码语义。
+   */
+  private async callWith(name: string, version: number, method: string, parameters: NasFormField[],
+    decode: (api: string, status: number, text: string) => Record<string, Object>,
+    invalidateExpired: boolean = true): Promise<Record<string, Object>> {
     this.ensureOpen();
     const ticket = this.generation;
     const api = selectNasApi(this.capabilities, name, [version]);
     // 认证参数交由传输层发送 Cookie 和 CSRF 请求头，不进入 URL 或业务表单。
     const reply = await this.rpc.request(this.origin, api, version, method, parameters, this.sessions.get(this.sessionName));
     this.ensureCurrent(ticket);
-    try { return decodeNasResponse(name, reply.status, reply.text); }
+    try { return decode(name, reply.status, reply.text); }
     catch (error) {
       if (invalidateExpired && error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) {
         this.sessions.invalidate(this.sessionName);
@@ -679,6 +697,34 @@ export class NasConnector {
   }
 
   async readExtension<T>(feature: 'fileSharing' | 'nasDownloads', readAndValidate: () => Promise<T>): Promise<T> {
+    this.requireSession();
+    return this.featureRegistry.read(feature, readAndValidate);
+  }
+
+  /**
+   * Drive 适配器需要的窄端口。Drive 走 DSM 内部 WebAPI（无兼容承诺），
+   * 因此刻意不让适配器直接持有本类：将来整体切到官方 Office Suite REST 时，
+   * 只需替换 `DriveAdapter` 与这一组方法。
+   */
+  supportsDriveApi(api: string, version: number): boolean {
+    this.ensureOpen();
+    return this.capabilities.some((row: NasApiDescriptor): boolean =>
+      row.name === api && row.minVersion <= version && row.maxVersion >= version);
+  }
+
+  /**
+   * 先自行判断可用性，再用 Drive 自己的解码器与错误码解释：
+   * `selectNasApi` 的通用提示会把「套件没装」说成「版本不支持」，而 Drive 的
+   * 103/105/120/1000 也与 File Station 语义不同。会话失效与代际校验仍复用 callWith。
+   */
+  async requestDrive(api: string, version: number, method: string,
+    fields: NasFormField[]): Promise<Record<string, Object>> {
+    if (!this.supportsDriveApi(api, version)) { throw driveUnsupportedFailure(api); }
+    return this.callWith(api, version, method, fields, decodeDriveResponse);
+  }
+
+  /** 供 Drive 适配器把一次真实读取登记到能力状态机。 */
+  async readDriveFeature<T>(feature: string, readAndValidate: () => Promise<T>): Promise<T> {
     this.requireSession();
     return this.featureRegistry.read(feature, readAndValidate);
   }
