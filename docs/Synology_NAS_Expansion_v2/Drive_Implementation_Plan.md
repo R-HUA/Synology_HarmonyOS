@@ -45,7 +45,7 @@
 | 删除 | `.Files` | 2 | `delete` | `files`,`permanent`,`revisions` | `{async_task_id}` |
 | 上传 | `.Files` | 2 | `upload` | `path=id:<父目录id>/<文件名>`,`type=file`,`conflict_action`,`modified_time` + multipart `file` | `{tmp_newly_created,uploaded_size}` |
 | 下载 | `.Files` | 2 | `download` | `files`,`force_download`,`is_preview`,`SynoToken` | **非 JSON，直接回内容** |
-| 缩略图 | `.Files` | 2 | `get_thumbnail` | `path`,`size`,`version_id`,`SynoToken` | 二进制图片 |
+| 缩略图 | `.Files` | 2 | `get_thumbnail` | `path=id:<fileId>`、`size=small`、可选 `version_id`；业务参数 JSON 编码，内核注入 `SynoToken` | 有界图片；请求格式取自目标 NAS 网页代码，真实图片响应待人工验收 |
 | 分享链接列表 | `.Share` | 1 | `list_active` | — | `items[]`,`total` |
 | 建分享链接 | `.Sharing` | 1 | `create_link` | `path=id:<id>` | `{url}` |
 | 任务状态 | `.Tasks` | 1 | `get` | `task_id` | `{progress,status,result,task_id}` |
@@ -138,7 +138,7 @@ DriveTaskRef     { taskId }
 | --- | --- | --- | --- |
 | **P0** 骨架 | `DriveProtocol.ts`、`DriveAdapter.ts`、能力注册、来源切换、只读浏览 `/mydrive` | 无 | 本轮真机列出我的文件、目录进退、面包屑回跳、来源切换通过；错误路径与会话代际有模拟测试。见 §11 |
 | **P1** 视图入口 | 最近 / 星标 / 共享给我 / 我共享出去的 / 回收站 / 团队文件夹 / 标签 / 搜索 / 面包屑 | P0 | **部分完成**：用户已报告上一签名包的搜索与导航人工验证完成，见 §14；标签未实现；缺适用数据的非空视图、团队祖先链和大列表不据一句汇总反馈外推通过 |
-| **P2** 上传下载 | `upload`（multipart，冲突 `version`/`autorename`）、`download`（二进制流）、缩略图 | P0 | **前台上传下载 UI 和独立持久记录已接入**，见 §14；需在用户选择的测试目录完成往返内容校验、两个同名策略及中断结果验收。缩略图未实现；不自动恢复或重发 |
+| **P2** 上传下载 | `upload`（multipart，冲突 `version`/`autorename`）、`download`（二进制流）、缩略图 | P0 | **约定的前台实现已补齐，整体验收待完成**，见 §14–15。用户手工验收小文件往返、两个同名策略、中断结果与缩略图；不自动恢复或重发。全仓 lint 仍有 743 条诊断 |
 | **P3** 文件操作 | 改名（`update`）、移动（`move` + `dry_run` 预检）、复制、删除；`Tasks.get` 轮询 | P2 | 每个操作的成功/失败/任务进度都有 UI 反馈；结果未知时保留待确认状态，由用户核对，不自动重放或猜测回滚 |
 | **P4** 分享 | `create_link` / `list_active`，入口按 `Settings.list` 控制 | P1 | 普通账号能建链接并在列表看到；无权限时给出明确原因 |
 | **P5** 可选 | 配额（`Info.quota`）、通知、客户端备份任务（`list_backup_tasks`） | P1 | — |
@@ -151,6 +151,7 @@ DriveTaskRef     { taskId }
 
 1. **P1 剩余契约与验收**：个人根和具体目录的成功搜索、个人祖先链契约已补齐；继续取得非空标签、星标/共享/最近以及团队祖先链样本，完成当前 HAP 的输入、返回、来源切换和超过 200 项的真机翻页。未知元素不阻塞目录浏览，但阻塞依赖其结构的功能。
 2. **上传/下载往返（仍待真机）**：上传 `conflict_action` 两个取值（`version`/`autorename`）的实际行为、服务端是否对下载返回重定向（客户端一律不跟随）、是否支持 Range —— 都要在真实 NAS 上验证。
+   **缩略图（仍待真机）**：`small` 请求格式已有目标 NAS 网页代码证据，仍需核对 JPEG/PNG/GIF、视频缩略图、修订后的图片、权限变化及列表可见区域触发行为。未提供断点续传，不依赖 Range。
 3. **错误语义**：权限被剥夺、ID 被移动或删除、分页期间内容变化时各返回什么错误码 —— 决定错误文案与重试策略。
 4. `AdvanceSharing.get` 两轮共 4 次全失败，原因未明（进阶分享权限，暂不纳入）。
 5. `Tasks` 的 `status` 取值枚举。
@@ -231,7 +232,7 @@ DriveTaskRef     { taskId }
 
 - **真机往返未验证**：没有对真实 NAS 发起过上传或下载；`conflict_action` 两种取值的实际行为、服务端是否重定向、Range 支持情况均未测。真机写入须在用户指定的测试目录进行。
 - **无 UI、无后台队列**：没有页面调用这两个端口；`TransferQueueState` 的 `provider: drive` 与队列持久化（§4 原计划）未改。后台 `request.agent` 无证书开关的限制不变，UI 不得标称"后台继续传输"。
-- **缩略图未做**：未取得 `get_thumbnail` 的 `size`/`version_id` 枚举证据前不实现。
+- **当时缩略图未做**：本轮边界实现没有足够参数证据；后续已从目标 NAS 网页代码核对并实现，见 §15。
 - 边界实现时的历史记录止于静态与模拟层面：`devecocli build` 通过（0 error；48 个 warning 中未出现当时新增的传输与协议文件），`scripts/test-core.ps1` 629/629 通过。当前独立复核以 §11 为准。
 
 ## 11. 计划核验、代码修正与 P1 推进（2026-10-05）
@@ -295,7 +296,7 @@ SDK：`C:/Users/rhua0016/.VirtualDisk/Programs/command-line-tools/sdk/default`�
 1. 保留成功搜索、非空最近/星标/共享、标签元素和祖先链的原始脱敏响应，补协议与页面，再完成超过 200 项的真机前后页、权限变化及返回验收。P1 仍为部分完成。
 2. 处理本轮代码检查报告，区分明确代码问题与类型解析问题；保留有效规则，取得实际通过的报告。
 3. P2 前台 UI 和按 NAS/账号隔离的记录已接入（§14），继续在用户选择的测试目录完成小文件往返、冲突选项和结果未知状态的人工验证。模拟测试通过不代表真机传输通过。
-4. 缩略图、后台队列、P3/P4 操作继续以真实契约及独立验收推进；未确认的上传、文件操作和分享写入不得自动重放。
+4. 缩略图已按目标 NAS 网页契约接入，仍需独立真机验收；后台队列、P3/P4 操作继续以真实契约及独立验收推进。未确认的上传、文件操作和分享写入不得自动重放。
 
 交付文件仍在当前工作区；`docs/` 与 `work/` 受现有 `.gitignore` 忽略。本轮未变更忽略规则、未提交或推送，后续提交需明确纳入所需方案文档。
 
@@ -363,3 +364,26 @@ Lint 相比共享内核报告增加 12 条诊断，位于 Drive 协议和适配�
 | 差异检查 | `git diff --check` 通过 | 未关闭规则、未过滤诊断 |
 
 签名包及人工步骤：`work/delivery/drive-p2-20261005/entry-default-signed.hap`、`验收说明.md`、`包信息.json`。没有自动安装、实时 NAS 写入或往返内容验收；仍按用户此前要求交付包供人工验收。缩略图尚未取得足够的成功响应契约，保留后续实现项。P2 仍为部分完成，下一步是用户选择测试目录后的往返、冲突和中断人工验收，以及缩略图协议与有效 lint 诊断处理。
+
+## 15. P2 前台范围补齐（2026-10-05）
+
+用户要求先整体完成 P2。本轮补齐剩余的缩略图协议、可见行读取和私有缓存；上传下载及持久记录沿用 §14。P2 的前台代码范围已齐，但不将本地验证当成 NAS、真机或视觉验收，也不将尚未通过的全仓 lint 标为通过。
+
+### 请求依据与实现
+
+- 对目标 NAS 只读取公开的 Drive 网页静态资源，没有登录或发起 NAS 写入。`SynologyDrive-Drive/config` 指向 `synodrive_common.js`；该文件的列表缩略图使用 `Files.get_thumbnail` v2、`path=id:<fileId>`、`size=small` 和条目提供的 `version_id`。`scripts/synowebapi.js/synowebapi.min.js` 的普通 WebAPI 编码将业务参数 JSON 序列化。该证据证明请求格式，不证明实际图片成功或适用于其他套件版本。
+- `DriveEntry.versionId` 按既有 ID 规则保精度解码；未返回修订号时省略参数，不猜测修订。`DriveThumbnailProtocol.ts` 只接受数值字符串 ID。会话与令牌仍由内核注入，页面与缓存不持有下载 URL 或认证材料。
+- 缩略图与下载共用二进制传输收尾：当前会话校验、主动取消、禁止重定向、临时文件收据释放。单图最多 4 MiB，检查 HTTP、长度、错误信封、MIME 与 PNG/JPEG/GIF/WebP 签名，再用 ImageKit 检查尺寸并解码；最大 4 百万像素，验证后释放解码资源。
+- `DriveThumbnailStore.ets` 只读取可见且有读取/预览权限的常见图片和视频条目，最多 3 个请求、60 个排队项，缓存最多 60 张、24 MiB。缓存按本次连接隔离，键含文件 ID、修订号、修改时间和大小。隐藏行与退后台会取消请求；回前台可重新读取仍可见的行。失败不随滚动自动重试，用户刷新才重试。
+- 切换账号后清空展示与缓存，拒绝迟到响应。缓存清理失败保留错误并停止新增缓存；失败缩略图显示文件图标。列表沿用现有行尺寸、导航、滚动和材质，增加正式失败提示。
+
+本机证据保存在忽略目录 `work/drive-probe/`：`client-config.json`、`synodrive_common.js`、`synowebapi.min.js`、`thumbnail-contract-evidence.json`。不提交网页源文件或任何账号数据。
+
+### 验证与交付
+
+- 核心测试 **698/698 通过，0 skipped**，新增 13 项，覆盖参数、修订精度、权限、伪图片/错误响应、取消、限流、账号切换、后台恢复、完整解码及缓存预算。既有传输、连接、Photos 与遥测测试同步核验。证据：`work/drive-p2-complete-tests.log`。
+- API 26 `assembleHap --no-daemon` 签名构建成功，27.077 秒，50 个 ArkTS 警告，其中新增 2 个位于缩略图私有目录的文件 I/O；异常由读取边界捕获并向界面报告。证据：`work/drive-p2-complete-build.log`。编译不证明真机 UI 或 NAS 返回正确。
+- Lint **未通过**：有效扫描 67 个文件，27 个文件含诊断，**743 个 Error、0 Warning**；与 §14 的 743 条按文件/规则数量核对无增加，新增缩略图文件没有诊断。既有 `DriveTransferState.ts` 的 8 条及其他诊断仍待处理；不关闭规则或将其全部定性为误报。证据：`work/drive-p2-complete-lint.json`、`.log`。
+- 新包及人工步骤：`work/delivery/drive-p2-complete-20261005/entry-default-signed.hap`、`验收说明.md`、`包信息.json`。未安装设备、未请求真实图片、未执行 NAS 上传下载往返。用户手工验收 §14 的传输行为及本节缩略图行为后，才能确认 P2 整体验收完成。
+
+P3 的后续范围是改名、移动预检、复制、删除以及异步任务状态；P4 为分享链接创建与列表。本轮不扩展 P3/P4，后台传输、自动重试、断点续传及完整原图预览也不在本次 P2 前台范围。

@@ -189,6 +189,7 @@ async function fixture(options = {}) {
     '../control/SystemControlModel': { SystemControlModel: class { deactivate() {} } },
     '../extensions/NasExtensionsModel': { NasExtensionsModel: class { async attach() {} reset() {} } },
     '../drive/DriveBrowserModel': { DriveBrowserModel: class { attach() {} detach() {} reset() {} } },
+    '../drive/DriveThumbnailStore': { DriveThumbnailStore: class { attach() {} detach() {} } },
     '../drive/DriveTransferModel': { DriveTransferModel: class {
       ready = true; busy = false; items = [];
       async attach() {}

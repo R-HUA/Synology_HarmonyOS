@@ -55,6 +55,33 @@ async function fixture(options = {}) {
   return { connector, transport, calls, discovery };
 }
 
+test('thumbnail uses authenticated GET, bounded binary transport and the current revision', async () => {
+  const prefix = new Uint8Array([137,80,78,71,13,10,26,10,0]);
+  const f = await fixture({ binary: { status: 200, contentType: 'image/png', contentLength: '9',
+    contentDisposition: '', bytes: 9, prefix, prefixText: '' } });
+  const result = await f.connector.thumbnailDrive({ fileId: '976700457026108129', versionId: '999999999999999999' },
+    '/cache/thumbnail-1', control());
+  assert.deepEqual(result, { path: '/cache/thumbnail-1/content', bytes: 9 });
+  const call = f.calls[0];
+  assert.equal(call.request.method, 'GET');
+  assert.equal(call.request.address, 'https://nas.example.test:5001/webapi/entry.cgi');
+  assert.deepEqual(Object.fromEntries(call.request.fields.map(f => [f.name, f.content])), {
+    api: 'SYNO.SynologyDrive.Files', version: '2', method: 'get_thumbnail',
+    path: '"id:976700457026108129"', size: '"small"', version_id: '"999999999999999999"', SynoToken: 'SYNTHETIC-TOKEN'
+  });
+  assert.equal(call.target.maximumBytes, 4 * 1024 * 1024);
+  assert.equal(JSON.stringify(result).includes('SYNTHETIC'), false);
+});
+
+test('thumbnail discards a result when the connection closes after validation', async () => {
+  const prefix = new Uint8Array([137,80,78,71,13,10,26,10,0]);
+  const f = await fixture({ binary: { status: 200, contentType: 'image/png', contentLength: '9',
+    contentDisposition: '', bytes: 9, prefix, prefixText: '' },
+    onDownload: ({ connector }) => connector.close() });
+  await assert.rejects(f.connector.thumbnailDrive({ fileId: '1' }, '/cache/thumbnail-2', control()), isKind(K.Cancelled));
+  assert.equal(f.calls[0].discarded, true);
+});
+
 test('Drive upload is an authenticated POST the kernel builds, and the caller never holds a credential', async () => {
   const f = await fixture();
   const input = source();

@@ -17,6 +17,7 @@ import { SystemControlModel } from '../control/SystemControlModel';
 import { NasExtensionsModel } from '../extensions/NasExtensionsModel';
 import { DriveBrowserModel } from '../drive/DriveBrowserModel';
 import { DriveTransferModel } from '../drive/DriveTransferModel';
+import { DriveThumbnailStore } from '../drive/DriveThumbnailStore';
 import type { NasConnectionAddress } from '../../core/domain/ConnectionRoutes';
 
 export { FileEditResult, FileTaskItem } from '../../core/domain/FileOperations';
@@ -59,6 +60,7 @@ export class ConnectionViewModel {
   /** Drive 只读浏览；与 File Station 状态完全独立，来源切换由界面决定。 */
   readonly drive: DriveBrowserModel = new DriveBrowserModel();
   readonly driveTransfers: DriveTransferModel = new DriveTransferModel();
+  readonly driveThumbnails: DriveThumbnailStore = new DriveThumbnailStore();
   @Trace deviceCheckText: string = '尚未登记设备身份';
   /** 首页设备卡：型号与服务器名称（设备名称），任一读不到就留空由界面兜底。 */
   @Trace deviceModel: string = '';
@@ -656,6 +658,9 @@ export class ConnectionViewModel {
     this.drive.attach(connector, async (error: NasFailure): Promise<void> => {
       if (driveTicket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'drive'); }
     });
+    this.driveThumbnails.attach(this.context, connector, async (error: NasFailure): Promise<void> => {
+      if (driveTicket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'drive'); }
+    });
     await this.extensions.attach(connector, this.context, this.address, this.account.trim(), async (error: NasFailure): Promise<void> => {
       if (extensionTicket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'extensions'); }
     });
@@ -876,6 +881,7 @@ export class ConnectionViewModel {
     this.queue.detach();
     this.drive.detach();
     this.driveTransfers.detach();
+    this.driveThumbnails.detach();
     this.fileSort = 'name';
     this.sortDescending = false;
     this.actionNotice = '';

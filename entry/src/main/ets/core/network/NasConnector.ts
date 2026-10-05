@@ -31,6 +31,8 @@ import type { DriveTransferKernelPort } from './DriveTransferAdapter';
 import { decodeDriveUpload, DRIVE_TRANSFER_VERSION, driveUploadFields, driveDownloadFields,
   validateDriveDownload } from '../domain/DriveTransferProtocol';
 import type { DriveUploadRequest, DriveDownloadRequest, DriveUploadResult } from '../domain/DriveTransferProtocol';
+import { DRIVE_THUMBNAIL_MAX_BYTES, driveThumbnailFields, validateDriveThumbnail } from '../domain/DriveThumbnailProtocol';
+import type { DriveThumbnailRequest } from '../domain/DriveThumbnailProtocol';
 import { NasTransferCancellation, validateNasDownloadTarget, validateNasUploadSource } from './NasTransferTransport';
 import type { NasBinaryReply, NasDownloadReceipt, NasDownloadResult, NasDownloadTarget, NasTransferControl,
   NasTransferProgress, NasTransferRequest, NasTransferTransport, NasUploadSource } from './NasTransferTransport';
@@ -807,6 +809,20 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     const fields = driveDownloadFields(input);
     const suffix = (input.preview ? '/' : '/SYNO.SynologyDrive.Files/') + encodeURIComponent(input.filename);
     const request = this.driveTransferRequest('download', fields, suffix);
+    return this.downloadDriveBinary(request, target, control, validateDriveDownload);
+  }
+
+  async thumbnailDrive(input: DriveThumbnailRequest, directory: string,
+    control: NasTransferControl): Promise<NasDownloadResult> {
+    const target: NasDownloadTarget = { directory, maximumBytes: DRIVE_THUMBNAIL_MAX_BYTES };
+    validateNasDownloadTarget(target);
+    const request = this.driveTransferRequest('get_thumbnail', driveThumbnailFields(input));
+    return this.downloadDriveBinary(request, target, control, validateDriveThumbnail);
+  }
+
+  /** 下载与缩略图共用取消、代际检查和收据清理，仅响应校验按业务区分。 */
+  private async downloadDriveBinary(request: NasTransferRequest, target: NasDownloadTarget,
+    control: NasTransferControl, validate: (reply: NasBinaryReply, output: NasDownloadTarget) => void): Promise<NasDownloadResult> {
     const output: NasDownloadTarget = { directory: target.directory, maximumBytes: target.maximumBytes,
       expectedBytes: target.expectedBytes };
     const scope = this.beginDriveTransfer(control);
@@ -814,7 +830,7 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     try {
       receipt = await scope.transport.download(request, output, scope.control, (reply: NasBinaryReply): void => {
         this.checkDriveTransfer(scope);
-        validateDriveDownload(reply, output);
+        validate(reply, output);
       });
       this.checkDriveTransfer(scope);
       return { path: receipt.path, bytes: receipt.bytes };
@@ -826,7 +842,7 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     } finally { scope.dispose(); }
   }
 
-  private driveTransferRequest(method: 'upload' | 'download', fields: NasFormField[], suffix: string = ''): NasTransferRequest {
+  private driveTransferRequest(method: 'upload' | 'download' | 'get_thumbnail', fields: NasFormField[], suffix: string = ''): NasTransferRequest {
     const session = this.requireSession('FileStation');
     if (!this.supportsDriveApi(DRIVE_FILES_API, DRIVE_TRANSFER_VERSION)) { throw driveUnsupportedFailure(DRIVE_FILES_API); }
     const api = selectNasApi(this.capabilities, DRIVE_FILES_API, [DRIVE_TRANSFER_VERSION]);
@@ -834,7 +850,7 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
       { name: 'api', content: DRIVE_FILES_API }, { name: 'version', content: DRIVE_TRANSFER_VERSION.toString() },
       { name: 'method', content: method }
     ].concat(fields);
-    if (method === 'download') {
+    if (method !== 'upload') {
       // 原始 GET 抓包携带 SynoToken。只在内核中注入，不进入资源引用或任务记录。
       // 服务器没签发令牌时提示重新登录，但不失效当前会话：服务器状态未知，
       // 直接清除会让仍然可用的文件浏览一起失效。

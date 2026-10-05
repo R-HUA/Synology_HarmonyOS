@@ -150,6 +150,7 @@ export struct WorkbenchEntryRow {
   @Param icon: Resource = $r('sys.symbol.doc');
   @Param iconColor: ResourceColor = $r('sys.color.font_secondary');
   @Param available: boolean = true;
+  @Param thumbnail: string = '';
   @Event onOpen: () => void = (): void => {};
 
   build() {
@@ -157,8 +158,13 @@ export struct WorkbenchEntryRow {
       Row() {
         Button() {
           Row({ space: 12 }) {
-            WorkbenchIconTile({ icon: this.icon, iconSize: 24, tileSize: 44, tileRadius: 12,
-              iconColor: this.iconColor, tileColor: $r('app.color.workbench_subtle') })
+            if (this.thumbnail.length > 0) {
+              Image(this.thumbnail).width(44).height(44).objectFit(ImageFit.Cover).borderRadius(12)
+                .accessibilityLevel('no')
+            } else {
+              WorkbenchIconTile({ icon: this.icon, iconSize: 24, tileSize: 44, tileRadius: 12,
+                iconColor: this.iconColor, tileColor: $r('app.color.workbench_subtle') })
+            }
             Column({ space: 4 }) {
               Text(this.title).fontSize(16).fontWeight(FontWeight.Medium).maxLines(2)
                 .textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('sys.color.font_primary')).width('100%')

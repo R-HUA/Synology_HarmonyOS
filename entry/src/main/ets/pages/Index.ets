@@ -59,6 +59,7 @@ struct Index {
   private foregroundChanged = (foreground: boolean): void => {
     this.foreground = foreground;
     this.model.driveTransfers.setForeground(foreground);
+    this.model.driveThumbnails.setForeground(foreground);
     if (!foreground) { this.model.addressBook.cancelProbe(); this.model.systemControl.deactivate(); }
     else if (this.systemControlOpened) { this.model.openSystemControl(); }
     this.updateTelemetryMode();
@@ -1046,10 +1047,11 @@ struct Index {
               Text('Synology Drive').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
               Blank().layoutWeight(1)
               Button('刷新').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
-                .enabled(!this.model.drive.busy).onClick((): void => { this.model.drive.reload(); })
+                .enabled(!this.model.drive.busy).onClick((): void => { this.model.driveThumbnails.retryVisible(); this.model.drive.reload(); })
             }.width('100%')
             this.notices()
             if (this.model.drive.notice.length > 0) { WorkbenchNotice({ text: this.model.drive.notice }) }
+            if (this.model.driveThumbnails.errorText.length > 0) { WorkbenchNotice({ text: this.model.driveThumbnails.errorText }) }
             if (this.model.drive.busy) {
               Row({ space: 12 }) {
                 LoadingProgress().width(24).height(24)
@@ -1073,6 +1075,7 @@ struct Index {
           ListItem() {
             Row() {
             WorkbenchEntryRow({ title: entry.name, subtitle: this.driveRowSubtitle(entry),
+              thumbnail: this.model.driveThumbnails.path(entry).length > 0 ? fileUri.getUriFromPath(this.model.driveThumbnails.path(entry)) : '',
               icon: entry.kind === DriveEntryKind.Folder ? $r('sys.symbol.folder') : $r('sys.symbol.doc'),
               iconColor: entry.kind === DriveEntryKind.Folder ? $r('sys.color.icon_emphasize') : $r('sys.color.font_secondary'),
               available: !this.model.drive.busy && entry.capabilities.canRead &&
@@ -1088,7 +1091,11 @@ struct Index {
             }
             }.width('100%')
           }
-        }, (entry: DriveEntry): string => entry.fileId)
+          .onVisibleAreaChange([0], (visible: boolean, ratio: number): void => {
+            this.model.driveThumbnails.setVisible(entry, visible && ratio > 0 && this.model.drive.view !== DriveView.Trash);
+          })
+          .onDisAppear((): void => { this.model.driveThumbnails.setVisible(entry, false); })
+        }, (entry: DriveEntry): string => JSON.stringify([entry.fileId, entry.versionId, entry.modifiedAt, entry.sizeBytes]))
         ListItem() {
           Row({ space: 8 }) {
             Button('上一页').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)

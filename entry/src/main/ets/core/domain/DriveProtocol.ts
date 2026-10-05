@@ -111,6 +111,8 @@ export interface DriveEntry {
   /** 展示用路径；实测存在，但缺失时由界面用面包屑兜底。 */
   displayPath?: string;
   parentId?: string;
+  /** 缩略图沿用列表给出的修订号，不自行推断最新版本。 */
+  versionId?: string;
   starred: boolean;
   shared: boolean;
   /** `revisions` 是版本数（数字），不是数组。 */
@@ -332,6 +334,7 @@ export function decodeDriveEntry(raw: Object): DriveEntry {
   const pathText = optionalDriveText(row['path'], 4096);
   const displayPath = optionalDriveText(row['display_path'], 4096);
   const parentId = optionalDriveId(row['parent_id']);
+  const versionId = optionalDriveId(row['version_id']);
   const owner = decodeDriveOwner(row['owner']);
   if (createdAt !== undefined) { entry.createdAt = createdAt; }
   if (modifiedAt !== undefined) { entry.modifiedAt = modifiedAt; }
@@ -339,6 +342,7 @@ export function decodeDriveEntry(raw: Object): DriveEntry {
   if (pathText !== undefined) { entry.pathText = pathText; }
   if (displayPath !== undefined) { entry.displayPath = displayPath; }
   if (parentId !== undefined) { entry.parentId = parentId; }
+  if (versionId !== undefined) { entry.versionId = versionId; }
   if (owner !== undefined) { entry.owner = owner; }
   return entry;
 }

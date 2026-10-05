@@ -97,6 +97,7 @@ async function fixture(options = {}) {
     '../extensions/NasExtensionsModel': { NasExtensionsModel: class { async attach() {} reset() {} } },
     '../drive/DriveBrowserModel': { DriveBrowserModel: class { attach() {} detach() {} reset() {} } },
     '../drive/DriveTransferModel': { DriveTransferModel: class { ready = true; busy = false; items = []; async attach() {} async stopAll() {} detach() {} } },
+    '../drive/DriveThumbnailStore': { DriveThumbnailStore: class { attach() {} detach() {} } },
     '../transfers/TransferQueue': { TransferQueue: MockQueue },
     '../../core/domain/FileOperations': operations,
     '../sharing/SharedUploadInbox': { sharedUploadInbox: {} },

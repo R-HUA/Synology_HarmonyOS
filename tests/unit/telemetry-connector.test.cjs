@@ -26,6 +26,8 @@ const drive = load('core/domain/DriveProtocol.ts', { './DsmProtocol': dsm });
 const transferContracts = load('core/network/NasTransferTransport.ts', { '../domain/DsmProtocol': dsm });
 const driveTransfer = load('core/domain/DriveTransferProtocol.ts', { './DsmProtocol': dsm, './DriveProtocol': drive,
   '../network/NasTransferTransport': transferContracts });
+const driveThumbnail = load('core/domain/DriveThumbnailProtocol.ts', { './DsmProtocol': dsm, './DriveProtocol': drive,
+  './DriveTransferProtocol': driveTransfer });
 const { NasConnector, NAS_DISCOVERY_QUERY } = load('core/network/NasConnector.ts', {
   '../domain/ExtensionProtocol': load('core/domain/ExtensionProtocol.ts', { './DsmProtocol': dsm }),
   './ApiVersionPolicy': load('core/network/ApiVersionPolicy.ts', { '../domain/DsmProtocol': dsm }),
@@ -37,6 +39,7 @@ const { NasConnector, NAS_DISCOVERY_QUERY } = load('core/network/NasConnector.ts
   '../domain/DsmProtocol': dsm, '../domain/PhotosProtocol': photos,
   '../domain/FileOperations': operations, '../domain/TransferQueueState': queueState,
   '../domain/DriveProtocol': drive, '../domain/DriveTransferProtocol': driveTransfer,
+  '../domain/DriveThumbnailProtocol': driveThumbnail,
   './NasTransferTransport': transferContracts,
   '../domain/SystemControl': control,
 });
