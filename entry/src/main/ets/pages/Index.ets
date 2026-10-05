@@ -103,6 +103,7 @@ struct Index {
   private filesScroller: Scroller = new Scroller();
   /** Drive 来源用独立滚动器：两套列表不能共用同一个 Scroller。 */
   private driveScroller: Scroller = new Scroller();
+  private driveSearchController: SearchController = new SearchController();
   private photosScroller: Scroller = new Scroller();
   private tasksScroller: Scroller = new Scroller();
   private detailScroller: Scroller = new Scroller();
@@ -1017,6 +1018,23 @@ struct Index {
           Column({ space: 8 }) {
             this.fileSourceSwitch()
             this.driveViewSwitch()
+            Search({ value: this.model.drive.searchText, placeholder: this.model.drive.searchPlaceholder(),
+              controller: this.driveSearchController })
+              .searchButton('搜索').maxLength(256).width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize })
+              .enabled(!this.model.drive.busy && this.model.drive.supportsView(DriveView.Search))
+              .onChange((value: string): void => { this.model.drive.searchText = value; })
+              .onSubmit((value: string): void => {
+                this.driveSearchController.stopEditing(); this.model.drive.search(value);
+              })
+            if (this.model.drive.view === DriveView.Search) {
+              Row({ space: 8 }) {
+                Text('在“' + this.model.drive.searchScopeName + '”中搜索“' + this.model.drive.searchKeyword + '”')
+                  .fontSize(14).fontColor($r('sys.color.font_secondary')).layoutWeight(1)
+                Button('结束搜索').constraintSize({ minHeight: WorkbenchMetrics.touchSize })
+                  .buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.drive.busy)
+                  .onClick((): void => { this.driveSearchController.stopEditing(); this.model.drive.exitSearch(); })
+              }.width('100%')
+            }
             this.driveBreadcrumb()
             Row({ space: 8 }) {
               Text('Synology Drive').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
@@ -1038,6 +1056,8 @@ struct Index {
           ListItem() {
             if (this.model.drive.errorText.length > 0) {
               this.emptyState($r('sys.symbol.exclamationmark_circle'), 'Drive 内容未能读取', '可在上方刷新重试，或切回 File Station。')
+            } else if (this.model.drive.view === DriveView.Search && this.model.drive.trail.length === 1) {
+              this.emptyState($r('sys.symbol.magnifyingglass'), '没有搜索结果', '请尝试其他关键词。')
             } else {
               this.emptyState($r('sys.symbol.folder'), '此位置为空', '当前列表没有可显示的项目。')
             }

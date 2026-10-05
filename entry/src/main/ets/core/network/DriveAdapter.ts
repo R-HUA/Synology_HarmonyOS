@@ -2,8 +2,9 @@ import { NasErrorKind, NasFailure } from '../domain/DsmProtocol';
 import type { NasFormField } from '../domain/DsmProtocol';
 import { decodeDrivePage, DRIVE_FILES_API, DRIVE_LIST_VERSION, DRIVE_PAGE_SIZE, DriveSortBy,
   DriveSortDirection, driveListFields, DriveView, DRIVE_TEAM_FOLDERS_API, DRIVE_TEAM_FOLDERS_VERSION,
-  DRIVE_TRASH_API, DRIVE_TRASH_VERSION, driveViewFields, decodeDriveViewPage } from '../domain/DriveProtocol';
-import type { DriveFolderRef, DrivePage, DriveViewPage } from '../domain/DriveProtocol';
+  DRIVE_TRASH_API, DRIVE_TRASH_VERSION, driveViewFields, decodeDriveViewPage, driveSearchFields,
+  DRIVE_SEARCH_VERSION, DRIVE_ANCESTORS_VERSION, decodeDriveAncestors, driveAncestorFields } from '../domain/DriveProtocol';
+import type { DriveFolderRef, DrivePage, DriveViewPage, DriveEntry, DriveAncestor } from '../domain/DriveProtocol';
 
 interface DriveReadSpec { api: string; version: number; method: string; feature: string; }
 
@@ -49,11 +50,26 @@ export class DriveAdapter {
   }
 
   async readView(view: DriveView, offset: number = 0): Promise<DriveViewPage> {
+    if (view === DriveView.Search) { throw new NasFailure(NasErrorKind.InvalidInput, '请输入搜索内容。'); }
     const spec = this.viewSpec(view);
     const fields = driveViewFields(view, offset);
     const read = async (): Promise<DriveViewPage> => decodeDriveViewPage(
       await this.kernel.requestDrive(spec.api, spec.version, spec.method, fields), view, offset);
     return offset === 0 ? this.kernel.readDriveFeature(spec.feature, read) : read();
+  }
+
+  async search(keyword: string, offset: number = 0, folder?: DriveFolderRef): Promise<DriveViewPage> {
+    const fields = driveSearchFields(keyword, offset, folder);
+    const read = async (): Promise<DriveViewPage> => decodeDriveViewPage(
+      await this.kernel.requestDrive(DRIVE_FILES_API, DRIVE_SEARCH_VERSION, 'search', fields), DriveView.Search, offset);
+    return offset === 0 ? this.kernel.readDriveFeature('driveSearch', read) : read();
+  }
+
+  async ancestors(target: DriveEntry): Promise<DriveAncestor[]> {
+    const fields = driveAncestorFields(target.fileId);
+    return this.kernel.readDriveFeature('driveAncestors', async (): Promise<DriveAncestor[]> =>
+      decodeDriveAncestors(await this.kernel.requestDrive(DRIVE_FILES_API, DRIVE_ANCESTORS_VERSION,
+        'list_ancestor', fields), target));
   }
 
   private viewSpec(view: DriveView): DriveReadSpec {
@@ -72,6 +88,8 @@ export class DriveAdapter {
         return { api: DRIVE_FILES_API, version: 2, method: 'shared_with_me', feature: 'driveSharedWithMe' };
       case DriveView.SharedWithOthers:
         return { api: DRIVE_FILES_API, version: 2, method: 'shared_with_others', feature: 'driveSharedWithOthers' };
+      case DriveView.Search:
+        return { api: DRIVE_FILES_API, version: DRIVE_SEARCH_VERSION, method: 'search', feature: 'driveSearch' };
     }
   }
 }

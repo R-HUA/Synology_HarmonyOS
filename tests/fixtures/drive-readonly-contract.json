@@ -1,0 +1,220 @@
+{
+  "source": "mitm-2026-10-05T05-51-13-988Z.jsonl",
+  "searchParams": {
+    "keyword": "\"PhotoLibrary\"",
+    "location": "\"mydrive\"",
+    "sort_by": "\"score\"",
+    "sort_direction": "\"asc\"",
+    "enable_content_search": "false",
+    "content_snippet": "false",
+    "limit": "25",
+    "offset": "0",
+    "filter": "{\"include_transient\":true}"
+  },
+  "searchResponse": {
+    "data": {
+      "items": [
+        {
+          "access_time": 1718434135,
+          "adv_shared": false,
+          "app_properties": {
+            "type": "none"
+          },
+          "capabilities": {
+            "can_comment": true,
+            "can_delete": true,
+            "can_download": true,
+            "can_encrypt": true,
+            "can_organize": true,
+            "can_preview": true,
+            "can_read": true,
+            "can_rename": true,
+            "can_share": true,
+            "can_sync": true,
+            "can_write": true
+          },
+          "change_id": 3905,
+          "change_time": 1718434135,
+          "content_snippet": "",
+          "content_type": "<text:content_type>",
+          "created_time": 1718434135,
+          "disable_download": false,
+          "display_path": "<text:display_path>",
+          "dsm_path": "",
+          "enable_watermark": false,
+          "encrypted": false,
+          "file_id": "900000000000000010",
+          "force_watermark_download": false,
+          "hash": "",
+          "image_metadata": {
+            "time": 1718434127
+          },
+          "labels": [],
+          "max_id": 3905,
+          "modified_time": 1718434127,
+          "name": "<text:name>",
+          "owner": {
+            "display_name": "<text:display_name>",
+            "name": "<text:name>",
+            "nickname": "",
+            "uid": 1027
+          },
+          "parent_id": "900000000000000008",
+          "path": "<text:path>",
+          "permanent_link": "<text:permanent_link>",
+          "properties": {},
+          "removed": false,
+          "revisions": 1,
+          "shared": false,
+          "shared_with": [],
+          "size": 0,
+          "starred": false,
+          "support_remote": false,
+          "sync_id": 3163,
+          "sync_to_device": false,
+          "transient": false,
+          "type": "dir",
+          "version_id": "900000000000000011",
+          "watermark_version": 0
+        }
+      ],
+      "search_time": 0.716,
+      "total": 1
+    },
+    "success": true
+  },
+  "ancestorResponse": {
+    "data": {
+      "items": [
+        {
+          "access_time": 1711953546,
+          "adv_shared": false,
+          "app_properties": {
+            "type": "none"
+          },
+          "capabilities": {
+            "can_comment": true,
+            "can_delete": true,
+            "can_download": true,
+            "can_encrypt": true,
+            "can_organize": true,
+            "can_preview": true,
+            "can_read": true,
+            "can_rename": true,
+            "can_share": true,
+            "can_sync": true,
+            "can_write": true
+          },
+          "change_id": 5349,
+          "change_time": 1711953546,
+          "content_snippet": "",
+          "content_type": "<text:content_type>",
+          "created_time": 1711953546,
+          "disable_download": false,
+          "display_path": "<text:display_path>",
+          "dsm_path": "",
+          "enable_watermark": false,
+          "encrypted": false,
+          "file_id": "900000000000000002",
+          "force_watermark_download": false,
+          "hash": "",
+          "image_metadata": {
+            "time": 1742663704
+          },
+          "labels": [],
+          "max_id": 5348,
+          "modified_time": 1742663704,
+          "name": "",
+          "owner": {
+            "display_name": "<text:display_name>",
+            "name": "<text:name>",
+            "nickname": "",
+            "uid": 1027
+          },
+          "parent_id": "900000000000000012",
+          "path": "<text:path>",
+          "permanent_link": "<text:permanent_link>",
+          "properties": {},
+          "removed": false,
+          "revisions": 1,
+          "shared": false,
+          "shared_with": [],
+          "size": 0,
+          "starred": false,
+          "support_remote": false,
+          "sync_id": 2,
+          "sync_to_device": false,
+          "transient": false,
+          "type": "dir",
+          "version_id": "900000000000000013",
+          "watermark_version": 0
+        },
+        {
+          "access_time": 1713087595,
+          "adv_shared": false,
+          "app_properties": {
+            "type": "none"
+          },
+          "capabilities": {
+            "can_comment": true,
+            "can_delete": true,
+            "can_download": true,
+            "can_encrypt": true,
+            "can_organize": true,
+            "can_preview": true,
+            "can_read": true,
+            "can_rename": true,
+            "can_share": true,
+            "can_sync": true,
+            "can_write": true
+          },
+          "change_id": 3905,
+          "change_time": 1713087595,
+          "content_snippet": "",
+          "content_type": "<text:content_type>",
+          "created_time": 1713087595,
+          "disable_download": false,
+          "display_path": "<text:display_path>",
+          "dsm_path": "",
+          "enable_watermark": false,
+          "encrypted": false,
+          "file_id": "900000000000000008",
+          "force_watermark_download": false,
+          "hash": "",
+          "image_metadata": {
+            "time": 1713087588
+          },
+          "labels": [],
+          "max_id": 3905,
+          "modified_time": 1713087588,
+          "name": "<text:name>",
+          "owner": {
+            "display_name": "<text:display_name>",
+            "name": "<text:name>",
+            "nickname": "",
+            "uid": 1027
+          },
+          "parent_id": "900000000000000002",
+          "path": "<text:path>",
+          "permanent_link": "<text:permanent_link>",
+          "properties": {},
+          "removed": false,
+          "revisions": 1,
+          "shared": false,
+          "shared_with": [],
+          "size": 0,
+          "starred": false,
+          "support_remote": false,
+          "sync_id": 2778,
+          "sync_to_device": false,
+          "transient": false,
+          "type": "dir",
+          "version_id": "900000000000000009",
+          "watermark_version": 0
+        }
+      ],
+      "total": 2
+    },
+    "success": true
+  }
+}

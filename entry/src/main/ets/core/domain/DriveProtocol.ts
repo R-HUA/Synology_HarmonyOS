@@ -25,10 +25,12 @@ export const DRIVE_TEAM_FOLDERS_API = 'SYNO.SynologyDrive.TeamFolders';
 export const DRIVE_TRASH_API = 'SYNO.SynologyDrive.Trash';
 export const DRIVE_TEAM_FOLDERS_VERSION = 1;
 export const DRIVE_TRASH_VERSION = 1;
+export const DRIVE_SEARCH_VERSION = 2;
+export const DRIVE_ANCESTORS_VERSION = 2;
 
 export enum DriveView {
   MyDrive = 'mydrive', TeamFolders = 'teamFolders', Recent = 'recent', Starred = 'starred',
-  SharedWithMe = 'sharedWithMe', SharedWithOthers = 'sharedWithOthers', Trash = 'trash'
+  SharedWithMe = 'sharedWithMe', SharedWithOthers = 'sharedWithOthers', Trash = 'trash', Search = 'search'
 }
 
 export function driveViewLabel(view: DriveView): string {
@@ -40,6 +42,7 @@ export function driveViewLabel(view: DriveView): string {
     case DriveView.SharedWithMe: return '共享给我';
     case DriveView.SharedWithOthers: return '我共享出去的';
     case DriveView.Trash: return '回收站';
+    case DriveView.Search: return '搜索结果';
   }
 }
 
@@ -136,6 +139,13 @@ export interface DriveFolderRef {
   fileId?: string;
   /** 仅用于面包屑首项与错误文案，不参与请求。 */
   displayName?: string;
+}
+
+/** list_ancestor 只返回父级链，个人根允许空名称，不是普通文件条目。 */
+export interface DriveAncestor {
+  fileId: string;
+  name: string;
+  parentId?: string;
 }
 
 /**
@@ -333,11 +343,35 @@ export function decodeDriveEntry(raw: Object): DriveEntry {
   return entry;
 }
 
-/** 只校验 `items` 数组本身。面包屑（list_ancestor）没有分页语义，走这条。 */
+/** 普通文件列表；祖先链使用独立解码器。 */
 export function decodeDriveEntryList(data: Record<string, Object>): DriveEntry[] {
   const raw = data['items'];
   if (!Array.isArray(raw)) { throw driveProtocolError('items 字段'); }
   return (raw as Object[]).map((item: Object): DriveEntry => decodeDriveEntry(item));
+}
+
+/** 校验根到父目录的链条，避免把乱序、循环或当前目录重复显示成可导航的祖先。 */
+export function decodeDriveAncestors(data: Record<string, Object>, target: DriveEntry): DriveAncestor[] {
+  const raw = data['items'];
+  if (!Array.isArray(raw) || data['total'] !== raw.length) { throw driveProtocolError('祖先链'); }
+  const seen = new Set<string>([target.fileId]);
+  const ancestors: DriveAncestor[] = [];
+  for (const item of raw as Object[]) {
+    const row = nasRecord(item);
+    const fileId = decodeDriveId(row['file_id'], '祖先 file_id');
+    const name = optionalDriveText(row['name'], 255);
+    const parentId = optionalDriveId(row['parent_id']);
+    if (decodeDriveKind(row) !== DriveEntryKind.Folder || seen.has(fileId) ||
+      name === undefined && (row['name'] !== '' || ancestors.length !== 0) ||
+      ancestors.length > 0 && parentId !== ancestors[ancestors.length - 1].fileId) {
+      throw driveProtocolError('祖先链顺序');
+    }
+    seen.add(fileId);
+    ancestors.push({ fileId, name: name ?? '', parentId });
+  }
+  if (ancestors.length > 0 && target.parentId !== undefined &&
+    target.parentId !== ancestors[ancestors.length - 1].fileId) { throw driveProtocolError('祖先链父目录'); }
+  return ancestors;
 }
 
 /**
@@ -454,6 +488,27 @@ export function driveViewFields(view: DriveView, offset: number): NasFormField[]
     { name: 'filter', content: '{"include_transient":true}' }];
   if (view === DriveView.MyDrive || view === DriveView.Trash) { fields.push(driveText('path', '/mydrive', 4096)); }
   return fields;
+}
+
+export function driveSearchFields(keyword: string, offset: number, folder?: DriveFolderRef): NasFormField[] {
+  const query = keyword.trim();
+  if (query.length === 0) { throw new NasFailure(NasErrorKind.InvalidInput, '请输入搜索内容。'); }
+  if (folder !== undefined && folder.fileId === undefined) {
+    throw new NasFailure(NasErrorKind.InvalidInput, '请先选择具体的 Drive 文件夹。');
+  }
+  // 只使用成功抓包的 mydrive/custom 范围；搜索排序与普通列表不同。
+  const fields: NasFormField[] = [driveText('keyword', query, 256),
+    driveText('location', folder === undefined ? 'mydrive' : 'custom', 32),
+    driveText('sort_by', 'score', 32), driveText('sort_direction', DriveSortDirection.Ascending, 8),
+    { name: 'enable_content_search', content: 'false' }, { name: 'content_snippet', content: 'false' },
+    driveCount('offset', offset, true), driveCount('limit', DRIVE_PAGE_SIZE, false),
+    { name: 'filter', content: '{"include_transient":true}' }];
+  if (folder !== undefined) { fields.push(driveText('custom_location', drivePathExpression(folder), 4096)); }
+  return fields;
+}
+
+export function driveAncestorFields(fileId: string): NasFormField[] {
+  return [driveText('path', 'id:' + validateDriveFileId(fileId), 4096)];
 }
 
 /**

@@ -5,8 +5,9 @@ const {
   decodeDrivePage, decodeDriveEntry, decodeDriveEntryList, decodeDriveResponse, driveListFields,
   drivePathExpression, precisionSafeDriveJson, relabelDriveFailure, unknownDriveEntryKeys,
   validateDriveFileId, DRIVE_ENTRY_KEYS, DRIVE_PAGE_SIZE, DriveEntryKind, DriveSortBy, DriveSortDirection,
-  DriveSpace, DriveView, decodeDriveViewPage, driveViewFields,
+  DriveSpace, DriveView, decodeDriveViewPage, driveViewFields, driveSearchFields, decodeDriveAncestors,
 } = require('../../work/core-build/domain/DriveProtocol.js');
+const readonlyContract = require('../fixtures/drive-readonly-contract.json');
 const { DriveAdapter } = require('../../work/core-build/network/DriveAdapter.js');
 const { CapabilityRegistry } = require('../../work/core-build/capabilities/CapabilityRegistry.js');
 
@@ -345,4 +346,74 @@ test('DriveAdapter surfaces the kernel failure untouched so callers see one erro
   kernel.requestDrive = async () => { throw failure; };
   const adapter = new DriveAdapter(kernel);
   await assert.rejects(() => adapter.list({ space: DriveSpace.MyDrive }), (error) => error === failure);
+});
+
+test('search parameters retain the captured scope and score sorting with explicit mobile paging', () => {
+  const fields = Object.fromEntries(driveSearchFields('  PhotoLibrary  ', 0).map(row => [row.name, row.content]));
+  assert.deepEqual(fields, { ...readonlyContract.searchParams, limit: String(DRIVE_PAGE_SIZE) });
+  const scoped = Object.fromEntries(driveSearchFields('资料', 200,
+    { space: DriveSpace.TeamFolder, fileId: ROOT_ID }).map(row => [row.name, row.content]));
+  assert.equal(scoped.location, '"custom"');
+  assert.equal(scoped.custom_location, '"id:' + ROOT_ID + '"');
+  assert.equal(scoped.offset, '200');
+  assert.equal(scoped.keyword, '"资料"');
+  for (const bad of ['', '  ', 'a'.repeat(257), 'a\u0000b']) {
+    assert.throws(() => driveSearchFields(bad, 0), isKind(K.InvalidInput));
+  }
+  assert.throws(() => driveSearchFields('资料', -1), isKind(K.InvalidInput));
+  assert.throws(() => driveSearchFields('资料', 0, { space: DriveSpace.TeamFolder }), isKind(K.InvalidInput));
+  assert.throws(() => driveSearchFields('资料', 0, { space: DriveSpace.MyDrive, fileId: '../home' }), isKind(K.InvalidInput));
+});
+
+test('captured search and ancestor responses use distinct schemas and preserve their linked ids', () => {
+  const page = decodeDriveViewPage(readonlyContract.searchResponse.data, DriveView.Search, 0);
+  assert.equal(page.items.length, 1);
+  assert.equal(page.hasMore, false);
+  const ancestors = decodeDriveAncestors(readonlyContract.ancestorResponse.data, page.items[0]);
+  assert.equal(ancestors[0].name, '');
+  assert.equal(ancestors[1].parentId, ancestors[0].fileId);
+  assert.equal(page.items[0].parentId, ancestors[1].fileId);
+  assert.ok(ancestors.every(item => item.fileId !== page.items[0].fileId));
+  assert.throws(() => decodeDriveEntryList(readonlyContract.ancestorResponse.data), isProtocol);
+});
+
+test('ancestor decoding rejects cycles, reversed chains, missing names and mismatched parents', () => {
+  const target = decodeDriveEntry(entryFixture({ file_id: '3', parent_id: '2', type: 'dir' }));
+  const root = { file_id: '1', parent_id: '9', type: 'dir', name: '' };
+  const parent = { file_id: '2', parent_id: '1', type: 'dir', name: '资料' };
+  const decode = items => decodeDriveAncestors({ items, total: items.length }, target);
+  assert.equal(decode([root, parent]).length, 2);
+  assert.deepEqual(decodeDriveAncestors({ items: [], total: 0 }, target), []);
+  for (const items of [[parent, root], [root, root], [root, { ...parent, file_id: '3' }],
+    [root, { ...parent, parent_id: '9' }], [root, { ...parent, name: '' }],
+    [root, { ...parent, name: undefined }], [root, { ...parent, type: 'file' }],
+    [{ ...root, file_id: 976700457026108129 }, parent]]) {
+    assert.throws(() => decode(items), isProtocol);
+  }
+  assert.throws(() => decode([root]), isProtocol);
+  assert.throws(() => decodeDriveAncestors({ items: [root, parent], total: 3 }, target), isProtocol);
+});
+
+test('search and ancestor adapters use verified methods and avoid sending invalid input', async () => {
+  const kernel = fakeKernel({ reply: { ...readonlyContract.searchResponse.data, total: 2 } });
+  const adapter = new DriveAdapter(kernel);
+  const result = await adapter.search('PhotoLibrary');
+  assert.equal(kernel.calls[0].feature, 'driveSearch');
+  assert.equal(kernel.calls[1].method, 'search');
+  assert.equal(kernel.calls[1].version, 2);
+  await adapter.search('PhotoLibrary', 1);
+  assert.equal(kernel.calls.length, 3);
+  const before = kernel.calls.length;
+  await assert.rejects(() => adapter.search(' '), isKind(K.InvalidInput));
+  await assert.rejects(() => adapter.readView(DriveView.Search), isKind(K.InvalidInput));
+  assert.equal(kernel.calls.length, before);
+  kernel.requestDrive = async (api, version, method, fields) => {
+    assert.equal(api, 'SYNO.SynologyDrive.Files');
+    assert.equal(method, 'list_ancestor');
+    assert.equal(version, 2);
+    assert.deepEqual(fields, [{ name: 'path', content: '"id:' + result.items[0].fileId + '"' }]);
+    return readonlyContract.ancestorResponse.data;
+  };
+  await adapter.ancestors(result.items[0]);
+  assert.equal(kernel.calls.at(-1).feature, 'driveAncestors');
 });

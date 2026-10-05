@@ -44,6 +44,48 @@ function fixture(reply = () => ({ items: [], total: 0 }), supported = () => true
   return { model, calls, failures, kernel };
 }
 
+test('search paging and folder return preserve the accepted query after a failed replacement', async () => {
+  const f = fixture(({ method, fields }) => {
+    if (method === 'search') {
+      const query = JSON.parse(fields.keyword);
+      if (query === '失败') throw new NasFailure(K.Network, '连接暂不可用');
+      return { total: 2, items: [entry(Number(fields.offset) + 1)] };
+    }
+    return { total: 0, items: [] };
+  });
+  await f.model.search('  资料  ');
+  assert.equal(f.model.view, V.Search);
+  assert.equal(f.model.searchKeyword, '资料');
+  await f.model.nextPage();
+  await f.model.openFolder(f.model.entries[0]);
+  await f.model.goToTrail(0);
+  assert.equal(f.calls.at(-1).method, 'search');
+  assert.equal(f.calls.at(-1).fields.keyword, '"资料"');
+  assert.equal(f.model.pageOffset, 1);
+  await f.model.search('失败');
+  assert.equal(f.model.searchKeyword, '资料');
+  assert.equal(f.model.entries[0].fileId, '2');
+  assert.match(f.model.errorText, /连接/);
+  await f.model.reload();
+  assert.equal(f.calls.at(-1).fields.keyword, '"资料"');
+});
+
+test('blank search never submits and a response after reset cannot restore its query', async () => {
+  const pending = gate();
+  const f = fixture(() => pending.promise);
+  await f.model.search('  ');
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.model.loaded, false);
+  assert.match(f.model.errorText, /请输入/);
+  const loading = f.model.search('资料');
+  f.model.reset();
+  pending.resolve({ total: 1, items: [entry(1)] });
+  await loading;
+  assert.equal(f.model.view, V.MyDrive);
+  assert.equal(f.model.searchKeyword, '');
+  assert.equal(f.model.loaded, false);
+});
+
 test('short pages never skip entries and previous-page navigation uses visited offsets', async () => {
   const f = fixture(({ fields }) => ({ total: 5, items: [entry(Number(fields.offset) + 1)] }));
   await f.model.open();
@@ -155,4 +197,109 @@ test('session failures reach the connection callback and late reset responses ca
   await open;
   assert.equal(f.model.entries.length, 0);
   assert.equal(f.model.loaded, false);
+});
+
+test('custom searches preserve their scope through pagination and return to the original team folder page', async () => {
+  const f = fixture(({ api, method, fields }) => {
+    if (api.endsWith('.TeamFolders')) return { total: 1, items: [{ ...entry(7), name: '团队资料' }] };
+    if (method === 'search') return { total: 2, items: [entry(Number(fields.offset) + 21, 'file')] };
+    return { total: 2, items: [entry(Number(fields.offset) + 11, 'file')] };
+  });
+  await f.model.selectView(V.TeamFolders);
+  await f.model.openFolder(f.model.entries[0]);
+  await f.model.nextPage();
+  await f.model.search('资料');
+  assert.equal(f.calls.at(-1).fields.location, '"custom"');
+  assert.equal(f.calls.at(-1).fields.custom_location, '"id:7"');
+  assert.equal(f.model.searchScopeName, '团队资料');
+  await f.model.nextPage();
+  assert.equal(f.calls.at(-1).fields.custom_location, '"id:7"');
+  assert.equal(f.model.pageOffset, 1);
+  await f.model.search('文档');
+  assert.equal(f.calls.at(-1).fields.custom_location, '"id:7"');
+  await f.model.goUp();
+  assert.equal(f.model.view, V.TeamFolders);
+  assert.equal(f.model.trail.at(-1).fileId, '7');
+  assert.equal(f.model.pageOffset, 1);
+  assert.equal(f.model.searchKeyword, '');
+  assert.equal(f.model.searchText, '');
+  await f.model.previousPage();
+  assert.equal(f.model.pageOffset, 0);
+});
+
+test('cross-directory results use the captured ancestor chain and keep the accepted search result page', async () => {
+  const contract = require('../fixtures/drive-readonly-contract.json');
+  const f = fixture(({ method }) => {
+    if (method === 'search') return contract.searchResponse.data;
+    if (method === 'list_ancestor') return contract.ancestorResponse.data;
+    return { items: [], total: 0 };
+  });
+  await f.model.search('PhotoLibrary');
+  await f.model.openFolder(f.model.entries[0]);
+  assert.deepEqual(f.calls.map(call => call.method), ['search', 'list_ancestor', 'list']);
+  assert.deepEqual(Array.from(f.model.trail, item => item.fileId), [undefined,
+    ...contract.ancestorResponse.data.items.map(item => item.file_id), contract.searchResponse.data.items[0].file_id]);
+  assert.equal(f.model.trail[1].name, '根目录');
+  await f.model.goUp();
+  assert.equal(f.calls.at(-1).fields.path, '"id:' + contract.ancestorResponse.data.items[1].file_id + '"');
+  await f.model.goToTrail(0);
+  assert.equal(f.calls.at(-1).method, 'search');
+  assert.equal(f.model.searchKeyword, 'PhotoLibrary');
+  assert.equal(f.model.entries.length, 1);
+  assert.equal(f.model.canGoUp(), true);
+});
+
+test('ancestor failures preserve the search result and session expiry reaches the common callback', async () => {
+  let expire = false;
+  const f = fixture(({ method }) => {
+    if (method === 'list_ancestor') throw new NasFailure(expire ? K.SessionExpired : K.Network, '祖先读取失败', 119);
+    return { total: 1, items: [entry(3)] };
+  });
+  await f.model.search('资料');
+  const entries = f.model.entries, trail = f.model.trail;
+  await f.model.openFolder(entries[0]);
+  assert.equal(f.model.entries, entries);
+  assert.equal(f.model.trail, trail);
+  assert.equal(f.model.searchKeyword, '资料');
+  assert.equal(f.model.busy, false);
+  assert.match(f.model.errorText, /祖先/);
+  expire = true;
+  await f.model.openFolder(entries[0]);
+  assert.equal(f.failures.length, 1);
+  assert.equal(f.calls.filter(call => call.method === 'list').length, 0);
+});
+
+test('reset during ancestor loading prevents a second request and discards old query and navigation', async () => {
+  const pending = gate();
+  const f = fixture(({ method }) => method === 'list_ancestor' ? pending.promise : { items: [entry(3)], total: 1 });
+  await f.model.search('资料');
+  const loading = f.model.openFolder(f.model.entries[0]);
+  f.model.reset();
+  pending.resolve({ items: [], total: 0 });
+  await loading;
+  assert.equal(f.calls.length, 2);
+  assert.equal(f.model.loaded, false);
+  assert.equal(f.model.searchKeyword, '');
+  assert.equal(f.model.canGoUp(), false);
+  assert.equal(f.model.busy, false);
+});
+
+test('a failed search exit keeps its query and result so the same destination can be retried', async () => {
+  let unavailable = false;
+  const f = fixture(({ method }) => {
+    if (unavailable && method === 'list') throw new NasFailure(K.Network, '暂不可用');
+    return { items: [], total: 0 };
+  });
+  await f.model.open();
+  await f.model.search('资料');
+  unavailable = true;
+  await f.model.exitSearch();
+  assert.equal(f.model.view, V.Search);
+  assert.equal(f.model.searchKeyword, '资料');
+  assert.equal(f.model.canGoUp(), true);
+  unavailable = false;
+  await f.model.exitSearch();
+  assert.equal(f.model.view, V.MyDrive);
+  assert.equal(f.model.searchKeyword, '');
+  assert.equal(f.model.canGoUp(), false);
 });

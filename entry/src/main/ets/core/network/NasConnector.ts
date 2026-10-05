@@ -18,7 +18,8 @@ import type { TransferChecksumStatus } from '../domain/TransferQueueState';
 import { DsmRpcClient } from './DsmRpcClient';
 import { decodeExtensionResponse } from '../domain/ExtensionProtocol';
 import { decodeDriveResponse, DRIVE_FILES_API, DRIVE_LIST_VERSION, DRIVE_TEAM_FOLDERS_API, DRIVE_TEAM_FOLDERS_VERSION,
-  DRIVE_TRASH_API, DRIVE_TRASH_VERSION, driveUnsupportedFailure } from '../domain/DriveProtocol';
+  DRIVE_TRASH_API, DRIVE_TRASH_VERSION, DRIVE_SEARCH_VERSION, DRIVE_ANCESTORS_VERSION,
+  driveUnsupportedFailure } from '../domain/DriveProtocol';
 import { selectVerifiedApi } from './ApiVersionPolicy';
 import { CapabilityRegistry } from '../capabilities/CapabilityRegistry';
 import type { CapabilitySnapshot } from '../capabilities/CapabilityRegistry';
@@ -79,6 +80,8 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     { feature: 'driveStarred', api: DRIVE_FILES_API, verifiedVersions: [2] },
     { feature: 'driveSharedWithMe', api: DRIVE_FILES_API, verifiedVersions: [2] },
     { feature: 'driveSharedWithOthers', api: DRIVE_FILES_API, verifiedVersions: [2] },
+    { feature: 'driveSearch', api: DRIVE_FILES_API, verifiedVersions: [DRIVE_SEARCH_VERSION] },
+    { feature: 'driveAncestors', api: DRIVE_FILES_API, verifiedVersions: [DRIVE_ANCESTORS_VERSION] },
     { feature: 'driveTeamFolders', api: DRIVE_TEAM_FOLDERS_API, verifiedVersions: [DRIVE_TEAM_FOLDERS_VERSION] },
     { feature: 'driveTrash', api: DRIVE_TRASH_API, verifiedVersions: [DRIVE_TRASH_VERSION] }
   ]);
