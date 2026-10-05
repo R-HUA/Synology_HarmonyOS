@@ -116,7 +116,7 @@ export interface DriveEntry {
   starred: boolean;
   shared: boolean;
   /** `revisions` 是版本数（数字），不是数组。 */
-  revisionCount: number;
+  revisionCount?: number;
   owner?: DriveOwner;
   capabilities: DriveCapabilities;
 }
@@ -325,7 +325,7 @@ export function decodeDriveEntry(raw: Object): DriveEntry {
   }
   const entry: DriveEntry = { fileId: fileId, name: name, kind: decodeDriveKind(row),
     starred: driveFlag(row, 'starred'), shared: driveFlag(row, 'shared'),
-    revisionCount: revisions === undefined ? 0 : revisions as number,
+    revisionCount: revisions as number | undefined,
     capabilities: decodeDriveCapabilities(row['capabilities']) };
   if (size !== undefined) { entry.sizeBytes = size as number; }
   const createdAt = optionalDriveTime(row['created_time']);
@@ -414,7 +414,7 @@ export function decodeDriveTeamFolder(raw: Object): DriveEntry {
   const name = optionalDriveText(row['name'], 255);
   if (name === undefined) { throw driveProtocolError('name 字段'); }
   return { fileId, name, kind: DriveEntryKind.Folder, starred: false, shared: false,
-    revisionCount: 0, capabilities: decodeDriveCapabilities(row['capabilities']) };
+    capabilities: decodeDriveCapabilities(row['capabilities']) };
 }
 
 export function decodeDriveViewPage(data: Record<string, Object>, view: DriveView,

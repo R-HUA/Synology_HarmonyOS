@@ -22,6 +22,7 @@ interface DriveTransferSession {
   store: DriveTransferStore;
   records: DriveTransferRecord[];
   onSessionFailure: (error: NasFailure) => Promise<void>;
+  canStart: () => boolean;
 }
 
 function transferMessage(error: Object): string {
@@ -50,10 +51,10 @@ export class DriveTransferModel {
   private foreground: boolean = true;
 
   async attach(context: common.UIAbilityContext, connector: NasConnector, origin: string, account: string,
-    onSessionFailure: (error: NasFailure) => Promise<void>): Promise<void> {
+    onSessionFailure: (error: NasFailure) => Promise<void>, canStart: () => boolean = (): boolean => true): Promise<void> {
     this.detach();
     const session: DriveTransferSession = { context, origin: normalizeNasOrigin(origin), account: account.trim(),
-      adapter: new DriveTransferAdapter(connector), store: new DriveTransferStore(), records: [], onSessionFailure };
+      adapter: new DriveTransferAdapter(connector), store: new DriveTransferStore(), records: [], onSessionFailure, canStart };
     this.session = session;
     this.available = session.adapter.available();
     if (session.account.length === 0) { this.errorText = '缺少账号，无法读取 Drive 传输记录。'; return; }
@@ -302,6 +303,9 @@ export class DriveTransferModel {
 
   private requireAvailable(): void {
     if (!this.available) { throw new NasFailure(NasErrorKind.Unsupported, '此 NAS 无法使用 Drive 上传下载，请检查套件和账号权限。'); }
+    if (this.session !== undefined && !this.session.canStart()) {
+      throw new NasFailure(NasErrorKind.InvalidInput, '请先在任务页处理未结束的 Drive 文件操作。');
+    }
   }
 
   private checkDuplicate(session: DriveTransferSession, parentId: string, name: string): void {

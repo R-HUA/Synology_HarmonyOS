@@ -96,8 +96,15 @@ async function fixture(options = {}) {
     '../control/SystemControlModel': { SystemControlModel: class { deactivate() {} async open(_context, _connector, _origin, _tls, validate) { this.validate = validate; } } },
     '../extensions/NasExtensionsModel': { NasExtensionsModel: class { async attach() {} reset() {} } },
     '../drive/DriveBrowserModel': { DriveBrowserModel: class { attach() {} detach() {} reset() {} } },
-    '../drive/DriveTransferModel': { DriveTransferModel: class { ready = true; busy = false; items = []; async attach() {} async stopAll() {} detach() {} } },
+    '../drive/DriveTransferModel': { DriveTransferModel: class {
+      ready = true; busy = false; items = [];
+      async attach(...args) { this.canStart = args[5]; } async stopAll() {} detach() {}
+    } },
     '../drive/DriveThumbnailStore': { DriveThumbnailStore: class { attach() {} detach() {} } },
+    '../drive/DriveActionModel': { DriveActionModel: class {
+      ready = true; busy = false; hasPending = false;
+      async attach(...args) { this.canWrite = args[5]; } async stopAll() {} detach() {}
+    } },
     '../transfers/TransferQueue': { TransferQueue: MockQueue },
     '../../core/domain/FileOperations': operations,
     '../sharing/SharedUploadInbox': { sharedUploadInbox: {} },
@@ -110,6 +117,19 @@ async function fixture(options = {}) {
   await model.attachQueue(connector);
   return { model, connector, calls, storage, saved, options, now: () => now, ConnectionViewModel };
 }
+
+test('Drive write permission requires an idle authenticated connection with the original connector and generation', async () => {
+  const { model } = await fixture();
+  const canWrite = model.driveActions.canWrite, canStart = model.driveTransfers.canStart;
+  assert.equal(canWrite(), true); assert.equal(canStart(), true);
+  for (const change of [{ busy: true }, { authenticated: false }, { connector: {} }, { generation: model.generation + 1 }]) {
+    const previous = Object.fromEntries(Object.keys(change).map(key => [key, model[key]]));
+    Object.assign(model, change);
+    assert.equal(canWrite(), false); assert.equal(canStart(), false);
+    Object.assign(model, previous);
+    assert.equal(canWrite(), true); assert.equal(canStart(), true);
+  }
+});
 
 test('system control refuses unread, active or unknown Drive transfers without stopping or replaying them', async () => {
   const { model } = await fixture();

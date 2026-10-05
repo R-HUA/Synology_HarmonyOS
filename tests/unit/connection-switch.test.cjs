@@ -190,9 +190,14 @@ async function fixture(options = {}) {
     '../extensions/NasExtensionsModel': { NasExtensionsModel: class { async attach() {} reset() {} } },
     '../drive/DriveBrowserModel': { DriveBrowserModel: class { attach() {} detach() {} reset() {} } },
     '../drive/DriveThumbnailStore': { DriveThumbnailStore: class { attach() {} detach() {} } },
+    '../drive/DriveActionModel': { DriveActionModel: class {
+      ready = true; busy = false; hasPending = false;
+      async attach(...args) { this.canWrite = args[5]; }
+      async stopAll() { record('drive-actions.stopAll'); } detach() {}
+    } },
     '../drive/DriveTransferModel': { DriveTransferModel: class {
       ready = true; busy = false; items = [];
-      async attach() {}
+      async attach(...args) { this.canStart = args[5]; }
       async stopAll() { record('drive.stopAll'); if (state.driveStopGate) await state.driveStopGate.promise; }
       detach() { record('drive.detach'); }
     } },
@@ -457,6 +462,25 @@ test('manual switching waits for both queue shutdown and session clear before an
   state.clearGate.resolve();
   assert.equal(await pending, true);
   assert.equal(connectors.length, 2);
+});
+
+test('disconnect blocks Drive writes throughout queue shutdown and restores permission only when shutdown fails', async () => {
+  for (const stopFails of [false, true]) {
+    const { model, state, count } = await fixture();
+    await model.restore(context);
+    const canWrite = model.driveActions.canWrite, canStart = model.driveTransfers.canStart;
+    assert.equal(canWrite(), true); assert.equal(canStart(), true);
+    state.stopGate = deferred();
+    if (stopFails) { state.stopError = failure(K.Protocol); }
+    const leaving = model.disconnect(); await flush();
+    assert.equal(count('drive-actions.stopAll'), 1); assert.equal(count('drive.stopAll'), 1);
+    assert.equal(count('queue.stopAll'), 1); assert.equal(count('session.clear'), 0);
+    assert.equal(model.busy, true); assert.equal(model.authenticated, true);
+    assert.equal(canWrite(), false); assert.equal(canStart(), false);
+    state.stopGate.resolve(); await leaving;
+    assert.equal(model.busy, false); assert.equal(model.authenticated, stopFails);
+    assert.equal(canWrite(), stopFails); assert.equal(canStart(), stopFails);
+  }
 });
 
 test('switching addresses waits for foreground Drive cancellation before clearing the account', async () => {

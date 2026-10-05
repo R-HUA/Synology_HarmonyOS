@@ -9,6 +9,10 @@ import { DRIVE_BROWSER_VIEWS } from '../features/drive/DriveBrowserModel';
 import type { DriveTrailItem } from '../features/drive/DriveBrowserModel';
 import { DriveTransferRecord } from '../core/domain/DriveTransferState';
 import { DriveUploadReview, DriveTransferSummary, DriveTransferCard } from '../features/drive/DriveTransferUi';
+import { driveActionAllowed } from '../core/domain/DriveActionProtocol';
+import type { DriveAction } from '../core/domain/DriveActionProtocol';
+import type { DriveActionRecord } from '../core/domain/DriveActionState';
+import { DriveActionPage, DriveActionSummary, DriveActionCard } from '../features/drive/DriveActionUi';
 import { NasPhotoItem, NasPhotoAlbum, PhotosSpace } from '../core/domain/PhotosProtocol';
 import { PhotoBackup } from '../features/backup/PhotoBackup';
 import { TransferUploadSource } from '../features/transfers/TransferQueue';
@@ -56,10 +60,12 @@ struct Index {
   private telemetryScroller: Scroller = new Scroller();
   private addressBookScroller: Scroller = new Scroller();
   private systemControlScroller: Scroller = new Scroller();
+  private driveActionScroller: Scroller = new Scroller();
   private foregroundChanged = (foreground: boolean): void => {
     this.foreground = foreground;
     this.model.driveTransfers.setForeground(foreground);
     this.model.driveThumbnails.setForeground(foreground);
+    this.model.driveActions.setForeground(foreground);
     if (!foreground) { this.model.addressBook.cancelProbe(); this.model.systemControl.deactivate(); }
     else if (this.systemControlOpened) { this.model.openSystemControl(); }
     this.updateTelemetryMode();
@@ -245,12 +251,14 @@ struct Index {
     return this.model.authenticated ? ['首页', '文件', '相册', '任务'][this.activeTab] : 'NAS 工作台';
   }
 
-  @Monitor('activeTab')
+  @Monitor('activeTab', 'taskSection')
   private activeTabChanged(): void {
     this.updateTelemetryMode();
   }
 
   private updateTelemetryMode(): void {
+    this.model.driveActions.setPolling(this.pageActive && this.foreground && this.model.authenticated &&
+      this.activeTab === 3 && this.taskSection === 'drive-actions' && this.navStack.size() === 0);
     this.model.telemetry.setMode(!this.pageActive || !this.foreground || !this.model.authenticated || this.addressBookOpened || this.systemControlOpened || this.extensionsOpened ? 'hidden' :
       this.telemetryOpened ? 'detail' : this.activeTab === 0 ? 'home' : 'hidden');
   }
@@ -1052,6 +1060,7 @@ struct Index {
             this.notices()
             if (this.model.drive.notice.length > 0) { WorkbenchNotice({ text: this.model.drive.notice }) }
             if (this.model.driveThumbnails.errorText.length > 0) { WorkbenchNotice({ text: this.model.driveThumbnails.errorText }) }
+            if (this.model.driveActions.errorText.length > 0) { WorkbenchNotice({ text: this.model.driveActions.errorText, warning: true }) }
             if (this.model.drive.busy) {
               Row({ space: 12 }) {
                 LoadingProgress().width(24).height(24)
@@ -1078,16 +1087,16 @@ struct Index {
               thumbnail: this.model.driveThumbnails.path(entry).length > 0 ? fileUri.getUriFromPath(this.model.driveThumbnails.path(entry)) : '',
               icon: entry.kind === DriveEntryKind.Folder ? $r('sys.symbol.folder') : $r('sys.symbol.doc'),
               iconColor: entry.kind === DriveEntryKind.Folder ? $r('sys.color.icon_emphasize') : $r('sys.color.font_secondary'),
-              available: !this.model.drive.busy && entry.capabilities.canRead &&
+              available: !this.model.busy && !this.model.drive.busy && entry.capabilities.canRead &&
                 this.model.drive.view !== DriveView.Trash &&
                 (entry.kind === DriveEntryKind.Folder || entry.capabilities.canDownload && this.model.driveTransfers.ready && !this.model.driveTransfers.busy),
               onOpen: (): void => { this.openDriveEntry(entry); } }).layoutWeight(1)
-            if (entry.kind === DriveEntryKind.Folder && entry.capabilities.canRead && entry.capabilities.canWrite && this.model.drive.view !== DriveView.Trash) {
+            if (this.driveEntryMenu(entry).length > 0) {
               Button() { SymbolGlyph($r('sys.symbol.ellipsis_circle')).fontSize(22).fontColor([$r('sys.color.icon_primary')]) }
                 .width(48).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).type(ButtonType.Circle).backgroundColor(Color.Transparent)
-                .enabled(this.model.driveTransfers.ready && !this.model.driveTransfers.busy && !this.model.drive.busy)
-                .bindMenu([{ value: '上传到此文件夹', action: (): void => { this.prepareDriveUpload(entry); } }])
-                .accessibilityText(entry.name + '，上传到此文件夹')
+                .enabled(!this.model.busy && this.model.driveActions.ready && this.model.driveTransfers.ready && !this.model.driveTransfers.busy &&
+                  !this.model.driveActions.busy && !this.model.driveActions.hasPending && !this.model.drive.busy)
+                .bindMenu(this.driveEntryMenu(entry)).accessibilityText(entry.name + '，操作菜单')
             }
             }.width('100%')
           }
@@ -1130,6 +1139,45 @@ struct Index {
     await this.model.driveTransfers.prepareUpload(entry);
     if (this.model.driveTransfers.draft !== undefined) { this.driveScroller.scrollEdge(Edge.Top); }
   }
+
+  private driveEntryMenu(entry: DriveEntry): MenuElement[] {
+    const menu: MenuElement[] = [];
+    if (this.model.drive.view === DriveView.Trash) { return menu; }
+    if (entry.kind === DriveEntryKind.Folder && entry.capabilities.canRead && entry.capabilities.canWrite) {
+      menu.push({ value: '上传到此文件夹', action: (): void => { this.prepareDriveUpload(entry); } });
+    }
+    if (!this.model.driveActions.available) { return menu; }
+    const rootRestricted = this.model.drive.trail.length === 1 && [DriveView.TeamFolders, DriveView.SharedWithMe,
+      DriveView.SharedWithOthers].includes(this.model.drive.view);
+    if (!rootRestricted && driveActionAllowed(entry, 'rename')) {
+      menu.push({ value: '改名', action: (): void => { this.prepareDriveAction(entry, 'rename'); } });
+    }
+    if (driveActionAllowed(entry, 'copy') && !(this.model.drive.view === DriveView.TeamFolders && this.model.drive.trail.length === 1)) {
+      menu.push({ value: '复制到…', action: (): void => { this.prepareDriveAction(entry, 'copy'); } });
+    }
+    if (!rootRestricted && driveActionAllowed(entry, 'move')) {
+      menu.push({ value: '移动到…', action: (): void => { this.prepareDriveAction(entry, 'move'); } });
+    }
+    if (!rootRestricted && driveActionAllowed(entry, 'delete')) {
+      menu.push({ value: '删除', action: (): void => { this.prepareDriveAction(entry, 'delete'); } });
+    }
+    return menu;
+  }
+
+  private async prepareDriveAction(entry: DriveEntry, action: DriveAction): Promise<void> {
+    if (await this.model.driveActions.prepare(entry, action)) { this.navStack.pushPathByName('drive-action', undefined); }
+  }
+
+  private async submitDriveAction(): Promise<void> {
+    if (await this.model.driveActions.submit()) {
+      const paths: string[] = this.navStack.getAllPathName();
+      if (!this.pageActive || paths[paths.length - 1] !== 'drive-action') { return; }
+      this.navStack.pop(); this.model.driveActions.clearDraft(); this.taskSection = 'drive-actions'; this.switchTab(3);
+      this.updateTelemetryMode();
+    }
+  }
+
+  private returnDriveFiles(): void { this.fileSource = 'drive'; this.switchTab(1); this.model.drive.reload(); }
 
   private openDriveTransfers(): void { this.taskSection = 'drive'; this.switchTab(3); }
 
@@ -1404,7 +1452,17 @@ struct Index {
 
   @Builder
   destinationBuilder(name: string, parameter: Object) {
-    if (name === 'share-links') {
+    if (name === 'drive-action') {
+      HdsNavDestination() {
+        DriveActionPage({ model: this.model.driveActions, scroller: this.driveActionScroller,
+          onSubmit: (): void => { this.submitDriveAction(); },
+          onCancel: (): void => { this.model.driveActions.clearDraft(); this.navStack.pop(); } })
+      }
+        .backgroundColor($r('app.color.workbench_background'))
+        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: 'Drive 文件操作' } } })
+        .bindToScrollable([this.driveActionScroller])
+        .onHidden((): void => { this.model.driveActions.clearDraft(); })
+    } else if (name === 'share-links') {
       HdsNavDestination() { ShareLinksPage({ model: this.model.extensions, scroller: this.sharesScroller }) }
         .backgroundColor($r('app.color.workbench_background'))
         .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: '我的分享' } } })
@@ -1589,6 +1647,10 @@ struct Index {
               WorkbenchChoice({ label: 'Drive 传输', selected: this.taskSection === 'drive',
                 onSelect: (): void => { this.taskSection = 'drive'; } })
             }
+            if (this.model.driveActions.available || this.model.driveActions.items.length > 0) {
+              WorkbenchChoice({ label: 'Drive 文件操作', selected: this.taskSection === 'drive-actions',
+                onSelect: (): void => { this.taskSection = 'drive-actions'; } })
+            }
             if (this.model.supports('SYNO.DownloadStation.Task')) {
               WorkbenchChoice({ label: 'NAS 下载', selected: false, onSelect: (): void => { this.openNasDownloads(); } })
             }
@@ -1599,6 +1661,12 @@ struct Index {
           Repeat<DriveTransferRecord>(this.model.driveTransfers.items).each((task: RepeatItem<DriveTransferRecord>): void => {
             ListItem() { DriveTransferCard({ model: this.model.driveTransfers, item: task.item }) }
           }).key((item: DriveTransferRecord): string => item.id).virtualScroll()
+        } else if (this.taskSection === 'drive-actions') {
+          ListItem() { DriveActionSummary({ model: this.model.driveActions }) }
+          Repeat<DriveActionRecord>(this.model.driveActions.items).each((task: RepeatItem<DriveActionRecord>): void => {
+            ListItem() { DriveActionCard({ model: this.model.driveActions, item: task.item,
+              onFiles: (): void => { this.returnDriveFiles(); } }) }
+          }).key((item: DriveActionRecord): string => item.id).virtualScroll()
         } else if (this.taskSection === 'files') {
         ListItem() {
           Column({ space: 8 }) {

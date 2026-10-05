@@ -1,7 +1,7 @@
 # Drive 接入实施方案
 
 编写 2026-10-04，核验更新 2026-10-05。上游依据：`Drive_Access_Plan.md`（可行性，含三轮探测记录）与 `work/drive-probe/drive-api-map.json`（方法总表）。
-本文回答"怎么接"，并区分协议证据、已实现代码、模拟验证和真机验收。当前核验与推进结果见 §14；此前真机范围见 §11、§13。
+本文回答"怎么接"，并区分协议证据、已实现代码、模拟验证和真机验收。当前核验与推进结果见 §16；此前真机范围见 §11、§13。
 
 ## 0. 一句话定位
 
@@ -40,8 +40,8 @@
 | 团队文件夹 | `.TeamFolders` | 1 | `list` | 分页、`sort_by`,`sort_direction` | `items[]`,`total`；条目无 `type`，按此端点解为文件夹 |
 | 标签 | `.Labels` | 1 | `list` | `filter` | `items[]`,`total` |
 | 改名 | `.Files` | 2 | `update` | `path=id:<id>`,`name` | 更新后的条目 |
-| 移动 | `.Files` | 2 | `move` | `files`,`to_parent_folder`,`to_parent_folder_name`,`conflict_action`,`dry_run` | `{result}` |
-| 复制 | `.Files` | 2 | `copy` | 同上（无 `dry_run`） | `{async_task_id}` |
+| 移动 | `.Files` | 2 | `move` | `files`,`to_parent_folder`,`to_parent_folder_name`,`conflict_action`,`dry_run` | 预检 `{result}`，提交 `{async_task_id}` |
+| 复制 | `.Files` | 2 | `copy` | 同上；目标网页代码同样使用 `dry_run` | 预检 `{result}`，提交 `{async_task_id}` |
 | 删除 | `.Files` | 2 | `delete` | `files`,`permanent`,`revisions` | `{async_task_id}` |
 | 上传 | `.Files` | 2 | `upload` | `path=id:<父目录id>/<文件名>`,`type=file`,`conflict_action`,`modified_time` + multipart `file` | `{tmp_newly_created,uploaded_size}` |
 | 下载 | `.Files` | 2 | `download` | `files`,`force_download`,`is_preview`,`SynoToken` | **非 JSON，直接回内容** |
@@ -93,7 +93,7 @@ DriveTaskRef     { taskId }
 | `can_rename` | 改名 |
 | `can_delete` | 删除 |
 | `can_share` | 分享（生成链接） |
-| `can_organize` | 整理类操作（移动/复制，**推断，未实测**） |
+| `can_organize` | 不用于移动/复制。目标网页规则为复制读权限、移动读及删除权限；服务端最终校验，见 §16 |
 | `can_comment` | 评论 |
 | `can_sync` | 同步到本地 |
 | `can_encrypt` | 加密 |
@@ -139,7 +139,7 @@ DriveTaskRef     { taskId }
 | **P0** 骨架 | `DriveProtocol.ts`、`DriveAdapter.ts`、能力注册、来源切换、只读浏览 `/mydrive` | 无 | 本轮真机列出我的文件、目录进退、面包屑回跳、来源切换通过；错误路径与会话代际有模拟测试。见 §11 |
 | **P1** 视图入口 | 最近 / 星标 / 共享给我 / 我共享出去的 / 回收站 / 团队文件夹 / 标签 / 搜索 / 面包屑 | P0 | **部分完成**：用户已报告上一签名包的搜索与导航人工验证完成，见 §14；标签未实现；缺适用数据的非空视图、团队祖先链和大列表不据一句汇总反馈外推通过 |
 | **P2** 上传下载 | `upload`（multipart，冲突 `version`/`autorename`）、`download`（二进制流）、缩略图 | P0 | **约定的前台实现已补齐，整体验收待完成**，见 §14–15。用户手工验收小文件往返、两个同名策略、中断结果与缩略图；不自动恢复或重发。全仓 lint 仍有 743 条诊断 |
-| **P3** 文件操作 | 改名（`update`）、移动（`move` + `dry_run` 预检）、复制、删除；`Tasks.get` 轮询 | P2 | 每个操作的成功/失败/任务进度都有 UI 反馈；结果未知时保留待确认状态，由用户核对，不自动重放或猜测回滚 |
+| **P3** 文件操作 | 改名（`update`）、移动（`move` + `dry_run` 预检）、复制、删除；`Tasks.get` 轮询 | P2 | **实现已接入，整体验收留到最后**，见 §16。719 项测试及签名构建通过；全仓 lint 786 条诊断未通过。结果未知保留记录，不重放或猜测回滚 |
 | **P4** 分享 | `create_link` / `list_active`，入口按 `Settings.list` 控制 | P1 | 普通账号能建链接并在列表看到；无权限时给出明确原因 |
 | **P5** 可选 | 配额（`Info.quota`）、通知、客户端备份任务（`list_backup_tasks`） | P1 | — |
 
@@ -155,7 +155,7 @@ DriveTaskRef     { taskId }
 3. **错误语义**：权限被剥夺、ID 被移动或删除、分页期间内容变化时各返回什么错误码 —— 决定错误文案与重试策略。
 4. `AdvanceSharing.get` 两轮共 4 次全失败，原因未明（进阶分享权限，暂不纳入）。
 5. `Tasks` 的 `status` 取值枚举。
-6. `capabilities.can_organize` 是否真的对应移动/复制（当前是推断）。
+6. 移动/复制使用目标网页已核对的读/删除权限规则；实际账号权限变更、目标权限和服务端拒绝行为留待验收，不使用 `can_organize` 推断。
 
 已补齐（第三轮探测）：`capabilities` 11 键、`owner` 4 键、`image_metadata`/`app_properties` 键名、`offset`/`limit` 分页生效已验证。
 
@@ -387,3 +387,35 @@ Lint 相比共享内核报告增加 12 条诊断，位于 Drive 协议和适配�
 - 新包及人工步骤：`work/delivery/drive-p2-complete-20261005/entry-default-signed.hap`、`验收说明.md`、`包信息.json`。未安装设备、未请求真实图片、未执行 NAS 上传下载往返。用户手工验收 §14 的传输行为及本节缩略图行为后，才能确认 P2 整体验收完成。
 
 P3 的后续范围是改名、移动预检、复制、删除以及异步任务状态；P4 为分享链接创建与列表。本轮不扩展 P3/P4，后台传输、自动重试、断点续传及完整原图预览也不在本次 P2 前台范围。
+
+## 16. 文件操作与异步任务（2026-10-05）
+
+用户要求继续，真机与 NAS 整体验收统一留到最后。本轮在 P2 提交 `8700f78` 上实现 P3；没有设备安装或实时 NAS 写入。
+
+### 契约依据与行为
+
+- 当前保留抓包 `captures/mitm-2026-10-04T08-37-15-099Z.jsonl` 包含 `Files.update` v2、`move` 预检/提交、`copy`/`delete` 异步任务，以及 `Tasks.get` v1 的字段形状；目标网页静态 `synodrive_common.js` 进一步确认移动和复制均先 `dry_run`，冲突默认 `autorename`，删除传 `permanent=false`。网页与历史抓包支持当前请求实现，不能替代本轮 HAP 的 NAS 验收。
+- 文件和普通文件夹的菜单按条目能力提供改名、复制、移动和删除。网页 `synodrive.js` 的复制规则为 `can_read`，移动为 `can_read + can_delete`；不依赖此前推断的 `can_organize`。团队根及共享根按受限入口处理；回收站不提供这些操作。
+- 改名使用 `update(path,name)`，返回条目的 ID 与新名称均匹配才确认完成。删除须进入确认页再明确提交，发送非永久删除；不承诺一定能恢复。缺少 `revisions` 时保留未知版本数并拒绝删除，不把缺省数值补成 0；这次将内部 `DriveEntry.revisionCount` 改为可选字段，既有读取与传输不依赖该字段。
+- 移动/复制使用完整目标目录页，个人和团队目录独立浏览、翻页和返回。只能选择已返回合法 ID 且可读/写的具体文件夹，不构造可写虚拟根。文件夹先核对目标祖先链以阻止将自身移入/复制到子目录，再预检冲突；提交采用自动改名，不覆盖同名项目。
+- `DriveActionStore` 按规范化 NAS 地址和账号隔离，复用原子私有快照。提交先落盘 `unknown` 再发送；响应取得任务 ID 后保存 `accepted`。恢复只加载记录，不重放任何写请求。保存失败暂停新操作；读取失败不以空列表覆盖记录，账号切换拒绝旧响应更新新账号。
+- 任务页显示操作、目标、进度和结果；只在应用前台且任务页可见时自动查询 `Tasks.get`，离开页面、后台或查询失败即停止轮询。`finished` 且结果无错误/跳过项才完成；错误或跳过分别标记未完成/需核对，未知状态继续保留“已提交，等待结果”。已结束却缺少结果的数据按协议异常处理，停止轮询并允许人工核对后关闭。查询失效或结果未知，用户须在 NAS 确认操作已结束及结果后明确关闭本机记录；关闭不取消 NAS 任务。
+- 进行中或未知的文件操作阻止新的 Drive 传输，进行中或未知的传输阻止文件操作；两类记录读取状态也纳入系统重启/关机的现有任务检查。退出账号等候当前操作收尾，连接忙碌、认证失效、连接实例或代际变化均禁止新请求；退出收尾失败后允许恢复原账号操作。账号切换或页面离开后，旧提交不驱动新页面跳转。认证材料不落入操作快照、页面或日志。
+- 页面复用现有 V2 状态、菜单、任务卡、List、语义色与 HDS 标题栏；目录选择页保留既有 `enableComponentSafeArea` 和滚动绑定。构建通过不能证明标题栏材质、菜单、返回、长名称和各窗口宽度的视觉验收通过。
+
+### 当前验证与交付
+
+| 验证 | 实际结果 | 证据 |
+| --- | --- | --- |
+| 核心严格编译与测试 | **719/719 通过，0 skipped**；相较 P2 新增 21 项，覆盖参数、权限、缺省版本、子目录拒绝、持久化先于发送、保存失败、未知结果、账号切换、前后台、轮询、错误/跳过与结果缺失、退出期间拦截及传输互斥 | `work/drive-p3-complete-tests.log` |
+| API 26 签名构建 | **`assembleHap --no-daemon` 成功**，35.339 秒，50 个 ArkTS 警告 | `work/drive-p3-complete-build.log` |
+| Lint | **未通过**；有效扫描 73 个文件，30 个文件含诊断，786 个 Error、0 Warning。新增 43 条在 `DriveActionProtocol.ts` / `DriveActionState.ts` / `DriveActionAdapter.ts`，涉及类型导入及 unsafe assignment/call/member-access；其他文件按文件/规则数量与 P2 一致。严格编译不等同于这些诊断全部误报；未关闭规则或过滤报告 | `work/drive-p3-complete-lint.json`、`.log` |
+| 差异检查 | `git diff --check` 通过 | 无推送、无 NAS 写入或设备安装 |
+
+签名包、汇总验收说明及包信息保存于 `work/delivery/drive-p3-complete-20261005/`。说明包含 P2 与 P3 的最后人工核验项；当前记录是实现、测试及构建结果，不宣称 lint 或整体验收通过。
+
+### 分享阶段前置核对
+
+P4 尚未实现。当前普通账号成功 `Sharing.create_link` v1 的证据只支持 `path=id:<fileId>` 和 `{url}`。`Share.list_active` v1 成功摘要在不同轮次记录的字段集合不同，没有保留稳定非空条目的完整脱敏响应，不能据此把活动条目等同于可复制的链接。`Settings.list` v2 摘要包含 `enable_normal_user_sharing`、`sharing_level`、`sharing_permission` 与强制密码/有效期等键，但值与类型未保留；网页代码结合 `public_sharing` 等权限及 `sharing_level=disallow` 判断分享，未证实与普通用户开关的优先关系。
+
+P4 继续前须补齐上述只读成功响应及策略语义，再实现入口、确认、持久化未知结果和链接列表。不创建链接来凑证据、不猜测权限开关或列表 URL 字段。P5 配额、通知和客户端备份仍为可选项，不计入本轮 P3 范围。

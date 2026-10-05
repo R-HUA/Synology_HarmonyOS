@@ -100,7 +100,7 @@ test('unreadable entries cannot enter through either UI or model', async () => {
   await openFolder.call(model, entry);
   assert.equal(loads, 1);
   assert.equal(model.trail[0].fileId, '123');
-  assert.match(index, /available: !this\.model\.drive\.busy && entry\.capabilities\.canRead/);
+  assert.match(index, /available: !this\.model\.busy && !this\.model\.drive\.busy && entry\.capabilities\.canRead/);
 });
 
 test('Drive file action downloads only readable permitted live files and opens the Drive task section', () => {

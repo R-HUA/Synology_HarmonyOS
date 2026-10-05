@@ -86,9 +86,18 @@ function fixture(options = {}) {
     }
   };
   const attach = account => model.attach({ filesDir: '/private' }, kernel, 'https://nas.example.test:5001', account,
-    async error => failures.push(error));
+    async error => failures.push(error), () => options.canStart !== false);
   return { model, events, history, sessions, failures, attach };
 }
+
+test('pending file actions prevent selection and recheck before a prepared upload or download', async () => {
+  const options = { canStart: false }; const f = fixture(options); await f.attach('alice');
+  await f.model.prepareUpload(folder()); await f.model.download(file(3));
+  assert.equal(f.events.length, 1); assert.match(f.model.errorText, /文件操作/);
+  options.canStart = true; await f.model.prepareUpload(folder());
+  assert.ok(f.model.draft); options.canStart = false; await f.model.upload();
+  assert.equal(f.events.some(e => e[0] === 'upload'), false); assert.equal(f.model.items.length, 0);
+});
 
 test('choosing a file never uploads; confirmation sends selected conflict policy after private copy and running snapshot', async () => {
   const f = fixture(); await f.attach('alice');
