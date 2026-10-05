@@ -189,6 +189,12 @@ async function fixture(options = {}) {
     '../control/SystemControlModel': { SystemControlModel: class { deactivate() {} } },
     '../extensions/NasExtensionsModel': { NasExtensionsModel: class { async attach() {} reset() {} } },
     '../drive/DriveBrowserModel': { DriveBrowserModel: class { attach() {} detach() {} reset() {} } },
+    '../drive/DriveTransferModel': { DriveTransferModel: class {
+      ready = true; busy = false; items = [];
+      async attach() {}
+      async stopAll() { record('drive.stopAll'); if (state.driveStopGate) await state.driveStopGate.promise; }
+      detach() { record('drive.detach'); }
+    } },
   });
   const model = new ConnectionViewModel();
   Object.assign(model, { context, address: oldOrigin, account: 'alice', password: 'typed-password', otp: '123456' });
@@ -450,6 +456,21 @@ test('manual switching waits for both queue shutdown and session clear before an
   state.clearGate.resolve();
   assert.equal(await pending, true);
   assert.equal(connectors.length, 2);
+});
+
+test('switching addresses waits for foreground Drive cancellation before clearing the account', async () => {
+  const { model, state, calls, count } = await fixture();
+  await model.restore(context);
+  state.driveStopGate = deferred();
+  const switching = model.useSavedAddress(nextOrigin);
+  await flush();
+  assert.equal(count('drive.stopAll'), 1);
+  assert.equal(count('queue.stopAll'), 0);
+  assert.equal(count('session.clear'), 0);
+  state.driveStopGate.resolve();
+  assert.equal(await switching, true);
+  assert.equal(count('drive.detach') > 0, true);
+  assert.equal(calls.findIndex(call => call.method === 'drive.stopAll') < calls.findIndex(call => call.method === 'session.clear'), true);
 });
 
 test('queue.stopAll failure keeps the old connection and cannot probe the new origin', async () => {

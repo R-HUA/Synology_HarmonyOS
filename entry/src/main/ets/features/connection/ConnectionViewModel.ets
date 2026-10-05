@@ -16,6 +16,7 @@ import { ConnectionAddressBook } from './ConnectionAddressBook';
 import { SystemControlModel } from '../control/SystemControlModel';
 import { NasExtensionsModel } from '../extensions/NasExtensionsModel';
 import { DriveBrowserModel } from '../drive/DriveBrowserModel';
+import { DriveTransferModel } from '../drive/DriveTransferModel';
 import type { NasConnectionAddress } from '../../core/domain/ConnectionRoutes';
 
 export { FileEditResult, FileTaskItem } from '../../core/domain/FileOperations';
@@ -57,6 +58,7 @@ export class ConnectionViewModel {
   readonly extensions: NasExtensionsModel = new NasExtensionsModel();
   /** Drive 只读浏览；与 File Station 状态完全独立，来源切换由界面决定。 */
   readonly drive: DriveBrowserModel = new DriveBrowserModel();
+  readonly driveTransfers: DriveTransferModel = new DriveTransferModel();
   @Trace deviceCheckText: string = '尚未登记设备身份';
   /** 首页设备卡：型号与服务器名称（设备名称），任一读不到就留空由界面兜底。 */
   @Trace deviceModel: string = '';
@@ -385,10 +387,11 @@ export class ConnectionViewModel {
       if (ticket !== this.generation || connector !== this.connector || !this.authenticated) {
         throw new NasFailure(NasErrorKind.Cancelled, '当前 NAS 连接已变化，请重新进入系统控制。');
       }
-      if (!this.queue.ready || !this.fileTasksReady) {
+      if (!this.queue.ready || !this.fileTasksReady || !this.driveTransfers.ready) {
         throw new NasFailure(NasErrorKind.InvalidInput, '请先在任务页成功读取传输和文件操作记录，再进行系统控制。');
       }
-      if (this.queue.busy || this.queue.items.some((item): boolean =>
+      if (this.driveTransfers.busy || this.driveTransfers.items.some((item): boolean =>
+        ['preparing', 'running', 'unknown'].includes(item.state)) || this.queue.busy || this.queue.items.some((item): boolean =>
         !['completed', 'cancelled', 'failed', 'closed'].includes(item.state)) ||
         this.fileTasks.some((item: FileTaskItem): boolean => !['completed', 'failed'].includes(item.state))) {
         throw new NasFailure(NasErrorKind.InvalidInput, '仍有进行中或结果待核对的传输、文件操作，请先处理任务；不会为系统控制自动停止或重试它们。');
@@ -667,6 +670,10 @@ export class ConnectionViewModel {
     }, this.insecureTls);
     if (this.context === undefined) { return; }
     const ticket = this.generation;
+    await this.driveTransfers.attach(this.context, connector, this.address, this.account.trim(), async (error: NasFailure): Promise<void> => {
+      if (ticket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'drive-transfer'); }
+    });
+    if (ticket !== this.generation) { return; }
     await this.attachFileTasks();
     if (ticket !== this.generation) { return; }
     try { await this.queue.attach(this.context, connector, this.address, this.account.trim()); }
@@ -735,7 +742,7 @@ export class ConnectionViewModel {
   async disconnect(): Promise<void> {
     if (this.busy || this.queue.busy) { return; }
     this.busy = true;
-    try { await this.queue.stopAll(); }
+    try { await this.driveTransfers.stopAll(); await this.queue.stopAll(); }
     catch (error) {
       this.errorText = error instanceof NasFailure ? error.message : '停止传输失败，请在任务页重试后再退出账号。';
       this.busy = false;
@@ -868,6 +875,7 @@ export class ConnectionViewModel {
     this.telemetry.detach();
     this.queue.detach();
     this.drive.detach();
+    this.driveTransfers.detach();
     this.fileSort = 'name';
     this.sortDescending = false;
     this.actionNotice = '';

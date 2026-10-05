@@ -7,6 +7,8 @@ import { NasFailure, NasFileEntry } from '../core/domain/DsmProtocol';
 import { DriveEntry, DriveEntryKind, DriveView, driveViewLabel } from '../core/domain/DriveProtocol';
 import { DRIVE_BROWSER_VIEWS } from '../features/drive/DriveBrowserModel';
 import type { DriveTrailItem } from '../features/drive/DriveBrowserModel';
+import { DriveTransferRecord } from '../core/domain/DriveTransferState';
+import { DriveUploadReview, DriveTransferSummary, DriveTransferCard } from '../features/drive/DriveTransferUi';
 import { NasPhotoItem, NasPhotoAlbum, PhotosSpace } from '../core/domain/PhotosProtocol';
 import { PhotoBackup } from '../features/backup/PhotoBackup';
 import { TransferUploadSource } from '../features/transfers/TransferQueue';
@@ -56,6 +58,7 @@ struct Index {
   private systemControlScroller: Scroller = new Scroller();
   private foregroundChanged = (foreground: boolean): void => {
     this.foreground = foreground;
+    this.model.driveTransfers.setForeground(foreground);
     if (!foreground) { this.model.addressBook.cancelProbe(); this.model.systemControl.deactivate(); }
     else if (this.systemControlOpened) { this.model.openSystemControl(); }
     this.updateTelemetryMode();
@@ -1036,6 +1039,9 @@ struct Index {
               }.width('100%')
             }
             this.driveBreadcrumb()
+            DriveUploadReview({ model: this.model.driveTransfers,
+              onStart: (): void => { this.model.driveTransfers.upload(); this.openDriveTransfers(); },
+              onTasks: (): void => { this.openDriveTransfers(); } })
             Row({ space: 8 }) {
               Text('Synology Drive').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
               Blank().layoutWeight(1)
@@ -1065,12 +1071,22 @@ struct Index {
         }
         ForEach(this.model.drive.entries, (entry: DriveEntry): void => {
           ListItem() {
+            Row() {
             WorkbenchEntryRow({ title: entry.name, subtitle: this.driveRowSubtitle(entry),
               icon: entry.kind === DriveEntryKind.Folder ? $r('sys.symbol.folder') : $r('sys.symbol.doc'),
               iconColor: entry.kind === DriveEntryKind.Folder ? $r('sys.color.icon_emphasize') : $r('sys.color.font_secondary'),
               available: !this.model.drive.busy && entry.capabilities.canRead &&
-                (this.model.drive.view !== DriveView.Trash || entry.kind !== DriveEntryKind.Folder),
-              onOpen: (): void => { this.openDriveEntry(entry); } })
+                this.model.drive.view !== DriveView.Trash &&
+                (entry.kind === DriveEntryKind.Folder || entry.capabilities.canDownload && this.model.driveTransfers.ready && !this.model.driveTransfers.busy),
+              onOpen: (): void => { this.openDriveEntry(entry); } }).layoutWeight(1)
+            if (entry.kind === DriveEntryKind.Folder && entry.capabilities.canRead && entry.capabilities.canWrite && this.model.drive.view !== DriveView.Trash) {
+              Button() { SymbolGlyph($r('sys.symbol.ellipsis_circle')).fontSize(22).fontColor([$r('sys.color.icon_primary')]) }
+                .width(48).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).type(ButtonType.Circle).backgroundColor(Color.Transparent)
+                .enabled(this.model.driveTransfers.ready && !this.model.driveTransfers.busy && !this.model.drive.busy)
+                .bindMenu([{ value: '上传到此文件夹', action: (): void => { this.prepareDriveUpload(entry); } }])
+                .accessibilityText(entry.name + '，上传到此文件夹')
+            }
+            }.width('100%')
           }
         }, (entry: DriveEntry): string => entry.fileId)
         ListItem() {
@@ -1091,7 +1107,8 @@ struct Index {
   }
 
   private driveRowSubtitle(entry: DriveEntry): string {
-    return entry.kind === DriveEntryKind.Folder ? '文件夹' : workbenchBytes(entry.sizeBytes);
+    return entry.kind === DriveEntryKind.Folder ? '文件夹' : workbenchBytes(entry.sizeBytes) +
+      (entry.capabilities.canRead && entry.capabilities.canDownload && this.model.drive.view !== DriveView.Trash ? ' · 点击下载到本机' : '');
   }
 
   private driveCountText(): string {
@@ -1102,11 +1119,19 @@ struct Index {
     return total === undefined ? '第 ' + range + ' 项' : range + ' / ' + total.toString() + ' 项';
   }
 
-  /** P0 只做只读浏览：文件的预览与下载属 P2，这里明确说明而不是给一个无反应的入口。 */
+  private async prepareDriveUpload(entry: DriveEntry): Promise<void> {
+    await this.model.driveTransfers.prepareUpload(entry);
+    if (this.model.driveTransfers.draft !== undefined) { this.driveScroller.scrollEdge(Edge.Top); }
+  }
+
+  private openDriveTransfers(): void { this.taskSection = 'drive'; this.switchTab(3); }
+
   private openDriveEntry(entry: DriveEntry): void {
     if (this.model.drive.busy || !entry.capabilities.canRead) { return; }
     if (entry.kind === DriveEntryKind.Folder) { this.model.drive.openFolder(entry); return; }
-    this.model.drive.notice = '暂不支持预览或下载「' + entry.name + '」。';
+    if (this.model.drive.view === DriveView.Trash || !entry.capabilities.canDownload) { return; }
+    this.model.driveTransfers.download(entry);
+    this.openDriveTransfers();
   }
 
   @Builder
@@ -1553,12 +1578,21 @@ struct Index {
               onSelect: (): void => { this.taskSection = 'transfers'; } })
             WorkbenchChoice({ label: '文件整理', selected: this.taskSection === 'files',
               onSelect: (): void => { this.taskSection = 'files'; } })
+            if (this.model.drive.available || this.model.driveTransfers.items.length > 0) {
+              WorkbenchChoice({ label: 'Drive 传输', selected: this.taskSection === 'drive',
+                onSelect: (): void => { this.taskSection = 'drive'; } })
+            }
             if (this.model.supports('SYNO.DownloadStation.Task')) {
               WorkbenchChoice({ label: 'NAS 下载', selected: false, onSelect: (): void => { this.openNasDownloads(); } })
             }
           }.width('100%').padding({ top: this.contentTopInset() + 8 })
         }
-        if (this.taskSection === 'files') {
+        if (this.taskSection === 'drive') {
+          ListItem() { DriveTransferSummary({ model: this.model.driveTransfers }) }
+          Repeat<DriveTransferRecord>(this.model.driveTransfers.items).each((task: RepeatItem<DriveTransferRecord>): void => {
+            ListItem() { DriveTransferCard({ model: this.model.driveTransfers, item: task.item }) }
+          }).key((item: DriveTransferRecord): string => item.id).virtualScroll()
+        } else if (this.taskSection === 'files') {
         ListItem() {
           Column({ space: 8 }) {
             Row({ space: 12 }) {

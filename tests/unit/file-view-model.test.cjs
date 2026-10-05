@@ -93,9 +93,10 @@ async function fixture(options = {}) {
     '../photos/PhotoLibrary': { PhotoLibrary },
     '../telemetry/TelemetryMonitor': { TelemetryMonitor: class { attach() {} detach() {} } },
     './ConnectionAddressBook': { ConnectionAddressBook: class { ready = true; dispose() {} } },
-    '../control/SystemControlModel': { SystemControlModel: class { deactivate() {} } },
+    '../control/SystemControlModel': { SystemControlModel: class { deactivate() {} async open(_context, _connector, _origin, _tls, validate) { this.validate = validate; } } },
     '../extensions/NasExtensionsModel': { NasExtensionsModel: class { async attach() {} reset() {} } },
     '../drive/DriveBrowserModel': { DriveBrowserModel: class { attach() {} detach() {} reset() {} } },
+    '../drive/DriveTransferModel': { DriveTransferModel: class { ready = true; busy = false; items = []; async attach() {} async stopAll() {} detach() {} } },
     '../transfers/TransferQueue': { TransferQueue: MockQueue },
     '../../core/domain/FileOperations': operations,
     '../sharing/SharedUploadInbox': { sharedUploadInbox: {} },
@@ -108,6 +109,31 @@ async function fixture(options = {}) {
   await model.attachQueue(connector);
   return { model, connector, calls, storage, saved, options, now: () => now, ConnectionViewModel };
 }
+
+test('system control refuses unread, active or unknown Drive transfers without stopping or replaying them', async () => {
+  const { model } = await fixture();
+  model.queue.ready = true;
+  model.queue.items = [];
+  model.fileTasks = [];
+  await model.openSystemControl();
+  const validate = model.systemControl.validate;
+  assert.equal(typeof validate, 'function');
+  assert.doesNotThrow(validate);
+  model.driveTransfers.ready = false;
+  assert.throws(validate, /成功读取/);
+  model.driveTransfers.ready = true;
+  model.driveTransfers.busy = true;
+  assert.throws(validate, /仍有进行中/);
+  model.driveTransfers.busy = false;
+  for (const state of ['preparing', 'running', 'unknown']) {
+    model.driveTransfers.items = [{ state }];
+    assert.throws(validate, /仍有进行中/);
+  }
+  for (const state of ['completed', 'cancelled', 'failed', 'closed']) {
+    model.driveTransfers.items = [{ state }];
+    assert.doesNotThrow(validate);
+  }
+});
 
 test('opening, closing and failed album reads preserve unrelated queue recovery errors', async () => {
   const { model, options } = await fixture({ queueError: true });

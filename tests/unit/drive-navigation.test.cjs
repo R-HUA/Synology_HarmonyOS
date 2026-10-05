@@ -102,3 +102,21 @@ test('unreadable entries cannot enter through either UI or model', async () => {
   assert.equal(model.trail[0].fileId, '123');
   assert.match(index, /available: !this\.model\.drive\.busy && entry\.capabilities\.canRead/);
 });
+
+test('Drive file action downloads only readable permitted live files and opens the Drive task section', () => {
+  const state = page();
+  state.model.driveTransfers = { download() { state.calls.push('drive-download'); } };
+  state.openDriveTransfers = () => state.calls.push('drive-tasks');
+  const open = method(index, 'openDriveEntry');
+  const file = { name: '记录.txt', kind: 'file', capabilities: { canRead: true, canDownload: true } };
+  open.call(state, file);
+  assert.deepEqual(state.calls, ['drive-download', 'drive-tasks']);
+  state.calls.length = 0;
+  state.model.drive.view = 'trash';
+  open.call(state, file);
+  assert.deepEqual(state.calls, []);
+  state.model.drive.view = 'mydrive';
+  open.call(state, { ...file, capabilities: { canRead: true, canDownload: false } });
+  open.call(state, { ...file, capabilities: { canRead: false, canDownload: true } });
+  assert.deepEqual(state.calls, []);
+});
