@@ -84,6 +84,7 @@ function runtime(replies = []) {
   } };
   const transferTransport = load('core/network/RcpTransferTransport.ets', {
     '@kit.RemoteCommunicationKit': { rcp }, '@kit.CoreFileKit': { fileIo: disk.io },
+    '@kit.PerformanceAnalysisKit': { hilog: { error(...args) { diagnostics.push(args); } } },
     '../domain/DsmProtocol': dsm, './NasTransferTransport': contracts, '../../platform/Utf8Codec': utf8 });
   const { RcpNasTransport } = load('core/network/RcpNasTransport.ets', {
     '@kit.RemoteCommunicationKit': { rcp }, '@kit.CoreFileKit': { fileIo: disk.io },
@@ -351,4 +352,16 @@ test('a closed connection refuses both directions before sending anything', asyn
   assert.equal(f.requests.length, 0);
   assert.equal(f.disk.dirs.size, 0);
   assert.equal(f.diagnostics.length, 0);
+});
+
+test('download close and cleanup failures preserve the original rejection and log no private data', async () => {
+  const f = runtime([{ status: 302, chunks: [] }]);
+  const transport = new f.RcpNasTransport();
+  f.disk.io.closeSync = () => { throw new Error('close'); };
+  f.disk.io.rmdirSync = () => { throw new Error('cleanup'); };
+  await assert.rejects(transport.transfers.download(downloadPlan(), { directory: '/cache/private-result', maximumBytes: 8 },
+    control(), () => assert.fail('redirect must not validate')), isKind(K.Http));
+  assert.equal(f.diagnostics.length, 2);
+  assert.ok(f.diagnostics.every(args => !/private-result|private-token|private-sid/.test(JSON.stringify(args))));
+  transport.close();
 });

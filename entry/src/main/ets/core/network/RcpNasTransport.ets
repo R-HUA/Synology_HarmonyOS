@@ -3,9 +3,10 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { decodeUtf8Complete, decodeResponsePrefix } from '../../platform/Utf8Codec';
-import { encodeNasForm, NasErrorKind, NasFailure, NasFormField, NasLoginSession } from '../domain/DsmProtocol';
+import { encodeNasForm, NasErrorKind, NasFailure } from '../domain/DsmProtocol';
+import type { NasFormField, NasLoginSession } from '../domain/DsmProtocol';
 import { PHOTO_ORIGINAL_MAX_BYTES, PHOTO_THUMBNAIL_MAX_BYTES, validatePhotoMediaResponse } from '../domain/PhotosProtocol';
-import { NasHttpReply, NasTransport, NasTransferPlan } from './NasConnector';
+import type { NasHttpReply, NasTransport, NasTransferPlan } from './NasConnector';
 import { RcpTransferTransport } from './RcpTransferTransport';
 import type { NasTransferTransport } from './NasTransferTransport';
 
@@ -40,12 +41,14 @@ export class RcpNasTransport implements NasTransport {
     };
     try {
       const reply = await this.session.fetch(request);
+      if (this.closed) { throw new NasFailure(NasErrorKind.Cancelled, '连接已关闭。'); }
       if (overflow) { throw new NasFailure(NasErrorKind.Protocol, '服务器业务响应过大。'); }
       const data = new Uint8Array(bytes);
       let offset = 0;
       for (const chunk of chunks) { data.set(chunk, offset); offset += chunk.length; }
       return { status: reply.statusCode, text: decodeUtf8Complete(data) };
     } catch (error) {
+      if (this.closed) { throw new NasFailure(NasErrorKind.Cancelled, '连接已关闭。'); }
       if (overflow) { throw new NasFailure(NasErrorKind.Protocol, '服务器业务响应过大。'); }
       throw this.failure(error as Error);
     }
@@ -54,6 +57,7 @@ export class RcpNasTransport implements NasTransport {
   /** 回调逐块写私有文件，原图不在内存中聚合；取消和越界会立即停止当前请求。 */
   async downloadMedia(plan: NasTransferPlan, destination: string, thumbnail: boolean, expectedBytes: number | undefined,
     current: () => boolean): Promise<number> {
+    if (!current()) { throw new NasFailure(NasErrorKind.Cancelled, '照片读取已取消。'); }
     const maximum = thumbnail ? PHOTO_THUMBNAIL_MAX_BYTES : PHOTO_ORIGINAL_MAX_BYTES;
     if (expectedBytes !== undefined && (!Number.isSafeInteger(expectedBytes) || expectedBytes < 0 || expectedBytes > maximum)) {
       throw new NasFailure(NasErrorKind.InvalidInput, '原图超过 256 MiB 的前台读取限制。');
@@ -86,7 +90,9 @@ export class RcpNasTransport implements NasTransport {
         let offset = 0;
         while (offset < chunk.byteLength) {
           const written = fileIo.writeSync(output.fd, chunk.slice(offset));
-          if (written <= 0) { throw new NasFailure(NasErrorKind.Protocol, '照片文件写入未完成。'); }
+          if (!Number.isSafeInteger(written) || written <= 0 || written > chunk.byteLength - offset) {
+            throw new NasFailure(NasErrorKind.Protocol, '照片文件写入未完成。');
+          }
           offset += written;
         }
         bytes += chunk.byteLength;
@@ -135,8 +141,7 @@ export class RcpNasTransport implements NasTransport {
   close(): void {
     if (this.closed) { return; }
     this.closed = true;
-    this.session.cancel();
-    this.session.close();
+    try { this.session.cancel(); } finally { this.session.close(); }
   }
 
   private request(address: string, body: string, authorization: NasLoginSession | undefined, accept: string): rcp.Request {
@@ -151,14 +156,17 @@ export class RcpNasTransport implements NasTransport {
   }
 
   private header(headers: rcp.ResponseHeaders, name: string): string {
+    let found = false;
+    let result = '';
     for (const key of Object.keys(headers)) {
       if (key.toLowerCase() === name) {
         const value = headers[key];
-        if (typeof value === 'string') { return value; }
-        if (value !== undefined) { throw new NasFailure(NasErrorKind.Protocol, '照片媒体响应头重复，无法验证。'); }
+        if (found || typeof value !== 'string') { throw new NasFailure(NasErrorKind.Protocol, '照片媒体响应头重复，无法验证。'); }
+        found = true;
+        result = value;
       }
     }
-    return '';
+    return result;
   }
 
   private failure(error: Error): NasFailure {

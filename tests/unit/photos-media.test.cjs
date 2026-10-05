@@ -65,6 +65,7 @@ function transportFixture() {
   } };
   const contracts = load('core/network/NasTransferTransport.ts', { '../domain/DsmProtocol': dsm });
   const transferTransport = load('core/network/RcpTransferTransport.ets', { '@kit.RemoteCommunicationKit': { rcp },
+    '@kit.PerformanceAnalysisKit': { hilog: { error(...args) { diagnostics.push(args); } } },
     '@kit.CoreFileKit': { fileIo: disk.io }, '../domain/DsmProtocol': dsm, './NasTransferTransport': contracts,
     '../../platform/Utf8Codec': utf8 });
   const { RcpNasTransport } = load('core/network/RcpNasTransport.ets', { '@kit.RemoteCommunicationKit': { rcp },
@@ -90,13 +91,46 @@ test('media cleanup failures cannot replace the original protocol or cancellatio
     fixture.replies.push({ status: 302, chunks: [jpeg.buffer] });
     fixture.disk.io.closeSync = () => { throw Object.assign(new Error('close failed'), { code: 13900005 }); };
     let removalAttempted = false;
+    let checks = 0;
     fixture.disk.io.unlinkSync = () => { removalAttempted = true; throw Object.assign(new Error('unlink failed'), { code: 13900013 }); };
-    await assert.rejects(new fixture.RcpNasTransport().downloadMedia(plan(), '/cache/media', true, undefined, () => !cancelled),
+    await assert.rejects(new fixture.RcpNasTransport().downloadMedia(plan(), '/cache/media', true, undefined,
+      () => !cancelled || checks++ === 0),
       isKind(cancelled ? K.Cancelled : K.Http));
     assert.equal(removalAttempted, true);
     assert.equal(fixture.diagnostics.length, 2);
     assert.ok(fixture.diagnostics.every(args => !JSON.stringify(args).includes('/cache/media')));
   }
+});
+
+test('cancelled media reads stop before network dispatch or file creation', async () => {
+  const fixture = transportFixture();
+  await assert.rejects(new fixture.RcpNasTransport().downloadMedia(plan(), '/cache/media', true, undefined, () => false),
+    isKind(K.Cancelled));
+  assert.equal(fixture.requests.length, 0);
+  assert.equal(fixture.disk.files.size, 0);
+  assert.equal(fixture.disk.removed.length, 0);
+});
+
+test('duplicate media headers and impossible write counts cannot publish a private file', async () => {
+  for (const badWrite of [false, true]) {
+    const fixture = transportFixture();
+    fixture.replies.push({ chunks: [jpeg.buffer], headers: { 'Content-Type': 'image/jpeg',
+      ...(badWrite ? {} : { 'content-type': 'text/html' }) } });
+    if (badWrite) { fixture.disk.io.writeSync = () => jpeg.length + 1; }
+    await assert.rejects(new fixture.RcpNasTransport().downloadMedia(plan(), '/cache/media', true, undefined, () => true),
+      isKind(K.Protocol));
+    assert.equal(fixture.disk.files.size, 0);
+    assert.equal(fixture.disk.handles.size, 0);
+  }
+});
+
+test('RCP close still releases its session when cancellation throws', () => {
+  const fixture = transportFixture();
+  const transport = new fixture.RcpNasTransport();
+  fixture.sessions[0].cancel = () => { throw new Error('cancel failed'); };
+  assert.throws(() => transport.close(), /cancel failed/);
+  assert.equal(fixture.sessions[0].closed, true);
+  assert.doesNotThrow(() => transport.close());
 });
 
 test('UTF-8 distinguishes complete text from truncated or binary prefixes', () => {

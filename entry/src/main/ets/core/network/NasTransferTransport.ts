@@ -5,7 +5,7 @@ import type { NasHttpReply } from './DsmRpcClient';
 /** 单次传输的主动取消信号，不取消同一连接上的其他请求。 */
 export class NasTransferCancellation {
   private stopped: boolean = false;
-  private listeners: Set<() => void> = new Set();
+  private listeners: Set<() => void> = new Set<() => void>();
 
   get cancelled(): boolean { return this.stopped; }
 

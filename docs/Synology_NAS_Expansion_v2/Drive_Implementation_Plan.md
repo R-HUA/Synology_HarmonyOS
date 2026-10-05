@@ -267,7 +267,7 @@ P1 已接入七个入口（含原我的文件）、按命名空间发现和方�
 | 修改前核心基线 | 629/629 通过 | `work/drive-audit-baseline-tests.log` |
 | 修正后核心测试 | **641/641 通过，0 skipped** | `work/drive-audit-tests.log`；含真实模型的短页、返回、失败、会话代际和未知总数行为测试 |
 | API 26 签名构建 | **`hvigorw assembleHap --no-daemon` 成功**，30.044 秒；已安装最新签名 HAP并复核个人根、团队目录进退 | `work/drive-audit-build.log` |
-| 代码检查 | **未通过：706 个 Error，0 Warning，检查 26 文件**；工具进程退出码为 0 不能当作通过 | `work/drive-audit-lint.json`、`.log`；含本任务文件，未证明全部属于历史问题，未关闭规则 |
+| 代码检查 | **未通过：706 个 Error，0 Warning，26 个文件含诊断**；该报告的 `filesChecked` 不能证明实际扫描数量，工具进程退出码为 0 不能当作通过 | `work/drive-audit-lint.json`、`.log`；含本任务文件，未证明全部属于历史问题，未关闭规则 |
 | 差异检查 | `git diff --check` 通过 | 不含提交/推送；保留已有未提交传输等改动 |
 
 SDK：`C:/Users/rhua0016/.VirtualDisk/Programs/command-line-tools/sdk/default`。本轮 `devecocli build` 出现 daemon 等待后终止，后续只采用无 daemon 的 hvigor 构建；历史 629 项及旧构建不作为当前工作区的验收凭据。
@@ -297,3 +297,13 @@ SDK：`C:/Users/rhua0016/.VirtualDisk/Programs/command-line-tools/sdk/default`�
 4. 持久化队列前增加 NAS/账号归属的资源引用；未确认的上传、文件操作和分享写入不得自动重放。缩略图、后台队列、P3/P4 操作继续以真实契约及独立验收推进。
 
 交付文件仍在当前工作区；`docs/` 与 `work/` 受现有 `.gitignore` 忽略。本轮未变更忽略规则、未提交或推送，后续提交需明确纳入所需方案文档。
+
+## 12. 共享内核复核与分批提交（2026-10-05）
+
+此前 Drive 工作已提交为 `4fcc73b`，包括只读视图、导航修正、前台传输边界及本计划；还原提交快照后重新执行核心测试为 641/641。方案文件已单独纳入版本控制，未修改忽略规则。
+
+独立会话修复共享内核的业务会话代际、登出期间请求拦截、重新登录的账号隔离，以及分享和控制授权过期的统一失效处理；FileStation 失效不会清除 DownloadStation 独立会话。协议拒绝矛盾成功信封，媒体响应拒绝重复响应头和不可能的写入数量，清理失败保留原始失败并记录日志。
+
+独立会话验证：核心测试 655/655（新增 14 项），API 26 签名构建成功、47 个编译警告；SDK 严格类型检查覆盖 26 个 `.ts` 文件、0 错误。`work/kernel-audit-lint.json` 根据本次新增 Homecheck 日志确认实际扫描 61 个文件，26 个文件包含诊断、723 个错误，**lint 未通过**。已确认部分类型诊断属于误报，但其余诊断仍待逐条定性；未关闭规则或过滤报告。
+
+共享内核复核没有执行真实 NAS 写入或设备安装；当前 HAP 真机验收仍以 §11 所列版本和范围为准。两组修改按独立提交保存，不推送。

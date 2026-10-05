@@ -106,3 +106,15 @@ test('closing a control connection during dispatch leaves cancellation uncertain
   await assert.rejects(pending, error => error.kind === K.Cancelled && !(error instanceof NasControlRejection));
   assert.equal(calls.filter(call => call.fields.method === 'reboot').length, 1);
 });
+
+test('a confirmed control session expiry removes only its authorization and blocks later control dispatch', async () => {
+  const { connector, calls, state } = fixture();
+  await connector.discover(origin);
+  connector.restoreSession([{ name: 'NasControl', sid: session.sid, synoToken: session.synoToken }]);
+  state.reply = { status: 200, text: JSON.stringify({ success: false, error: { code: 119 } }) };
+  await assert.rejects(connector.systemControl('reboot'), error => error instanceof NasControlRejection && error.kind === K.SessionExpired);
+  assert.deepEqual(connector.sessionSnapshot(), []);
+  const count = calls.length;
+  await assert.rejects(connector.systemControl('reboot'), error => error.kind === K.SessionExpired && !(error instanceof NasControlRejection));
+  assert.equal(calls.length, count);
+});

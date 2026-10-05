@@ -23,8 +23,8 @@ export interface CapabilitySnapshot {
 }
 
 export class CapabilityRegistry {
-  private entries: Map<string, CapabilitySnapshot> = new Map();
-  private requests: Map<string, number> = new Map();
+  private entries: Map<string, CapabilitySnapshot> = new Map<string, CapabilitySnapshot>();
+  private requests: Map<string, number> = new Map<string, number>();
   private generation: number = 0;
 
   constructor(private definitions: CapabilityDefinition[]) {}
@@ -58,6 +58,17 @@ export class CapabilityRegistry {
     this.generation++;
     this.entries.clear();
     this.requests.clear();
+  }
+
+  /** 只重置受失效业务授权影响的能力，并阻止该能力的旧读取回写状态。 */
+  invalidate(feature: string): void {
+    const snapshot = this.entries.get(feature);
+    if (snapshot === undefined) { return; }
+    this.requests.set(feature, (this.requests.get(feature) ?? 0) + 1);
+    this.entries.set(feature, { feature: feature,
+      state: snapshot.state === 'unsupportedVersion' ? 'unsupportedVersion' : 'unverified',
+      apiVersion: snapshot.apiVersion, packageVersion: snapshot.packageVersion, checkedAt: Date.now(),
+      reason: snapshot.apiVersion > 0 ? 'readNotVerified' : snapshot.reason });
   }
 
   async read<T>(feature: string, readAndValidate: () => Promise<T>): Promise<T> {

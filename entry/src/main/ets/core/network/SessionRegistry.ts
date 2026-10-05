@@ -20,6 +20,7 @@ export function parseBusinessSessionRecord(input: Object): BusinessSessionRecord
   if (!KNOWN_SESSIONS.includes(name as BusinessSessionName)) { throw invalidRecord(); }
   const sid = nasString(row['sid']);
   const rawToken = row['synoToken'];
+  if (rawToken !== undefined && typeof rawToken !== 'string') { throw invalidRecord(); }
   const synoToken = typeof rawToken === 'string' ? rawToken : '';
   const authorization: Record<string, Object> = { sid: sid };
   if (synoToken.length > 0) { authorization['synotoken'] = synoToken; }
@@ -46,8 +47,13 @@ export function parseBusinessSessionRecords(input: Object): BusinessSessionRecor
  * 不影响其他业务。注册表本身不发起登录、不保存密码；建立会话由连接器完成。
  */
 export class SessionRegistry {
-  private entries: Map<BusinessSessionName, NasLoginSession> = new Map();
+  private entries: Map<BusinessSessionName, NasLoginSession> = new Map<BusinessSessionName, NasLoginSession>();
   private changeCount: number = 0;
+  private businessRevisions: Map<BusinessSessionName, number> = new Map<BusinessSessionName, number>();
+
+  private changed(name: BusinessSessionName): void {
+    this.businessRevisions.set(name, this.revision(name) + 1);
+  }
 
   register(name: BusinessSessionName, authorization: NasLoginSession): void {
     // 未登记业务名的会话不会出现在快照里，必须在注册入口拒绝而不是静默丢弃。
@@ -56,6 +62,7 @@ export class SessionRegistry {
     if (authorization.synoToken.length > 0) { validation['synotoken'] = authorization.synoToken; }
     decodeNasSession(validation);
     this.entries.set(name, { sid: authorization.sid, synoToken: authorization.synoToken });
+    this.changed(name);
     this.changeCount++;
   }
 
@@ -71,18 +78,19 @@ export class SessionRegistry {
   /** 套件会话失效时只移除该业务；未注册时返回 false。 */
   invalidate(name: BusinessSessionName): boolean {
     const removed = this.entries.delete(name);
-    if (removed) { this.changeCount++; }
+    if (removed) { this.changed(name); this.changeCount++; }
     return removed;
   }
 
   clear(): void {
     if (this.entries.size > 0) { this.changeCount++; }
+    this.entries.forEach((_session: NasLoginSession, name: BusinessSessionName): void => { this.changed(name); });
     this.entries.clear();
   }
 
-  /** 变更计数用于调用方检测会话集合是否变化，不参与并发保护。 */
-  revision(): number {
-    return this.changeCount;
+  /** 不传名称时返回快照变更计数；业务计数可用于拒绝旧授权下的迟到响应。 */
+  revision(name?: BusinessSessionName): number {
+    return name === undefined ? this.changeCount : this.businessRevisions.get(name) ?? 0;
   }
 
   /** 导出持久化快照；顺序按已登记业务固定。 */
@@ -100,6 +108,7 @@ export class SessionRegistry {
   /** 整组替换已保存的会话；任何一条无效都会拒绝整组恢复。 */
   restore(records: BusinessSessionRecord[]): void {
     const parsed = parseBusinessSessionRecords(records as Object[]);
+    for (const name of KNOWN_SESSIONS) { this.changed(name); }
     this.entries.clear();
     for (const record of parsed) {
       const authorization: Record<string, Object> = { sid: record.sid };

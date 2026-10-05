@@ -24,7 +24,7 @@ import { CapabilityRegistry } from '../capabilities/CapabilityRegistry';
 import type { CapabilitySnapshot } from '../capabilities/CapabilityRegistry';
 import { SessionRegistry } from './SessionRegistry';
 import type { BusinessSessionName, BusinessSessionRecord } from './SessionRegistry';
-import type { NasTransport } from './DsmRpcClient';
+import type { NasHttpReply, NasTransport } from './DsmRpcClient';
 import type { DriveKernelPort } from './DriveAdapter';
 import type { DriveTransferKernelPort } from './DriveTransferAdapter';
 import { decodeDriveUpload, DRIVE_TRANSFER_VERSION, driveUploadFields, driveDownloadFields,
@@ -52,18 +52,20 @@ export const NAS_DISCOVERY_QUERY = 'SYNO.API.Auth,SYNO.FileStation.List,SYNO.Fil
 
 interface DriveTransferScope {
   ticket: number;
+  sessionRevision: number;
   control: NasTransferControl;
   transport: NasTransferTransport;
   dispose: () => void;
 }
 
 export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
-  private driveTransfers: Set<NasTransferCancellation> = new Set();
+  private driveTransfers: Set<NasTransferCancellation> = new Set<NasTransferCancellation>();
   private origin: string = '';
   private capabilities: NasApiDescriptor[] = [];
   private sessions: SessionRegistry = new SessionRegistry();
   private generation: number = 0;
   private disposed: boolean = false;
+  private loggingOut: boolean = false;
   private authenticating: boolean = false;
   private rpc: DsmRpcClient;
   private featureRegistry: CapabilityRegistry = new CapabilityRegistry([
@@ -103,11 +105,20 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     if (account.trim().length === 0 || password.length === 0) { throw new NasFailure(NasErrorKind.InvalidInput, '请输入账号和密码。'); }
     if (otp.length > 0 && !/^[0-9]{6}$/.test(otp)) { throw new NasFailure(NasErrorKind.InvalidInput, '动态码应为 6 位数字。'); }
     if (this.authenticating || this.sessions.has(this.sessionName)) { throw new NasFailure(NasErrorKind.InvalidInput, '当前正在登录或已经登录。'); }
+    // 重新登录可能更换账号；不能把上一账号仍有效的附属套件会话带到新账号中。
+    this.sessions.clear();
+    this.generation++;
+    this.featureRegistry.discover(this.capabilities);
+    const ticket = this.generation;
     this.authenticating = true;
     try {
-      this.sessions.register(this.sessionName,
-        decodeNasSession(await this.call('SYNO.API.Auth', 6, 'login', this.loginFields(this.sessionName, account, password, otp))));
+      const authorization = decodeNasSession(await this.call('SYNO.API.Auth', 6, 'login',
+        this.loginFields(this.sessionName, account, password, otp)));
+      this.ensureCurrent(ticket);
+      this.sessions.register(this.sessionName, authorization);
+      const revision = this.sessions.revision(this.sessionName);
       await this.loginDownloadStation(account, password, otp);
+      this.ensureSessionCurrent(ticket, this.sessionName, revision);
     }
     finally { this.authenticating = false; }
   }
@@ -129,10 +140,18 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
   private async loginDownloadStation(account: string, password: string, otp: string): Promise<void> {
     if (this.sessionName !== 'FileStation' ||
       !this.capabilities.some((api: NasApiDescriptor): boolean => api.name === 'SYNO.DownloadStation.Task')) { return; }
+    const ticket = this.generation;
+    const revision = this.sessions.revision(this.sessionName);
     try {
-      this.sessions.register('DownloadStation',
-        decodeNasSession(await this.call('SYNO.API.Auth', 6, 'login', this.loginFields('DownloadStation', account, password, otp))));
-    } catch { /* 套件会话未建立，由 NAS 下载能力按未登录降级 */ }
+      const authorization = decodeNasSession(await this.call('SYNO.API.Auth', 6, 'login',
+        this.loginFields('DownloadStation', account, password, otp)));
+      this.ensureSessionCurrent(ticket, this.sessionName, revision);
+      this.sessions.register('DownloadStation', authorization);
+    } catch (error) {
+      this.ensureOpen();
+      if (error instanceof NasFailure && error.kind === NasErrorKind.Cancelled) { throw error; }
+      // 独立套件登录失败时主会话仍可使用；连接取消不能被降级为登录成功。
+    }
   }
 
   async list(path: string, offset: number = 0, sortBy: NasFileSortBy = NasFileSortBy.Name,
@@ -593,6 +612,8 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     selectNasApi(this.capabilities, 'SYNO.API.Auth', [6]);
     if (this.authenticating || this.sessions.has(this.sessionName)) { throw new NasFailure(NasErrorKind.InvalidInput, '当前正在登录或已经登录。'); }
     this.sessions.restore(sessions);
+    this.generation++;
+    this.cancelDriveTransfers();
     this.featureRegistry.discover(this.capabilities);
   }
 
@@ -608,7 +629,10 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
   }
 
   async logout(): Promise<void> {
+    if (this.disposed) { return; }
+    if (this.loggingOut) { throw new NasFailure(NasErrorKind.Cancelled, '连接正在退出。'); }
     const records = this.sessions.snapshot();
+    this.loggingOut = true;
     this.sessions.clear();
     this.generation++;
     this.cancelDriveTransfers();
@@ -650,11 +674,17 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     const method = validateNasControlAction(action);
     const api = selectNasApi(this.capabilities, 'SYNO.Core.System', [1]);
     const ticket = this.generation;
+    const revision = this.sessions.revision('NasControl');
     const fields: NasFormField[] = [];
     if (method === 'shutdown') { fields.push({ name: 'local', content: 'true' }); }
-    const reply = await this.rpc.request(this.origin, api, 1, method, fields, this.requireSession());
-    this.ensureCurrent(ticket);
-    assertNasControlAccepted(reply.status, reply.text);
+    const reply = await this.rpc.request(this.origin, api, 1, method, fields, this.requireSession())
+      .catch((error: Error): NasHttpReply => { this.ensureSessionCurrent(ticket, 'NasControl', revision); throw error; });
+    this.ensureSessionCurrent(ticket, 'NasControl', revision);
+    try { assertNasControlAccepted(reply.status, reply.text); }
+    catch (error) {
+      if (error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) { this.invalidateSession('NasControl'); }
+      throw error;
+    }
   }
 
   private async call(name: string, version: number, method: string, parameters: NasFormField[],
@@ -671,23 +701,25 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     invalidateExpired: boolean = true): Promise<Record<string, Object>> {
     this.ensureOpen();
     const ticket = this.generation;
+    const sessionName: BusinessSessionName = name.startsWith('SYNO.SynologyDrive.') ? 'FileStation' : this.sessionName;
+    const revision = this.sessions.revision(sessionName);
     const api = selectNasApi(this.capabilities, name, [version]);
     // 认证参数交由传输层发送 Cookie 和 CSRF 请求头，不进入 URL 或业务表单。
-    const reply = await this.rpc.request(this.origin, api, version, method, parameters, this.sessions.get(this.sessionName));
-    this.ensureCurrent(ticket);
+    const authorization = name === 'SYNO.API.Auth' && method === 'login' ? undefined : this.requireSession(sessionName);
+    const reply = await this.rpc.request(this.origin, api, version, method, parameters, authorization)
+      .catch((error: Error): NasHttpReply => { this.ensureSessionCurrent(ticket, sessionName, revision); throw error; });
+    this.ensureSessionCurrent(ticket, sessionName, revision);
     try { return decode(name, reply.status, reply.text); }
     catch (error) {
       if (invalidateExpired && error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) {
-        this.sessions.invalidate(this.sessionName);
-        this.generation++;
-        this.cancelDriveTransfers();
-        this.featureRegistry.discover(this.capabilities);
+        this.invalidateSession(sessionName);
       }
       throw error;
     }
   }
 
   async extensionRequest(feature: 'fileSharing' | 'nasDownloads', method: string, fields: NasFormField[]): Promise<Object> {
+    this.ensureOpen();
     const name = feature === 'fileSharing' ? 'SYNO.FileStation.Sharing' : 'SYNO.DownloadStation.Task';
     const methods = feature === 'fileSharing' ? ['list', 'getinfo', 'create', 'edit', 'delete'] :
       ['list', 'getinfo', 'create', 'pause', 'resume', 'delete'];
@@ -695,20 +727,23 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     const versions = feature === 'fileSharing' || method === 'create' ? [3] : [1, 3];
     const selected = selectVerifiedApi(this.capabilities, name, versions);
     // NAS 下载使用独立套件会话；未建立时先给出明确的重新登录提示，不发起注定被拒的请求。
-    const sessionName: BusinessSessionName = feature === 'nasDownloads' ? 'DownloadStation' : this.sessionName;
+    const sessionName: BusinessSessionName = feature === 'nasDownloads' ? 'DownloadStation' : 'FileStation';
     const authorization = this.requireSession(sessionName);
     const ticket = this.generation;
-    const reply = await this.rpc.request(this.origin, selected.api, selected.version, method, fields, authorization);
-    this.ensureCurrent(ticket);
+    const revision = this.sessions.revision(sessionName);
+    const reply = await this.rpc.request(this.origin, selected.api, selected.version, method, fields, authorization)
+      .catch((error: Error): NasHttpReply => { this.ensureSessionCurrent(ticket, sessionName, revision); throw error; });
+    this.ensureSessionCurrent(ticket, sessionName, revision);
     try { return decodeExtensionResponse(name, method, reply.status, reply.text); }
     catch (error) {
       // 套件会话被服务器拒绝只失效该业务，不影响其他业务的已建立会话。
-      if (error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) { this.sessions.invalidate(sessionName); }
+      if (error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) { this.invalidateSession(sessionName); }
       throw error;
     }
   }
 
   supportsExtensionAction(feature: 'fileSharing' | 'nasDownloads', method: string): boolean {
+    this.ensureOpen();
     const name = feature === 'fileSharing' ? 'SYNO.FileStation.Sharing' : 'SYNO.DownloadStation.Task';
     try {
       selectVerifiedApi(this.capabilities, name, feature === 'fileSharing' || method === 'create' ? [3] : [1, 3]);
@@ -720,7 +755,7 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
   }
 
   async readExtension<T>(feature: 'fileSharing' | 'nasDownloads', readAndValidate: () => Promise<T>): Promise<T> {
-    this.requireSession();
+    this.requireSession(feature === 'nasDownloads' ? 'DownloadStation' : 'FileStation');
     return this.featureRegistry.read(feature, readAndValidate);
   }
 
@@ -814,20 +849,21 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     const transport = this.transport.transfers;
     if (transport === undefined) { throw new NasFailure(NasErrorKind.Unsupported, '当前连接不支持文件传输。'); }
     const ticket = this.generation;
+    const sessionRevision = this.sessions.revision('FileStation');
     const cancellation = new NasTransferCancellation();
     this.driveTransfers.add(cancellation);
     const unsubscribe = control.cancellation.subscribe((): void => { cancellation.cancel(); });
     const onProgress = control.onProgress;
-    return { ticket, transport, control: { cancellation,
+    return { ticket, sessionRevision, transport, control: { cancellation,
       onProgress: (progress: NasTransferProgress): void => {
-        this.ensureCurrent(ticket);
+        this.ensureSessionCurrent(ticket, 'FileStation', sessionRevision);
         cancellation.check();
         if (onProgress !== undefined) { onProgress(progress); }
       } }, dispose: (): void => { unsubscribe(); this.driveTransfers.delete(cancellation); } };
   }
 
   private checkDriveTransfer(scope: DriveTransferScope): void {
-    this.ensureCurrent(scope.ticket);
+    this.ensureSessionCurrent(scope.ticket, 'FileStation', scope.sessionRevision);
     scope.control.cancellation.check();
   }
 
@@ -836,12 +872,9 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
    * 调用方主动取消不改变代际，因此保留传输层给出的具体说明（例如上传结果未确认）。
    */
   private driveTransferFailed(scope: DriveTransferScope, error: unknown): void {
-    this.ensureCurrent(scope.ticket);
+    this.ensureSessionCurrent(scope.ticket, 'FileStation', scope.sessionRevision);
     if (error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) {
-      this.sessions.invalidate('FileStation');
-      this.generation++;
-      this.cancelDriveTransfers();
-      this.featureRegistry.discover(this.capabilities);
+      this.invalidateSession('FileStation');
     }
   }
 
@@ -857,7 +890,7 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
   }
 
   private ensureOpen(): void {
-    if (this.disposed) { throw new NasFailure(NasErrorKind.Cancelled, '连接已关闭。'); }
+    if (this.disposed || this.loggingOut) { throw new NasFailure(NasErrorKind.Cancelled, '连接已关闭。'); }
   }
   private requireSession(name: BusinessSessionName = this.sessionName): NasLoginSession {
     this.ensureOpen();
@@ -871,5 +904,21 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
   private ensureCurrent(ticket: number): void {
     this.ensureOpen();
     if (ticket !== this.generation) { throw new NasFailure(NasErrorKind.Cancelled, '连接已切换。'); }
+  }
+
+  private ensureSessionCurrent(ticket: number, name: BusinessSessionName, revision: number): void {
+    this.ensureCurrent(ticket);
+    if (revision !== this.sessions.revision(name)) { throw new NasFailure(NasErrorKind.Cancelled, '连接已切换。'); }
+  }
+
+  private invalidateSession(name: BusinessSessionName): void {
+    if (!this.sessions.invalidate(name)) { return; }
+    if (name === 'NasControl') { return; }
+    if (name === 'FileStation') { this.cancelDriveTransfers(); }
+    for (const snapshot of this.featureRegistry.snapshots()) {
+      if ((snapshot.feature === 'nasDownloads') === (name === 'DownloadStation')) {
+        this.featureRegistry.invalidate(snapshot.feature);
+      }
+    }
   }
 }

@@ -1,5 +1,6 @@
 import { rcp } from '@kit.RemoteCommunicationKit';
 import { fileIo } from '@kit.CoreFileKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { NasErrorKind, NasFailure, encodeNasForm } from '../domain/DsmProtocol';
 import { NAS_TRANSFER_PREFIX_BYTES, NAS_TRANSFER_UPLOAD_REPLY_BYTES, validateNasDownloadTarget,
   validateNasTransferFilename, validateNasUploadSource } from './NasTransferTransport';
@@ -116,7 +117,10 @@ export class RcpTransferTransport implements NasTransferTransport {
         if (fileIo.accessSync(destination)) { fileIo.unlinkSync(destination); }
         fileIo.rmdirSync(target.directory);
         owned = false;
-      } catch (_) { throw new NasFailure(NasErrorKind.Protocol, '下载未完成，临时文件清理失败。'); }
+      } catch (_) {
+        hilog.error(0x0000, 'NasTransfer', 'operation=download_cleanup result=failed');
+        throw new NasFailure(NasErrorKind.Protocol, '下载未完成，临时文件清理失败。');
+      }
     };
     let descriptor: number = -1;
     let bytes = 0;
@@ -192,7 +196,10 @@ export class RcpTransferTransport implements NasTransferTransport {
       unsubscribe();
       if (descriptor >= 0) {
         try { fileIo.closeSync(descriptor); }
-        catch (_) { failure = new NasFailure(NasErrorKind.Protocol, '下载文件保存失败，请重试。'); }
+        catch (_) {
+          hilog.error(0x0000, 'NasTransfer', 'operation=download_close result=failed');
+          if (failure === undefined) { failure = new NasFailure(NasErrorKind.Protocol, '下载文件保存失败，请重试。'); }
+        }
       }
     }
     if (failure !== undefined) {

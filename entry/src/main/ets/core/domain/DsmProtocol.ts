@@ -209,6 +209,7 @@ export function decodeNasResponse(api: string, status: number, text: string): Re
     }
     throw failure;
   }
+  if (envelope['error'] !== undefined) { throw protocolError(); }
   // 登出和上传的空 success 响应是公开合同的一部分。
   return envelope['data'] === undefined ? {} : nasRecord(envelope['data']);
 }
