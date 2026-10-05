@@ -6,10 +6,14 @@ import { decodeUtf8Complete, decodeResponsePrefix } from '../../platform/Utf8Cod
 import { encodeNasForm, NasErrorKind, NasFailure, NasFormField, NasLoginSession } from '../domain/DsmProtocol';
 import { PHOTO_ORIGINAL_MAX_BYTES, PHOTO_THUMBNAIL_MAX_BYTES, validatePhotoMediaResponse } from '../domain/PhotosProtocol';
 import { NasHttpReply, NasTransport, NasTransferPlan } from './NasConnector';
+import { RcpTransferTransport } from './RcpTransferTransport';
+import type { NasTransferTransport } from './NasTransferTransport';
 
 export class RcpNasTransport implements NasTransport {
   private session: rcp.Session;
   private closed: boolean = false;
+  /** 与普通 JSON RPC 分开的传输能力；共用同一个 Session，因此继承同一套连接级证书策略。 */
+  readonly transfers: NasTransferTransport;
 
   /**
    * insecureTls 只在用户显式选择“忽略 SSL 验证”时为 true；此时跳过服务器证书校验，
@@ -21,6 +25,8 @@ export class RcpNasTransport implements NasTransport {
     };
     if (insecureTls) { requestConfiguration.security = { remoteValidation: 'skip' }; }
     this.session = rcp.createSession({ requestConfiguration: requestConfiguration });
+    this.transfers = new RcpTransferTransport(this.session, (): boolean => this.closed,
+      (error: Error): NasFailure => this.failure(error));
   }
 
   async post(address: string, body: string, authorization?: NasLoginSession): Promise<NasHttpReply> {

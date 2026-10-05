@@ -1,6 +1,6 @@
 import { decodeCapabilities, decodeNasFileInfo, decodeNasFilePage, decodeNasResponse, decodeNasSession,
   nasString, NasErrorKind, NasFailure,
-  normalizeNasOrigin, selectNasApi, validateLogicalPath } from '../domain/DsmProtocol';
+  normalizeNasOrigin, selectNasApi, validateApiPath, validateLogicalPath } from '../domain/DsmProtocol';
 import type { NasApiDescriptor, NasFileEntry, NasFileInfo, NasFilePage, NasFormField, NasLoginSession } from '../domain/DsmProtocol';
 import { assertNasControlAccepted, validateNasControlAction } from '../domain/SystemControl';
 import type { NasControlAction } from '../domain/SystemControl';
@@ -17,7 +17,8 @@ import { decodeTransferChecksumStatus, decodeTransferChecksumTask,
 import type { TransferChecksumStatus } from '../domain/TransferQueueState';
 import { DsmRpcClient } from './DsmRpcClient';
 import { decodeExtensionResponse } from '../domain/ExtensionProtocol';
-import { decodeDriveResponse, DRIVE_FILES_API, DRIVE_LIST_VERSION, driveUnsupportedFailure } from '../domain/DriveProtocol';
+import { decodeDriveResponse, DRIVE_FILES_API, DRIVE_LIST_VERSION, DRIVE_TEAM_FOLDERS_API, DRIVE_TEAM_FOLDERS_VERSION,
+  DRIVE_TRASH_API, DRIVE_TRASH_VERSION, driveUnsupportedFailure } from '../domain/DriveProtocol';
 import { selectVerifiedApi } from './ApiVersionPolicy';
 import { CapabilityRegistry } from '../capabilities/CapabilityRegistry';
 import type { CapabilitySnapshot } from '../capabilities/CapabilityRegistry';
@@ -25,6 +26,13 @@ import { SessionRegistry } from './SessionRegistry';
 import type { BusinessSessionName, BusinessSessionRecord } from './SessionRegistry';
 import type { NasTransport } from './DsmRpcClient';
 import type { DriveKernelPort } from './DriveAdapter';
+import type { DriveTransferKernelPort } from './DriveTransferAdapter';
+import { decodeDriveUpload, DRIVE_TRANSFER_VERSION, driveUploadFields, driveDownloadFields,
+  validateDriveDownload } from '../domain/DriveTransferProtocol';
+import type { DriveUploadRequest, DriveDownloadRequest, DriveUploadResult } from '../domain/DriveTransferProtocol';
+import { NasTransferCancellation, validateNasDownloadTarget, validateNasUploadSource } from './NasTransferTransport';
+import type { NasBinaryReply, NasDownloadReceipt, NasDownloadResult, NasDownloadTarget, NasTransferControl,
+  NasTransferProgress, NasTransferRequest, NasTransferTransport, NasUploadSource } from './NasTransferTransport';
 export type { NasHttpReply, NasTransport } from './DsmRpcClient';
 
 export interface NasEnvironment { model: string; dsmVersion: string; fileStationVersion: string; photosVersion: string; administrator: boolean; }
@@ -39,10 +47,18 @@ export const NAS_DISCOVERY_QUERY = 'SYNO.API.Auth,SYNO.FileStation.List,SYNO.Fil
   'SYNO.FileStation.CreateFolder,SYNO.FileStation.Rename,SYNO.FileStation.Delete,SYNO.FileStation.CopyMove,SYNO.FileStation.MD5,' +
   'SYNO.FileStation.Sharing,SYNO.DownloadStation.Task,' +
   // Drive 是独立套件，必须单独问；SYNO.API.Info 只回答被问到的名字。
-  'SYNO.SynologyDrive.Files,' +
+  'SYNO.SynologyDrive.Files,SYNO.SynologyDrive.TeamFolders,SYNO.SynologyDrive.Trash,' +
   'SYNO.Core.System,SYNO.Core.System.Utilization,SYNO.Storage.CGI.Storage';
 
-export class NasConnector implements DriveKernelPort {
+interface DriveTransferScope {
+  ticket: number;
+  control: NasTransferControl;
+  transport: NasTransferTransport;
+  dispose: () => void;
+}
+
+export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
+  private driveTransfers: Set<NasTransferCancellation> = new Set();
   private origin: string = '';
   private capabilities: NasApiDescriptor[] = [];
   private sessions: SessionRegistry = new SessionRegistry();
@@ -56,9 +72,13 @@ export class NasConnector implements DriveKernelPort {
     { feature: 'sharedPhotos', api: 'SYNO.FotoTeam.Browse.Item', verifiedVersions: [1] },
     { feature: 'fileSharing', api: 'SYNO.FileStation.Sharing', verifiedVersions: [3] },
     { feature: 'nasDownloads', api: 'SYNO.DownloadStation.Task', verifiedVersions: [1, 3] },
-    // Drive 只读浏览。Files 实测通告 1..10，但按项目规矩只登记已核对版本；版本按方法选，
-    // 因此 list/get 这类不同版本的方法今后各自注册 feature（见 DriveProtocol 的版本常量）。
-    { feature: 'driveBrowse', api: DRIVE_FILES_API, verifiedVersions: [DRIVE_LIST_VERSION] }
+    { feature: 'driveBrowse', api: DRIVE_FILES_API, verifiedVersions: [DRIVE_LIST_VERSION] },
+    { feature: 'driveRecent', api: DRIVE_FILES_API, verifiedVersions: [2] },
+    { feature: 'driveStarred', api: DRIVE_FILES_API, verifiedVersions: [2] },
+    { feature: 'driveSharedWithMe', api: DRIVE_FILES_API, verifiedVersions: [2] },
+    { feature: 'driveSharedWithOthers', api: DRIVE_FILES_API, verifiedVersions: [2] },
+    { feature: 'driveTeamFolders', api: DRIVE_TEAM_FOLDERS_API, verifiedVersions: [DRIVE_TEAM_FOLDERS_VERSION] },
+    { feature: 'driveTrash', api: DRIVE_TRASH_API, verifiedVersions: [DRIVE_TRASH_VERSION] }
   ]);
   constructor(private transport: NasTransport, private sessionName: 'FileStation' | 'NasControl' = 'FileStation') {
     this.rpc = new DsmRpcClient(transport);
@@ -591,6 +611,7 @@ export class NasConnector implements DriveKernelPort {
     const records = this.sessions.snapshot();
     this.sessions.clear();
     this.generation++;
+    this.cancelDriveTransfers();
     this.featureRegistry.clear();
     if (this.disposed || records.length === 0) { this.close(); return; }
     // 逐个业务登出：单个失败不阻止其余业务登出，最终把第一个失败交给调用方。
@@ -614,6 +635,7 @@ export class NasConnector implements DriveKernelPort {
     if (this.disposed) { return; }
     this.disposed = true;
     this.generation++;
+    this.cancelDriveTransfers();
     this.sessions.clear();
     this.capabilities = [];
     this.featureRegistry.clear();
@@ -658,6 +680,7 @@ export class NasConnector implements DriveKernelPort {
       if (invalidateExpired && error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) {
         this.sessions.invalidate(this.sessionName);
         this.generation++;
+        this.cancelDriveTransfers();
         this.featureRegistry.discover(this.capabilities);
       }
       throw error;
@@ -721,6 +744,110 @@ export class NasConnector implements DriveKernelPort {
     fields: NasFormField[]): Promise<Record<string, Object>> {
     if (!this.supportsDriveApi(api, version)) { throw driveUnsupportedFailure(api); }
     return this.callWith(api, version, method, fields, decodeDriveResponse);
+  }
+
+  async uploadDrive(input: DriveUploadRequest, source: NasUploadSource,
+    control: NasTransferControl): Promise<DriveUploadResult> {
+    validateNasUploadSource(source);
+    const request = this.driveTransferRequest('upload', driveUploadFields(input));
+    const uploadSource: NasUploadSource = { path: source.path, bytes: source.bytes };
+    const filename = input.filename;
+    const scope = this.beginDriveTransfer(control);
+    try {
+      const reply = await scope.transport.upload(request, uploadSource, filename, scope.control);
+      this.checkDriveTransfer(scope);
+      return decodeDriveUpload(reply.status, reply.text, uploadSource.bytes);
+    } catch (error) {
+      this.driveTransferFailed(scope, error);
+      throw error;
+    } finally { scope.dispose(); }
+  }
+
+  async downloadDrive(input: DriveDownloadRequest, target: NasDownloadTarget,
+    control: NasTransferControl): Promise<NasDownloadResult> {
+    validateNasDownloadTarget(target);
+    const fields = driveDownloadFields(input);
+    const suffix = (input.preview ? '/' : '/SYNO.SynologyDrive.Files/') + encodeURIComponent(input.filename);
+    const request = this.driveTransferRequest('download', fields, suffix);
+    const output: NasDownloadTarget = { directory: target.directory, maximumBytes: target.maximumBytes,
+      expectedBytes: target.expectedBytes };
+    const scope = this.beginDriveTransfer(control);
+    let receipt: NasDownloadReceipt | undefined = undefined;
+    try {
+      receipt = await scope.transport.download(request, output, scope.control, (reply: NasBinaryReply): void => {
+        this.checkDriveTransfer(scope);
+        validateDriveDownload(reply, output);
+      });
+      this.checkDriveTransfer(scope);
+      return { path: receipt.path, bytes: receipt.bytes };
+    } catch (error) {
+      // 临时文件属于本次调用，先释放再解释失败；清理异常不得覆盖真正的失败原因。
+      try { if (receipt !== undefined) { receipt.discard(); } } catch (_) {}
+      this.driveTransferFailed(scope, error);
+      throw error;
+    } finally { scope.dispose(); }
+  }
+
+  private driveTransferRequest(method: 'upload' | 'download', fields: NasFormField[], suffix: string = ''): NasTransferRequest {
+    const session = this.requireSession('FileStation');
+    if (!this.supportsDriveApi(DRIVE_FILES_API, DRIVE_TRANSFER_VERSION)) { throw driveUnsupportedFailure(DRIVE_FILES_API); }
+    const api = selectNasApi(this.capabilities, DRIVE_FILES_API, [DRIVE_TRANSFER_VERSION]);
+    const parameters: NasFormField[] = [
+      { name: 'api', content: DRIVE_FILES_API }, { name: 'version', content: DRIVE_TRANSFER_VERSION.toString() },
+      { name: 'method', content: method }
+    ].concat(fields);
+    if (method === 'download') {
+      // 原始 GET 抓包携带 SynoToken。只在内核中注入，不进入资源引用或任务记录。
+      // 服务器没签发令牌时提示重新登录，但不失效当前会话：服务器状态未知，
+      // 直接清除会让仍然可用的文件浏览一起失效。
+      if (session.synoToken.length === 0) { throw new NasFailure(NasErrorKind.SessionExpired, '请重新登录后下载文件。'); }
+      parameters.push({ name: 'SynoToken', content: session.synoToken });
+    }
+    return { address: this.origin + '/webapi/' + validateApiPath(api.path) + suffix,
+      method: method === 'upload' ? 'POST' : 'GET', fields: parameters,
+      session: { sid: session.sid, synoToken: session.synoToken } };
+  }
+
+  private beginDriveTransfer(control: NasTransferControl): DriveTransferScope {
+    this.ensureOpen();
+    control.cancellation.check();
+    const transport = this.transport.transfers;
+    if (transport === undefined) { throw new NasFailure(NasErrorKind.Unsupported, '当前连接不支持文件传输。'); }
+    const ticket = this.generation;
+    const cancellation = new NasTransferCancellation();
+    this.driveTransfers.add(cancellation);
+    const unsubscribe = control.cancellation.subscribe((): void => { cancellation.cancel(); });
+    const onProgress = control.onProgress;
+    return { ticket, transport, control: { cancellation,
+      onProgress: (progress: NasTransferProgress): void => {
+        this.ensureCurrent(ticket);
+        cancellation.check();
+        if (onProgress !== undefined) { onProgress(progress); }
+      } }, dispose: (): void => { unsubscribe(); this.driveTransfers.delete(cancellation); } };
+  }
+
+  private checkDriveTransfer(scope: DriveTransferScope): void {
+    this.ensureCurrent(scope.ticket);
+    scope.control.cancellation.check();
+  }
+
+  /**
+   * 失败收尾：代际已切换时只报告连接已切换，不让旧会话的错误冒充新会话的失败。
+   * 调用方主动取消不改变代际，因此保留传输层给出的具体说明（例如上传结果未确认）。
+   */
+  private driveTransferFailed(scope: DriveTransferScope, error: unknown): void {
+    this.ensureCurrent(scope.ticket);
+    if (error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) {
+      this.sessions.invalidate('FileStation');
+      this.generation++;
+      this.cancelDriveTransfers();
+      this.featureRegistry.discover(this.capabilities);
+    }
+  }
+
+  private cancelDriveTransfers(): void {
+    for (const cancellation of this.driveTransfers) { cancellation.cancel(); }
+    this.driveTransfers.clear();
   }
 
   /** 供 Drive 适配器把一次真实读取登记到能力状态机。 */

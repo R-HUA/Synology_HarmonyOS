@@ -1,9 +1,11 @@
 import { encodeNasForm, NasErrorKind, NasFailure, normalizeNasOrigin, validateApiPath } from '../domain/DsmProtocol';
 import type { NasApiDescriptor, NasFormField, NasLoginSession } from '../domain/DsmProtocol';
 import { selectVerifiedApi } from './ApiVersionPolicy';
+import type { NasTransferTransport } from './NasTransferTransport';
 
 export interface NasHttpReply { status: number; text: string; }
 export interface NasTransport {
+  readonly transfers?: NasTransferTransport;
   post(address: string, body: string, session?: NasLoginSession): Promise<NasHttpReply>;
   close(): void;
 }

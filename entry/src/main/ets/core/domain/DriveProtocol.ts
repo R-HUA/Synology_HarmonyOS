@@ -4,8 +4,8 @@ import type { NasFormField } from './DsmProtocol';
 /**
  * Synology Drive 接入的领域与协议层（走 DSM 内部 `SYNO.SynologyDrive.*` WebAPI）。
  *
- * 这是**未公开、无兼容承诺**的内部接口；所有 Drive 调用必须收敛在本文件与
- * `network/DriveAdapter.ts` 两层内，便于将来整体切到官方 Office Suite REST，
+ * 这是**未公开、无兼容承诺**的内部接口；Drive 语义收敛在协议与适配器两层，
+ * 二进制传输对应 DriveTransferProtocol/DriveTransferAdapter，便于切到官方 Office Suite REST，
  * 或适配 DSM 的版本漂移。
  *
  * 实测依据：`work/drive-probe/drive-api-map.json`（三轮真机探测 + Web UI 抓包）。
@@ -21,6 +21,27 @@ export const DRIVE_FILES_API = 'SYNO.SynologyDrive.Files';
  * P0 只用到 list；P1 起按方法各自登记（见 Drive_Access_Plan 的 §2 映射表）。
  */
 export const DRIVE_LIST_VERSION = 2;
+export const DRIVE_TEAM_FOLDERS_API = 'SYNO.SynologyDrive.TeamFolders';
+export const DRIVE_TRASH_API = 'SYNO.SynologyDrive.Trash';
+export const DRIVE_TEAM_FOLDERS_VERSION = 1;
+export const DRIVE_TRASH_VERSION = 1;
+
+export enum DriveView {
+  MyDrive = 'mydrive', TeamFolders = 'teamFolders', Recent = 'recent', Starred = 'starred',
+  SharedWithMe = 'sharedWithMe', SharedWithOthers = 'sharedWithOthers', Trash = 'trash'
+}
+
+export function driveViewLabel(view: DriveView): string {
+  switch (view) {
+    case DriveView.MyDrive: return '我的文件';
+    case DriveView.TeamFolders: return '团队文件夹';
+    case DriveView.Recent: return '最近';
+    case DriveView.Starred: return '星标';
+    case DriveView.SharedWithMe: return '共享给我';
+    case DriveView.SharedWithOthers: return '我共享出去的';
+    case DriveView.Trash: return '回收站';
+  }
+}
 
 /**
  * 每页条目数。
@@ -101,6 +122,14 @@ export interface DrivePage {
   offset: number;
 }
 
+/** recent 实测可能只回 items；未知总数不能补成当前页长度。 */
+export interface DriveViewPage {
+  items: DriveEntry[];
+  total?: number;
+  offset: number;
+  hasMore: boolean;
+}
+
 /** 浏览位置。`fileId` 缺省表示该空间的根。 */
 export interface DriveFolderRef {
   space: DriveSpace;
@@ -122,7 +151,7 @@ export const DRIVE_ENTRY_KEYS: string[] = ['access_time', 'adv_shared', 'app_pro
 
 function driveProtocolError(detail: string): NasFailure {
   return new NasFailure(NasErrorKind.Protocol,
-    'Synology Drive 返回了无法识别的数据（' + detail + '），请更新 DSM 与 Drive 套件后重试。');
+    'Synology Drive 返回了无法识别的数据（' + detail + '），请刷新重试；若仍失败，可通过 DSM 的 Drive 网页检查。');
 }
 
 /** 空间未安装 / 无权限时的统一文案；`selectNasApi` 的通用提示会让人以为是版本问题。 */
@@ -148,16 +177,14 @@ export function relabelDriveFailure(error: Object): Object {
   switch (error.code) {
     case 103:
       return new NasFailure(NasErrorKind.Unsupported,
-        'Drive 拒绝了这次调用（103）：通常是参数不完整或方法名不对。实测 103 并不代表该功能不存在。', 103);
+        '暂时无法读取 Drive 内容，请刷新重试。', 103);
     case 105:
-      return new NasFailure(NasErrorKind.Permission,
-        '当前账号没有读取这部分 Drive 数据的权限（105）。分享列表等管理向数据通常仅管理员可见。', 105);
     case 120:
-      return new NasFailure(NasErrorKind.Permission,
-        '当前账号没有查看这部分 Drive 日志的权限（120）。', 120);
+      return new NasFailure(NasErrorKind.Server,
+        '暂时无法读取 Drive 内容，请刷新重试。', error.code);
     case 1000:
       return new NasFailure(NasErrorKind.InvalidInput,
-        'Drive 不接受这个位置（1000）。团队文件夹没有虚拟根路径，必须先枚举团队文件夹、再按其 ID 访问。', 1000);
+        '无法打开此 Drive 位置，请返回上级后重试。', 1000);
   }
   return error;
 }
@@ -166,24 +193,19 @@ export function relabelDriveFailure(error: Object): Object {
  * 保精度的 JSON 预处理。
  *
  * Drive 的 ID 目前是**字符串**（实测 18 位数字，若为 number 早已超出
- * `Number.MAX_SAFE_INTEGER` 而被 `JSON.parse` 舍入），所以常规路径下本函数
- * 原样返回、没有任何额外开销。但一旦某个 DSM 版本改发裸数字 ID，舍入后的
+ * `Number.MAX_SAFE_INTEGER` 而被 `JSON.parse` 舍入），常规路径下扫描后保持原文。
+ * 一旦某个 DSM 版本改发裸数字 ID，舍入后的
  * ID 会指向另一个对象 —— 这是不能容忍的静默错误，所以在解析入口先把已知
  * ID 字段的长整数补上引号。
  *
- * 唯一风险是正则误命中字符串值里的同形文本；因此改写后先试解析，解析不通过
- * 就回退原文（此时数字 ID 会在解码阶段被判为不安全整数并明确报错，而不是静默取错）。
+ * 先匹配完整字符串 token，再识别其后的整数，避免改写名称或正文中的同形文本。
+ * 只处理合法整数字面量，不把小数、指数或带前导零的非法 JSON 修成合法 ID。
  */
 export function precisionSafeDriveJson(text: string): string {
-  let output = text;
-  for (const key of ['file_id', 'parent_id', 'max_id', 'change_id', 'version_id', 'sync_id', 'team_id', 'uid']) {
-    output = output.replace(new RegExp('"' + key + '"\\s*:\\s*(\\d{16,})', 'g'), '"' + key + '":"$1"');
-  }
-  if (output === text) { return text; }
-  try {
-    JSON.parse(output);
-    return output;
-  } catch { return text; }
+  return text.replace(/"(?:\\.|[^"\\])*"(?:\s*:\s*[1-9]\d{15,}(?=\s*[,}]))?/g,
+    (token: string): string => token.replace(
+      /^"(file_id|parent_id|max_id|change_id|version_id|sync_id|team_id|uid)"(\s*:\s*)([1-9]\d{15,})$/,
+      '"$1"$2"$3"'));
 }
 
 /** HTTP 与信封校验沿用 File Station 的口径，只额外做保精度预处理与 Drive 错误码解释。 */
@@ -216,8 +238,9 @@ function optionalDriveId(value: Object | undefined): string | undefined {
 }
 
 function optionalDriveText(value: Object | undefined, limit: number): string | undefined {
-  if (value === undefined) { return undefined; }
-  if (typeof value !== 'string' || value.length === 0 || value.length > limit || /[\u0000-\u001f\u007f]/.test(value)) {
+  // 可选文本的空字符串表示没有值；必需的 name 仍由条目解码明确拒绝。
+  if (value === undefined || value === '') { return undefined; }
+  if (typeof value !== 'string' || value.length > limit || /[\u0000-\u001f\u007f]/.test(value)) {
     throw driveProtocolError('文本字段');
   }
   return value;
@@ -241,7 +264,7 @@ function driveFlag(row: Record<string, Object>, key: string): boolean {
 function decodeDriveCapabilities(value: Object | undefined): DriveCapabilities {
   if (value === undefined) {
     // 保守：没有能力信息就不暴露任何操作入口。
-    return { canRead: true, canDownload: false, canPreview: false, canWrite: false, canRename: false,
+    return { canRead: false, canDownload: false, canPreview: false, canWrite: false, canRename: false,
       canDelete: false, canShare: false, canOrganize: false, canComment: false, canSync: false, canEncrypt: false };
   }
   const row = nasRecord(value);
@@ -328,16 +351,48 @@ export function decodeDrivePage(data: Record<string, Object>, requestedOffset: n
     throw driveProtocolError('total 字段');
   }
   const items = decodeDriveEntryList(data);
-  if (items.length > limit || requestedOffset + items.length > (total as number) ||
-    items.length === 0 && requestedOffset < (total as number)) {
-    throw driveProtocolError('分页字段');
+  validateDrivePageItems(items, requestedOffset, limit, total as number);
+  return { items: items, total: total as number, offset: requestedOffset };
+}
+
+function validateDrivePageItems(items: DriveEntry[], requestedOffset: number, limit: number, total?: number): void {
+  if (!Number.isSafeInteger(requestedOffset) || requestedOffset < 0 ||
+    !Number.isSafeInteger(limit) || limit <= 0) { throw driveProtocolError('分页请求'); }
+  if (items.length > limit || total !== undefined && (requestedOffset + items.length > total ||
+    items.length === 0 && requestedOffset < total)) {
+    throw new NasFailure(NasErrorKind.Protocol, 'Drive 列表已变化，请刷新后重试。');
   }
   const seen = new Set<string>();
   for (const item of items) {
     if (seen.has(item.fileId)) { throw driveProtocolError('重复条目'); }
     seen.add(item.fileId);
   }
-  return { items: items, total: total as number, offset: requestedOffset };
+}
+
+/** 团队入口实测没有 type，按该端点的目录契约解码，不能修改普通文件条目的必需字段。 */
+export function decodeDriveTeamFolder(raw: Object): DriveEntry {
+  const row = nasRecord(raw);
+  const fileId = decodeDriveId(row['file_id'], 'file_id 字段');
+  const name = optionalDriveText(row['name'], 255);
+  if (name === undefined) { throw driveProtocolError('name 字段'); }
+  return { fileId, name, kind: DriveEntryKind.Folder, starred: false, shared: false,
+    revisionCount: 0, capabilities: decodeDriveCapabilities(row['capabilities']) };
+}
+
+export function decodeDriveViewPage(data: Record<string, Object>, view: DriveView,
+  requestedOffset: number, limit: number = DRIVE_PAGE_SIZE): DriveViewPage {
+  const total = data['total'];
+  if (total === undefined ? view !== DriveView.Recent :
+    typeof total !== 'number' || !Number.isSafeInteger(total) || (total as number) < 0) {
+    throw driveProtocolError('total 字段');
+  }
+  const raw = data['items'];
+  if (!Array.isArray(raw)) { throw driveProtocolError('items 字段'); }
+  const items = (raw as Object[]).map((item: Object): DriveEntry =>
+    view === DriveView.TeamFolders ? decodeDriveTeamFolder(item) : decodeDriveEntry(item));
+  validateDrivePageItems(items, requestedOffset, limit, total as number | undefined);
+  return { items, total: total as number | undefined, offset: requestedOffset,
+    hasMore: total === undefined ? items.length === limit : requestedOffset + items.length < (total as number) };
 }
 
 /**
@@ -389,6 +444,16 @@ export function driveListFields(folder: DriveFolderRef, offset: number,
     driveText('sort_by', sortBy, 32),
     driveText('sort_direction', sortDirection, 8)
   ];
+}
+
+/** P1 列表沿用成功探测的完整参数；recent 用 atime，不给跨目录视图硬塞 path。 */
+export function driveViewFields(view: DriveView, offset: number): NasFormField[] {
+  const fields: NasFormField[] = [driveCount('offset', offset, true), driveCount('limit', DRIVE_PAGE_SIZE, false),
+    driveText('sort_by', view === DriveView.Recent ? DriveSortBy.AccessTime : DriveSortBy.ModifiedTime, 32),
+    driveText('sort_direction', DriveSortDirection.Ascending, 8),
+    { name: 'filter', content: '{"include_transient":true}' }];
+  if (view === DriveView.MyDrive || view === DriveView.Trash) { fields.push(driveText('path', '/mydrive', 4096)); }
+  return fields;
 }
 
 /**

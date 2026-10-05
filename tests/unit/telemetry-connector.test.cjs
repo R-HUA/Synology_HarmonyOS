@@ -22,6 +22,10 @@ const photos = load('core/domain/PhotosProtocol.ts', { './DsmProtocol': dsm });
 const operations = load('core/domain/FileOperations.ts', { './DsmProtocol': dsm });
 const queueState = load('core/domain/TransferQueueState.ts', { './DsmProtocol': dsm });
 const control = load('core/domain/SystemControl.ts', { './DsmProtocol': dsm });
+const drive = load('core/domain/DriveProtocol.ts', { './DsmProtocol': dsm });
+const transferContracts = load('core/network/NasTransferTransport.ts', { '../domain/DsmProtocol': dsm });
+const driveTransfer = load('core/domain/DriveTransferProtocol.ts', { './DsmProtocol': dsm, './DriveProtocol': drive,
+  '../network/NasTransferTransport': transferContracts });
 const { NasConnector, NAS_DISCOVERY_QUERY } = load('core/network/NasConnector.ts', {
   '../domain/ExtensionProtocol': load('core/domain/ExtensionProtocol.ts', { './DsmProtocol': dsm }),
   './ApiVersionPolicy': load('core/network/ApiVersionPolicy.ts', { '../domain/DsmProtocol': dsm }),
@@ -32,7 +36,8 @@ const { NasConnector, NAS_DISCOVERY_QUERY } = load('core/network/NasConnector.ts
     './ApiVersionPolicy': load('core/network/ApiVersionPolicy.ts', { '../domain/DsmProtocol': dsm }) }),
   '../domain/DsmProtocol': dsm, '../domain/PhotosProtocol': photos,
   '../domain/FileOperations': operations, '../domain/TransferQueueState': queueState,
-  '../domain/DriveProtocol': load('core/domain/DriveProtocol.ts', { './DsmProtocol': dsm }),
+  '../domain/DriveProtocol': drive, '../domain/DriveTransferProtocol': driveTransfer,
+  './NasTransferTransport': transferContracts,
   '../domain/SystemControl': control,
 });
 const { NasFailure, NasErrorKind: K } = dsm;

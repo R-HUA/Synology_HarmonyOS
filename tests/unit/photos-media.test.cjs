@@ -63,10 +63,14 @@ function transportFixture() {
     }, cancel() { session.cancelled = true; }, close() { session.closed = true; } };
     sessions.push(session); return session;
   } };
+  const contracts = load('core/network/NasTransferTransport.ts', { '../domain/DsmProtocol': dsm });
+  const transferTransport = load('core/network/RcpTransferTransport.ets', { '@kit.RemoteCommunicationKit': { rcp },
+    '@kit.CoreFileKit': { fileIo: disk.io }, '../domain/DsmProtocol': dsm, './NasTransferTransport': contracts,
+    '../../platform/Utf8Codec': utf8 });
   const { RcpNasTransport } = load('core/network/RcpNasTransport.ets', { '@kit.RemoteCommunicationKit': { rcp },
     '@kit.PerformanceAnalysisKit': { hilog: { error(...args) { diagnostics.push(args); } } },
     '@kit.CoreFileKit': { fileIo: disk.io }, '../../platform/Utf8Codec': utf8, '../domain/DsmProtocol': dsm,
-    '../domain/PhotosProtocol': photos });
+    '../domain/PhotosProtocol': photos, './NasTransferTransport': contracts, './RcpTransferTransport': transferTransport });
   return { RcpNasTransport, disk, replies, sessions, requests, diagnostics };
 }
 

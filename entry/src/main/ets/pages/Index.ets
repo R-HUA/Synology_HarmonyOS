@@ -4,7 +4,8 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileUri } from '@kit.CoreFileKit';
 import { HdsNavigation, HdsNavigationTitleMode, HdsNavDestination, HdsTabs, HdsTabsController, hdsMaterial, IconStyleMode, ScrollEffectType } from '@kit.UIDesignKit';
 import { NasFailure, NasFileEntry } from '../core/domain/DsmProtocol';
-import { DriveEntry, DriveEntryKind } from '../core/domain/DriveProtocol';
+import { DriveEntry, DriveEntryKind, DriveView, driveViewLabel } from '../core/domain/DriveProtocol';
+import { DRIVE_BROWSER_VIEWS } from '../features/drive/DriveBrowserModel';
 import type { DriveTrailItem } from '../features/drive/DriveBrowserModel';
 import { NasPhotoItem, NasPhotoAlbum, PhotosSpace } from '../core/domain/PhotosProtocol';
 import { PhotoBackup } from '../features/backup/PhotoBackup';
@@ -167,7 +168,11 @@ struct Index {
       this.pendingOperation = '';
       return true;
     }
-    if (this.model.authenticated && this.activeTab === 1 && this.model.directory.length > 0) {
+    if (this.model.authenticated && this.activeTab === 1 && this.fileSource === 'drive' && this.model.drive.canGoUp()) {
+      if (!this.model.drive.busy) { this.model.drive.goUp(); }
+      return true;
+    }
+    if (this.model.authenticated && this.activeTab === 1 && this.fileSource === 'station' && this.model.directory.length > 0) {
       if (!this.model.busy) { this.model.goBack(); }
       return true;
     }
@@ -183,6 +188,7 @@ struct Index {
   private authenticationChanged(): void {
     this.updateTelemetryMode();
     if (!this.model.authenticated) {
+      this.fileSource = 'station';
       this.backup.reset();
       this.choosingBackupTarget = false;
       this.choosingDownloadTarget = false;
@@ -278,6 +284,7 @@ struct Index {
     this.model.extensions.downloadFormRequested = true;
     this.choosingDownloadTarget = true;
     this.choosingBackupTarget = false;
+    this.fileSource = 'station';
     this.navStack.pop();
     this.switchTab(1);
   }
@@ -298,6 +305,7 @@ struct Index {
 
   /** 切换数据来源。切到 Drive 时按需首次加载根目录；切回不重载 File Station。 */
   private switchFileSource(source: string): void {
+    if (this.choosingDownloadTarget || this.choosingBackupTarget) { return; }
     if (this.fileSource === source || this.model.busy || this.model.drive.busy) { return; }
     if (source === 'drive' && !this.model.drive.available) { return; }
     this.fileSource = source;
@@ -959,7 +967,7 @@ struct Index {
         WorkbenchChoice({ label: 'File Station', selected: this.fileSource === 'station',
           onSelect: (): void => { this.switchFileSource('station'); } })
         WorkbenchChoice({ label: 'Synology Drive', selected: this.fileSource === 'drive',
-          available: this.model.drive.available,
+          available: this.model.drive.available && !this.choosingDownloadTarget && !this.choosingBackupTarget,
           onSelect: (): void => { this.switchFileSource('drive'); } })
       }.width('100%')
       if (!this.model.drive.available) {
@@ -982,7 +990,21 @@ struct Index {
           if (index < this.model.drive.trail.length - 1) {
             Text('›').fontSize(18).fontColor($r('sys.color.font_tertiary'))
           }
-        }, (item: DriveTrailItem, index: number): string => item.fileId === undefined ? 'drive-root' : item.fileId)
+        }, (item: DriveTrailItem, index: number): string =>
+          this.model.drive.view + ':' + (item.fileId ?? 'root') + ':' + item.name)
+      }
+    }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
+  }
+
+  @Builder
+  driveViewSwitch() {
+    Scroll() {
+      Row({ space: 4 }) {
+        ForEach(DRIVE_BROWSER_VIEWS, (view: DriveView): void => {
+          WorkbenchChoice({ label: driveViewLabel(view), selected: this.model.drive.view === view,
+            available: !this.model.drive.busy && this.model.drive.supportsView(view),
+            onSelect: (): void => { this.model.drive.selectView(view); } })
+        }, (view: DriveView): string => view)
       }
     }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
   }
@@ -994,6 +1016,7 @@ struct Index {
         ListItem() {
           Column({ space: 8 }) {
             this.fileSourceSwitch()
+            this.driveViewSwitch()
             this.driveBreadcrumb()
             Row({ space: 8 }) {
               Text('Synology Drive').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
@@ -1006,7 +1029,7 @@ struct Index {
             if (this.model.drive.busy) {
               Row({ space: 12 }) {
                 LoadingProgress().width(24).height(24)
-                Text('正在读取 Drive 目录…').fontSize(14).fontColor($r('sys.color.font_secondary'))
+                Text('正在读取 Drive 内容…').fontSize(14).fontColor($r('sys.color.font_secondary'))
               }.width('100%').padding(12)
             }
           }.width('100%').padding({ left: 16, right: 16, top: this.contentTopInset() + 8, bottom: 12 })
@@ -1014,9 +1037,9 @@ struct Index {
         if (!this.model.drive.busy && this.model.drive.entries.length === 0) {
           ListItem() {
             if (this.model.drive.errorText.length > 0) {
-              this.emptyState($r('sys.symbol.exclamationmark_circle'), 'Drive 目录未能读取', '可在上方刷新重试，或切回 File Station。')
+              this.emptyState($r('sys.symbol.exclamationmark_circle'), 'Drive 内容未能读取', '可在上方刷新重试，或切回 File Station。')
             } else {
-              this.emptyState($r('sys.symbol.folder'), '此位置为空', '这个文件夹里没有可显示的项目。')
+              this.emptyState($r('sys.symbol.folder'), '此位置为空', '当前列表没有可显示的项目。')
             }
           }
         }
@@ -1025,7 +1048,9 @@ struct Index {
             WorkbenchEntryRow({ title: entry.name, subtitle: this.driveRowSubtitle(entry),
               icon: entry.kind === DriveEntryKind.Folder ? $r('sys.symbol.folder') : $r('sys.symbol.doc'),
               iconColor: entry.kind === DriveEntryKind.Folder ? $r('sys.color.icon_emphasize') : $r('sys.color.font_secondary'),
-              available: !this.model.drive.busy, onOpen: (): void => { this.openDriveEntry(entry); } })
+              available: !this.model.drive.busy && entry.capabilities.canRead &&
+                (this.model.drive.view !== DriveView.Trash || entry.kind !== DriveEntryKind.Folder),
+              onOpen: (): void => { this.openDriveEntry(entry); } })
           }
         }, (entry: DriveEntry): string => entry.fileId)
         ListItem() {
@@ -1051,14 +1076,17 @@ struct Index {
 
   private driveCountText(): string {
     const total = this.model.drive.total;
-    return total === 0 ? '0 项' : (this.model.drive.pageOffset + 1).toString() + '–' +
-      (this.model.drive.pageOffset + this.model.drive.entries.length).toString() + ' / ' + total.toString() + ' 项';
+    if (this.model.drive.entries.length === 0) { return '0 项'; }
+    const range = (this.model.drive.pageOffset + 1).toString() + '–' +
+      (this.model.drive.pageOffset + this.model.drive.entries.length).toString();
+    return total === undefined ? '第 ' + range + ' 项' : range + ' / ' + total.toString() + ' 项';
   }
 
   /** P0 只做只读浏览：文件的预览与下载属 P2，这里明确说明而不是给一个无反应的入口。 */
   private openDriveEntry(entry: DriveEntry): void {
+    if (this.model.drive.busy || !entry.capabilities.canRead) { return; }
     if (entry.kind === DriveEntryKind.Folder) { this.model.drive.openFolder(entry); return; }
-    this.model.drive.notice = '「' + entry.name + '」的预览与下载将在下一阶段提供，当前阶段只能浏览目录。';
+    this.model.drive.notice = '暂不支持预览或下载「' + entry.name + '」。';
   }
 
   @Builder
@@ -1099,6 +1127,7 @@ struct Index {
             Button('选择备份位置').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.backup.submitting && !this.backup.selecting)
               .onClick((): void => {
                 this.pendingEntry = undefined; this.pendingOperation = '';
+                this.choosingDownloadTarget = false; this.fileSource = 'station';
                 this.choosingBackupTarget = true; this.switchTab(1);
               })
             Button('清空选择').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.backup.submitting)

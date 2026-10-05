@@ -1,8 +1,11 @@
 import { NasErrorKind, NasFailure } from '../domain/DsmProtocol';
 import type { NasFormField } from '../domain/DsmProtocol';
 import { decodeDrivePage, DRIVE_FILES_API, DRIVE_LIST_VERSION, DRIVE_PAGE_SIZE, DriveSortBy,
-  DriveSortDirection, driveListFields } from '../domain/DriveProtocol';
-import type { DriveFolderRef, DrivePage } from '../domain/DriveProtocol';
+  DriveSortDirection, driveListFields, DriveView, DRIVE_TEAM_FOLDERS_API, DRIVE_TEAM_FOLDERS_VERSION,
+  DRIVE_TRASH_API, DRIVE_TRASH_VERSION, driveViewFields, decodeDriveViewPage } from '../domain/DriveProtocol';
+import type { DriveFolderRef, DrivePage, DriveViewPage } from '../domain/DriveProtocol';
+
+interface DriveReadSpec { api: string; version: number; method: string; feature: string; }
 
 /**
  * 内核需要向 Drive 适配器暴露的最小能力集合。由 `NasConnector` 实现。
@@ -21,22 +24,21 @@ export interface DriveKernelPort {
 }
 
 /**
- * Drive 只读适配器。P0 只暴露「是否可用」与「列目录」两项：
- * 计划里 §2 的其余方法（最近/星标/共享/回收站/上传下载/文件操作/分享）
- * 分别在 P1–P4 落地，避免先写出没有调用方的空壳。
+ * Drive 只读适配器：目录与视图入口分别使用已探测的方法和响应契约。
  */
 export class DriveAdapter {
   constructor(private kernel: DriveKernelPort) {}
 
   /** Drive 是否可用。界面据此决定来源切换能不能点、以及为什么不能点。 */
-  available(): boolean {
-    return this.kernel.supportsDriveApi(DRIVE_FILES_API, DRIVE_LIST_VERSION);
+  available(view: DriveView = DriveView.MyDrive): boolean {
+    const spec = this.viewSpec(view);
+    return this.kernel.supportsDriveApi(spec.api, spec.version);
   }
 
-  /** 列出目录。`offset` 必须是页大小的整数倍，防止界面上翻出重叠页。 */
+  /** 短页之后按实际返回数量继续请求，因此合法 offset 不必是页大小的倍数。 */
   async list(folder: DriveFolderRef, offset: number = 0, sortBy: DriveSortBy = DriveSortBy.Name,
     sortDirection: DriveSortDirection = DriveSortDirection.Ascending): Promise<DrivePage> {
-    if (!Number.isSafeInteger(offset) || offset < 0 || offset % DRIVE_PAGE_SIZE !== 0) {
+    if (!Number.isSafeInteger(offset) || offset < 0) {
       throw new NasFailure(NasErrorKind.InvalidInput, 'Drive 列表分页位置不正确，请刷新目录后重试。');
     }
     const fields = driveListFields(folder, offset, sortBy, sortDirection);
@@ -44,5 +46,32 @@ export class DriveAdapter {
       await this.kernel.requestDrive(DRIVE_FILES_API, DRIVE_LIST_VERSION, 'list', fields), offset, DRIVE_PAGE_SIZE);
     // 只有第一页代表"这个来源能用"；后续页失败不该把已确认的能力打回未验证。
     return offset === 0 ? this.kernel.readDriveFeature('driveBrowse', read) : read();
+  }
+
+  async readView(view: DriveView, offset: number = 0): Promise<DriveViewPage> {
+    const spec = this.viewSpec(view);
+    const fields = driveViewFields(view, offset);
+    const read = async (): Promise<DriveViewPage> => decodeDriveViewPage(
+      await this.kernel.requestDrive(spec.api, spec.version, spec.method, fields), view, offset);
+    return offset === 0 ? this.kernel.readDriveFeature(spec.feature, read) : read();
+  }
+
+  private viewSpec(view: DriveView): DriveReadSpec {
+    switch (view) {
+      case DriveView.MyDrive:
+        return { api: DRIVE_FILES_API, version: DRIVE_LIST_VERSION, method: 'list', feature: 'driveBrowse' };
+      case DriveView.TeamFolders:
+        return { api: DRIVE_TEAM_FOLDERS_API, version: DRIVE_TEAM_FOLDERS_VERSION, method: 'list', feature: 'driveTeamFolders' };
+      case DriveView.Trash:
+        return { api: DRIVE_TRASH_API, version: DRIVE_TRASH_VERSION, method: 'list', feature: 'driveTrash' };
+      case DriveView.Recent:
+        return { api: DRIVE_FILES_API, version: 2, method: 'recent', feature: 'driveRecent' };
+      case DriveView.Starred:
+        return { api: DRIVE_FILES_API, version: 2, method: 'list_starred', feature: 'driveStarred' };
+      case DriveView.SharedWithMe:
+        return { api: DRIVE_FILES_API, version: 2, method: 'shared_with_me', feature: 'driveSharedWithMe' };
+      case DriveView.SharedWithOthers:
+        return { api: DRIVE_FILES_API, version: 2, method: 'shared_with_others', feature: 'driveSharedWithOthers' };
+    }
   }
 }

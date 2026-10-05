@@ -5,9 +5,10 @@ const {
   decodeDrivePage, decodeDriveEntry, decodeDriveEntryList, decodeDriveResponse, driveListFields,
   drivePathExpression, precisionSafeDriveJson, relabelDriveFailure, unknownDriveEntryKeys,
   validateDriveFileId, DRIVE_ENTRY_KEYS, DRIVE_PAGE_SIZE, DriveEntryKind, DriveSortBy, DriveSortDirection,
-  DriveSpace,
+  DriveSpace, DriveView, decodeDriveViewPage, driveViewFields,
 } = require('../../work/core-build/domain/DriveProtocol.js');
 const { DriveAdapter } = require('../../work/core-build/network/DriveAdapter.js');
+const { CapabilityRegistry } = require('../../work/core-build/capabilities/CapabilityRegistry.js');
 
 const FILE_ID = '976700457026108129';
 const ROOT_ID = '821014439470870977';
@@ -85,6 +86,19 @@ test('decodeDriveResponse preserves an oversized numeric id end to end', () => {
   assert.equal(decodeDriveEntry(data.items[0]).fileId, '976700457026108129');
 });
 
+test('id precision preprocessing leaves string contents and invalid JSON numbers untouched', () => {
+  const text = '{"name":"正文包含 \\"file_id\\":976700457026108129", "file_id":976700457026108129}';
+  const result = JSON.parse(precisionSafeDriveJson(text));
+  assert.equal(result.name, '正文包含 "file_id":976700457026108129');
+  assert.equal(result.file_id, FILE_ID);
+  for (const number of ['0976700457026108129', '976700457026108129.5', '976700457026108129e2']) {
+    const raw = '{"file_id":' + number + '}';
+    assert.equal(precisionSafeDriveJson(raw), raw);
+  }
+  assert.throws(() => decodeDriveResponse('SYNO.SynologyDrive.Files', 200,
+    '{"success":true,"data":{"file_id":0976700457026108129}}'), isProtocol);
+});
+
 test('decodeDriveEntry reads only whitelisted fields and reports drift separately', () => {
   const entry = decodeDriveEntry(entryFixture());
   assert.equal(entry.fileId, FILE_ID);
@@ -110,11 +124,20 @@ test('decodeDriveEntry reads only whitelisted fields and reports drift separatel
 
 test('decodeDriveEntry treats missing capabilities as "no action" instead of guessing', () => {
   const entry = decodeDriveEntry({ file_id: FILE_ID, name: 'a', type: 'file' });
-  assert.equal(entry.capabilities.canRead, true);
+  assert.equal(entry.capabilities.canRead, false);
   assert.equal(entry.capabilities.canDelete, false);
   assert.equal(entry.capabilities.canShare, false);
   assert.equal(entry.sizeBytes, undefined);
   assert.equal(entry.owner, undefined);
+});
+
+test('empty optional owner and path text does not make a readable directory fail', () => {
+  const value = decodeDriveEntry(entryFixture({ type: 'dir', display_path: '', path: '',
+    owner: { display_name: '', name: 'normal', nickname: '', uid: 7 } }));
+  assert.deepEqual(value.owner, { name: 'normal', uid: '7' });
+  assert.equal(value.displayPath, undefined);
+  assert.equal(value.pathText, undefined);
+  assert.throws(() => decodeDriveEntry(entryFixture({ name: '' })), isProtocol);
 });
 
 test('decodeDriveEntry folds dir and folder into one kind and rejects unknown kinds', () => {
@@ -168,13 +191,19 @@ test('relabelDriveFailure replaces generic DSM wording with the measured Drive s
   // 103 实测不是"接口不存在"（shared_with_me 补全参数后返回 200），必须改口。
   const unsupported = relabelDriveFailure(new NasFailure(K.Unsupported, 'generic', 103));
   assert.equal(unsupported.kind, K.Unsupported);
-  assert.match(unsupported.message, /参数不完整或方法名不对/);
-  // 120 在通用映射里落到 Server，105 落到 Permission；真实含义都是 Drive 特有的，都要改口。
-  assert.equal(relabelDriveFailure(new NasFailure(K.Permission, 'generic', 105)).kind, K.Permission);
-  assert.match(relabelDriveFailure(new NasFailure(K.Server, 'generic', 120)).message, /日志/);
+  assert.equal(unsupported.message, '暂时无法读取 Drive 内容，请刷新重试。');
+  // 105 不必然表示权限不足；120 曾在补齐参数后成功，均保留中性失败分类。
+  for (const code of [105, 120]) {
+    const failure = relabelDriveFailure(new NasFailure(code === 105 ? K.Permission : K.Server, 'generic', code));
+    assert.equal(failure.kind, K.Server);
+    assert.equal(failure.code, code);
+    assert.equal(failure.message, '暂时无法读取 Drive 内容，请刷新重试。');
+    assert.throws(() => decodeDriveResponse('SYNO.SynologyDrive.Files', 200,
+      JSON.stringify({ success: false, error: { code } })), isKind(K.Server));
+  }
   const path = relabelDriveFailure(new NasFailure(K.Server, 'generic', 1000));
   assert.equal(path.kind, K.InvalidInput);
-  assert.match(path.message, /团队文件夹/);
+  assert.equal(path.message, '无法打开此 Drive 位置，请返回上级后重试。');
   // 传输层错误不作为业务码解释，避免把 HTTP 103/105 误认成 Drive 错误码。
   const http = new NasFailure(K.Http, '服务器 HTTP 请求失败（103）。', 103);
   assert.equal(relabelDriveFailure(http), http);
@@ -182,6 +211,18 @@ test('relabelDriveFailure replaces generic DSM wording with the measured Drive s
   const other = new NasFailure(K.SessionExpired, '登录已失效，请重新登录。', 106);
   assert.equal(relabelDriveFailure(other), other);
   assert.equal(relabelDriveFailure('not-an-error'), 'not-an-error');
+});
+
+test('ambiguous Drive errors never mark browsing unauthorized', async () => {
+  const api = 'SYNO.SynologyDrive.Files';
+  const registry = new CapabilityRegistry([{ feature: 'driveBrowse', api, verifiedVersions: [2] }]);
+  registry.discover([{ name: api, path: 'entry.cgi', minVersion: 1, maxVersion: 10 }]);
+  for (const code of [105, 120]) {
+    await assert.rejects(registry.read('driveBrowse', async () =>
+      decodeDriveResponse(api, 200, JSON.stringify({ success: false, error: { code } }))), isKind(K.Server));
+    assert.notEqual(registry.snapshots()[0].state, 'unauthorized');
+    assert.equal(registry.snapshots()[0].errorCode, code);
+  }
 });
 
 /** 假服务端的总条目数：要大于两页，才能让"请求第二页"是合法调用。 */
@@ -232,11 +273,70 @@ test('DriveAdapter requests the verified api version and version-2 list method',
   assert.equal(kernel.calls.filter((row) => row.feature !== undefined).length, 1);
 });
 
-test('DriveAdapter refuses non-aligned offsets instead of overlapping pages', async () => {
+test('DriveAdapter accepts short-page offsets and rejects invalid pagination input', async () => {
   const adapter = new DriveAdapter(fakeKernel());
-  for (const offset of [-1, 1, DRIVE_PAGE_SIZE / 2, 1.5]) {
+  assert.equal((await adapter.list({ space: DriveSpace.MyDrive }, 1)).offset, 1);
+  for (const offset of [-1, NaN, Infinity, 1.5]) {
     await assert.rejects(() => adapter.list({ space: DriveSpace.MyDrive }, offset), isKind(K.InvalidInput));
   }
+});
+
+test('recent alone may omit total, while every view validates lengths and duplicate ids', () => {
+  const page = decodeDriveViewPage({ items: [entryFixture()] }, DriveView.Recent, 0);
+  assert.equal(page.total, undefined);
+  assert.equal(page.hasMore, false);
+  const full = Array.from({ length: DRIVE_PAGE_SIZE }, (_, i) => entryFixture({ file_id: String(i + 1) }));
+  assert.equal(decodeDriveViewPage({ items: full }, DriveView.Recent, 0).hasMore, true);
+  assert.equal(decodeDriveViewPage({ items: [], total: 0 }, DriveView.Recent, 0).hasMore, false);
+  for (const view of [DriveView.Starred, DriveView.SharedWithMe, DriveView.Trash, DriveView.TeamFolders]) {
+    assert.throws(() => decodeDriveViewPage({ items: [] }, view, 0), isProtocol);
+  }
+  assert.throws(() => decodeDriveViewPage({ items: [entryFixture(), entryFixture()] }, DriveView.Recent, 0), isProtocol);
+  assert.throws(() => decodeDriveViewPage({ items: [], total: '0' }, DriveView.Recent, 0), isProtocol);
+});
+
+test('team-folder entries decode the actual endpoint schema without weakening ordinary file validation', () => {
+  const team = { file_id: ROOT_ID, name: '共享空间', team_id: '99', enable_versioning: true,
+    capabilities: { can_read: true, can_write: true } };
+  const page = decodeDriveViewPage({ items: [team], total: 1 }, DriveView.TeamFolders, 0);
+  assert.equal(page.items[0].kind, DriveEntryKind.Folder);
+  assert.equal(page.items[0].capabilities.canRead, true);
+  assert.equal(page.items[0].fileId, ROOT_ID);
+  assert.throws(() => decodeDriveEntry(team), isProtocol);
+  assert.throws(() => decodeDriveViewPage({ items: [{ ...team, file_id: 'id:123' }], total: 1 }, DriveView.TeamFolders, 0), isProtocol);
+});
+
+test('each P1 view uses its own namespace, method, verified version and feature', async () => {
+  const expected = [
+    [DriveView.MyDrive, 'Files', 2, 'list', 'driveBrowse'],
+    [DriveView.TeamFolders, 'TeamFolders', 1, 'list', 'driveTeamFolders'],
+    [DriveView.Recent, 'Files', 2, 'recent', 'driveRecent'],
+    [DriveView.Starred, 'Files', 2, 'list_starred', 'driveStarred'],
+    [DriveView.SharedWithMe, 'Files', 2, 'shared_with_me', 'driveSharedWithMe'],
+    [DriveView.SharedWithOthers, 'Files', 2, 'shared_with_others', 'driveSharedWithOthers'],
+    [DriveView.Trash, 'Trash', 1, 'list', 'driveTrash']
+  ];
+  for (const [view, namespace, version, method, feature] of expected) {
+    const kernel = fakeKernel({ reply: { items: [], total: 0 } });
+    const adapter = new DriveAdapter(kernel);
+    await adapter.readView(view);
+    const call = kernel.calls.find(row => row.method);
+    assert.equal(call.api, 'SYNO.SynologyDrive.' + namespace);
+    assert.equal(call.version, version);
+    assert.equal(call.method, method);
+    assert.equal(kernel.calls[0].feature, feature);
+    const fields = Object.fromEntries(call.fields.map(row => [row.name, row.content]));
+    assert.equal(fields.offset, '0');
+    assert.equal(fields.limit, String(DRIVE_PAGE_SIZE));
+    assert.equal(fields.filter, '{"include_transient":true}');
+    assert.equal(fields.sort_by, view === DriveView.Recent ? '"atime"' : '"modified_time"');
+    assert.equal(fields.path, [DriveView.MyDrive, DriveView.Trash].includes(view) ? '"/mydrive"' : undefined);
+  }
+  const calls = [];
+  const adapter = new DriveAdapter({ supportsDriveApi: (api, ver) => { calls.push([api, ver]); return false; } });
+  assert.equal(adapter.available(DriveView.TeamFolders), false);
+  assert.deepEqual(calls, [['SYNO.SynologyDrive.TeamFolders', 1]]);
+  assert.throws(() => driveViewFields(DriveView.Recent, -1), isKind(K.InvalidInput));
 });
 
 test('DriveAdapter surfaces the kernel failure untouched so callers see one error model', async () => {

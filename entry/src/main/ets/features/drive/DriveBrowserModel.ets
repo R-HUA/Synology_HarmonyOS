@@ -1,10 +1,13 @@
 import { NasErrorKind, NasFailure } from '../../core/domain/DsmProtocol';
-import { DriveEntry, DriveEntryKind, DriveFolderRef, DriveSpace, DRIVE_PAGE_SIZE } from '../../core/domain/DriveProtocol';
+import { DriveEntry, DriveEntryKind, DriveFolderRef, DriveSpace, DriveView, driveViewLabel } from '../../core/domain/DriveProtocol';
+import type { DriveViewPage } from '../../core/domain/DriveProtocol';
 import { DriveAdapter } from '../../core/network/DriveAdapter';
 import { NasConnector } from '../../core/network/NasConnector';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 
 export const DRIVE_ROOT_LABEL = '我的文件';
+export const DRIVE_BROWSER_VIEWS: DriveView[] = [DriveView.MyDrive, DriveView.TeamFolders, DriveView.Recent,
+  DriveView.Starred, DriveView.SharedWithMe, DriveView.SharedWithOthers, DriveView.Trash];
 
 /** 面包屑一层。`fileId` 缺省表示个人空间根，与 `DriveFolderRef` 的约定一致。 */
 export interface DriveTrailItem {
@@ -28,7 +31,9 @@ export class DriveBrowserModel {
   /** 只读阶段的一次性说明（例如点了暂不支持的文件），换目录或刷新时清空。 */
   @Trace notice: string = '';
   @Trace entries: DriveEntry[] = [];
-  @Trace total: number = 0;
+  @Trace total: number | undefined = undefined;
+  @Trace view: DriveView = DriveView.MyDrive;
+  @Trace hasMore: boolean = false;
   @Trace pageOffset: number = 0;
   /** 面包屑与导航共用同一份栈，避免"显示的位置"和"请求的位置"各说各话。 */
   @Trace trail: DriveTrailItem[] = [{ name: DRIVE_ROOT_LABEL }];
@@ -37,6 +42,7 @@ export class DriveBrowserModel {
   private adapter: DriveAdapter | undefined = undefined;
   private onSessionFailure: ((error: NasFailure) => Promise<void>) | undefined = undefined;
   private generation: number = 0;
+  private previousOffsets: number[] = [];
 
   attach(connector: NasConnector, onSessionFailure: (error: NasFailure) => Promise<void>): void {
     this.detach();
@@ -47,45 +53,63 @@ export class DriveBrowserModel {
   }
 
   detach(): void {
-    this.generation++;
     this.adapter = undefined;
     this.onSessionFailure = undefined;
+    this.available = false;
     this.reset();
   }
 
   reset(): void {
+    this.generation++;
     this.busy = false;
     this.errorText = '';
     this.notice = '';
     this.entries = [];
-    this.total = 0;
+    this.total = undefined;
+    this.view = DriveView.MyDrive;
+    this.hasMore = false;
     this.pageOffset = 0;
     this.trail = [{ name: DRIVE_ROOT_LABEL }];
     this.loaded = false;
+    this.previousOffsets = [];
   }
 
   /** 切到 Drive 来源时调用。已成功加载过就复用现有内容，不重复打请求。 */
   async open(): Promise<void> {
     if (!this.available || this.loaded || this.busy) { return; }
-    await this.load(this.folderOf(this.trail[0]), 0);
+    await this.load(this.trail, 0);
   }
 
   /** 手动刷新始终回到当前目录第一页。 */
   async reload(): Promise<void> {
     if (!this.available) { return; }
-    await this.load(this.currentFolder(), 0);
+    await this.load(this.trail, 0);
+  }
+
+  supportsView(view: DriveView): boolean {
+    return this.adapter !== undefined && this.adapter.available(view);
+  }
+
+  /** 成功读取之后才切换入口和导航，失败时保留当前内容供用户重试。 */
+  async selectView(view: DriveView): Promise<void> {
+    if (this.busy || !this.supportsView(view) || this.view === view && this.trail.length === 1 && this.loaded) { return; }
+    await this.load([{ name: driveViewLabel(view) }], 0, view);
   }
 
   async openFolder(entry: DriveEntry): Promise<void> {
-    if (entry.kind !== DriveEntryKind.Folder || this.busy) { return; }
+    if (entry.kind !== DriveEntryKind.Folder || !entry.capabilities.canRead || this.busy) { return; }
+    if (this.view === DriveView.Trash) {
+      this.notice = '暂不支持打开回收站内的文件夹。';
+      return;
+    }
     const target: DriveTrailItem = { name: entry.name, fileId: entry.fileId };
-    if (await this.load(this.folderOf(target), 0)) { this.trail = this.trail.concat([target]); }
+    await this.load(this.trail.concat([target]), 0);
   }
 
   /** 点面包屑或「返回上级」：目标层成功加载后才收缩面包屑，避免位置与内容不一致。 */
   async goToTrail(index: number): Promise<void> {
     if (this.busy || index < 0 || index >= this.trail.length - 1) { return; }
-    if (await this.load(this.folderOf(this.trail[index]), 0)) { this.trail = this.trail.slice(0, index + 1); }
+    await this.load(this.trail.slice(0, index + 1), 0);
   }
 
   async goUp(): Promise<void> {
@@ -93,37 +117,35 @@ export class DriveBrowserModel {
   }
 
   async previousPage(): Promise<void> {
-    if (this.busy || this.pageOffset === 0) { return; }
-    await this.load(this.currentFolder(), Math.max(0, this.pageOffset - DRIVE_PAGE_SIZE));
+    if (this.busy || this.previousOffsets.length === 0) { return; }
+    const history = this.previousOffsets.slice(0, -1);
+    await this.load(this.trail, this.previousOffsets[this.previousOffsets.length - 1], this.view, history);
   }
 
   async nextPage(): Promise<void> {
-    if (this.busy || this.pageOffset + this.entries.length >= this.total) { return; }
-    await this.load(this.currentFolder(), this.pageOffset + DRIVE_PAGE_SIZE);
+    if (this.busy || !this.hasMore || this.entries.length === 0) { return; }
+    await this.load(this.trail, this.pageOffset + this.entries.length, this.view,
+      this.previousOffsets.concat([this.pageOffset]));
   }
 
   /** 当前页是否还有下一页；供界面决定「下一页」是否可点。 */
   more(): boolean {
-    return this.pageOffset + this.entries.length < this.total;
+    return this.hasMore;
   }
 
   canGoUp(): boolean {
     return this.trail.length > 1;
   }
 
-  private currentFolder(): DriveFolderRef {
-    return this.folderOf(this.trail[this.trail.length - 1]);
-  }
-
   /**
-   * 团队成员与共享条目今后会带各自的空间，这里按栈项还原请求位置。
-   * P0 只有个人空间，`fileId` 缺省即根。
+   * 列表入口与真实目录区分：团队入口没有虚拟路径，选中后只使用 fileId。
    */
-  private folderOf(item: DriveTrailItem): DriveFolderRef {
-    return item.fileId === undefined ? { space: DriveSpace.MyDrive } : { space: DriveSpace.MyDrive, fileId: item.fileId };
+  private folderOf(item: DriveTrailItem, view: DriveView): DriveFolderRef {
+    return { space: view === DriveView.TeamFolders ? DriveSpace.TeamFolder : DriveSpace.MyDrive, fileId: item.fileId };
   }
 
-  private async load(folder: DriveFolderRef, offset: number): Promise<boolean> {
+  private async load(trail: DriveTrailItem[], offset: number, view: DriveView = this.view,
+    previousOffsets: number[] = []): Promise<boolean> {
     const adapter = this.adapter;
     if (adapter === undefined || this.busy) { return false; }
     const ticket = this.generation;
@@ -131,11 +153,28 @@ export class DriveBrowserModel {
     this.errorText = '';
     this.notice = '';
     try {
-      const page = await adapter.list(folder, offset);
+      const current = trail[trail.length - 1];
+      let page: DriveViewPage;
+      if (current.fileId === undefined) { page = await adapter.readView(view, offset); }
+      else {
+        const folderPage = await adapter.list(this.folderOf(current, view), offset);
+        page = { items: folderPage.items, total: folderPage.total, offset: folderPage.offset,
+          hasMore: folderPage.offset + folderPage.items.length < folderPage.total };
+      }
       if (ticket !== this.generation) { return false; }
+      // recent 没有 total 时需要多读一页确认末尾；确认后保留最后一页，不展示假空列表。
+      if (page.total === undefined && page.items.length === 0 && offset > 0) {
+        this.hasMore = false;
+        this.notice = '已到列表末尾。';
+        return false;
+      }
       this.entries = page.items;
       this.total = page.total;
       this.pageOffset = page.offset;
+      this.hasMore = page.hasMore;
+      this.view = view;
+      this.trail = trail;
+      this.previousOffsets = previousOffsets;
       this.loaded = true;
       hilog.info(0x0000, 'NasDrive', 'operation=list result=success');
       return true;
