@@ -40,7 +40,7 @@ export struct NasConnectionAddressPage {
         WorkbenchInfoRow({ label: '地址', value: this.model.address })
         Text(this.model.deviceCheckText).fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
       }
-      Text('地址可写成 http:// 或 https://。切换地址需要重新登录，当前账号的任务与照片记录保留在原连接下。')
+      Text('切换地址后需重新登录，任务与照片记录保留在原连接下。')
         .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
     }.width('100%').padding(16).borderRadius(WorkbenchMetrics.cardRadius).alignItems(HorizontalAlign.Start)
       .backgroundColor($r('app.color.workbench_surface'))
@@ -79,7 +79,7 @@ export struct NasConnectionAddressPage {
           .onChange((checked: boolean): void => { this.model.addressBook.draftInsecureTls = checked; })
           .accessibilityText('忽略 SSL 验证')
       }.width('100%').constraintSize({ minHeight: WorkbenchMetrics.rowMinHeight })
-      Text('类型仅作标记，不会自动连接 Wi-Fi、VPN 或发现服务器；后台传输任务不支持跳过证书校验。')
+      Text('地址类型用于分类；后台传输仍要求有效的 HTTPS 证书。')
         .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
       Row({ space: 12 }) {
         Button('测试连接').layoutWeight(1).constraintSize({ minHeight: 48 }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.disabled())
@@ -97,8 +97,6 @@ export struct NasConnectionAddressPage {
         Button('保存当前连接并登记设备').width('100%').constraintSize({ minHeight: 48 })
           .buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.disabled() && this.model.addressBook.ready)
           .onClick((): void => { this.model.saveCurrentAddress(); })
-        Text('使用上方名称与类型保存当前地址；标识不可读取时仅保存地址。')
-          .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
       }
     }.width('100%').padding(16).borderRadius(WorkbenchMetrics.cardRadius).alignItems(HorizontalAlign.Start)
       .backgroundColor($r('app.color.workbench_surface'))
@@ -122,38 +120,46 @@ export struct NasConnectionAddressPage {
 
   @Builder
   savedAddress(address: NasConnectionAddress) {
-    Column({ space: 8 }) {
-      Row({ space: 12 }) {
-        WorkbenchIconTile({ icon: $r('sys.symbol.externaldrive'), iconSize: 24, tileSize: 44, tileRadius: 12,
-          iconColor: $r('sys.color.icon_emphasize'), tileColor: $r('app.color.workbench_accent_surface') })
-        Column({ space: 2 }) {
-          Text(address.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
-          Text(this.kindLabel(address.kind) + (address.insecureTls === true ? ' · 忽略 SSL 验证' : '') +
-            (this.model.authenticated && this.model.address === address.origin ? ' · 当前连接' : ''))
-            .fontSize(12).fontColor($r('sys.color.font_secondary'))
-        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-        Button() { SymbolGlyph($r('sys.symbol.ellipsis_circle')).fontSize(22).fontColor([$r('sys.color.font_secondary')]) }
-          .width(48).height(48).type(ButtonType.Circle).backgroundColor(Color.Transparent)
+    Column({ space: 4 }) {
+      Row({ space: 4 }) {
+        Button() {
+          Row({ space: 12 }) {
+            WorkbenchIconTile({ icon: $r('sys.symbol.externaldrive'), iconSize: 22, tileSize: 40, tileRadius: 12,
+              iconColor: $r('sys.color.icon_emphasize'), tileColor: $r('app.color.workbench_accent_surface') })
+            Column({ space: 2 }) {
+              Text(address.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
+                .width('100%').maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+              Text(this.kindLabel(address.kind) + (address.insecureTls === true ? ' · 忽略 SSL 验证' : '') +
+                (this.model.authenticated && this.model.address === address.origin ? ' · 当前连接' : ''))
+                .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
+            }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+            if (!this.model.authenticated || this.model.address !== address.origin) {
+              SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(12).fontColor([$r('sys.color.font_tertiary')])
+                .accessibilityLevel('no')
+            }
+          }.width('100%').padding({ top: 8, bottom: 8, right: 4 })
+        }.layoutWeight(1).type(ButtonType.Normal).padding(0).constraintSize({ minHeight: 64 }).backgroundColor(Color.Transparent)
+          .enabled(!this.disabled() && this.model.addressBook.ready && !this.model.queue.busy &&
+            (!this.model.authenticated || this.model.address !== address.origin))
+          .onClick((): void => { this.onUseAddress(address); })
+          .accessibilityText(address.name + (this.model.authenticated && this.model.address === address.origin ? '，当前连接' : '，使用此地址'))
+        Button() { SymbolGlyph($r('sys.symbol.more')).fontSize(22).fontColor([$r('sys.color.font_secondary')]) }
+          .width(48).constraintSize({ minHeight: 48 }).type(ButtonType.Normal).padding(0).backgroundColor(Color.Transparent)
           .enabled(!this.disabled()).bindMenu(this.addressMenu(address)).accessibilityText(address.name + '，更多操作')
       }.width('100%')
       Text(address.origin).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%').copyOption(CopyOptions.InApp)
+        .padding({ left: 52, right: 8 })
       if (address.device !== undefined) {
-        Text(address.device.model + ' · ' + address.device.account + ' · 登录时重新核验')
-          .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
+        Text(address.device.model + ' · ' + address.device.account)
+          .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%').padding({ left: 52, right: 8 })
       } else {
-        Text('尚未登记设备身份').fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
+        Text('设备身份未登记').fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%').padding({ left: 52, right: 8 })
       }
       if (this.model.addressBook.probeResult?.origin === address.origin) {
         WorkbenchNotice({ text: this.model.addressBook.probeResult?.message ?? '',
           warning: this.model.addressBook.probeResult?.passed === false })
       }
-      if (!this.model.authenticated || this.model.address !== address.origin) {
-        Button('使用此地址').constraintSize({ minHeight: 48 }).buttonStyle(ButtonStyleMode.TEXTUAL)
-          .enabled(!this.disabled() && this.model.addressBook.ready && !this.model.queue.busy)
-          .onClick((): void => { this.onUseAddress(address); })
-      }
-    }.width('100%').padding(16).borderRadius(WorkbenchMetrics.cardRadius).alignItems(HorizontalAlign.Start)
-      .backgroundColor($r('app.color.workbench_surface'))
+    }.width('100%').padding({ left: 16, right: 8, bottom: 12 }).alignItems(HorizontalAlign.Start)
   }
 
   build() {
@@ -190,11 +196,15 @@ export struct NasConnectionAddressPage {
         if (this.model.addressBook.ready && this.model.addressBook.addresses.length === 0) {
           Text('尚未保存连接地址。').fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
         }
-        ForEach(this.model.addressBook.addresses, (address: NasConnectionAddress): void => {
-          this.savedAddress(address)
-        }, (address: NasConnectionAddress): string => address.origin)
+        Column() {
+          ForEach(this.model.addressBook.addresses, (address: NasConnectionAddress): void => {
+            this.savedAddress(address)
+            Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
+          }, (address: NasConnectionAddress): string => address.origin)
+        }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
       }.width('100%').constraintSize({ maxWidth: 840 }).padding({ left: 16, right: 16, top: 12, bottom: 32 })
         .alignItems(HorizontalAlign.Start)
-    }.width('100%').height('100%').scrollBar(BarState.Auto).backgroundColor($r('app.color.workbench_background'))
+    }.width('100%').height('100%').scrollBar(BarState.Auto).align(Alignment.TopStart)
+      .backgroundColor($r('app.color.workbench_background'))
   }
 }

@@ -1,12 +1,12 @@
 import { common } from '@kit.AbilityKit';
-import { LengthMetrics, SymbolGlyphModifier, uiMaterial, window } from '@kit.ArkUI';
+import { ComponentContent, LengthMetrics, SymbolGlyphModifier, uiMaterial, window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileUri } from '@kit.CoreFileKit';
-import { HdsNavigation, HdsNavigationTitleMode, HdsNavDestination, HdsTabs, HdsTabsController, hdsMaterial, IconStyleMode, ScrollEffectType, TextStyleMode, HdsNavigationMenuItemOptions } from '@kit.UIDesignKit';
+import { HdsNavigation, HdsNavigationTitleMode, HdsNavDestination, HdsTabs, HdsTabsController, hdsMaterial, IconStyleMode, ScrollEffectType, HdsNavigationMenuItemOptions } from '@kit.UIDesignKit';
 import { NasFailure, NasFileEntry } from '../core/domain/DsmProtocol';
 import { DriveEntry, DriveView, driveViewLabel } from '../core/domain/DriveProtocol';
 import { DriveTransferRecord } from '../core/domain/DriveTransferState';
-import { DriveTransferSummary, DriveTransferCard } from '../features/drive/DriveTransferUi';
+import { DriveTransferSummary, DriveTransferCard, DriveUploadReview, DriveTransferModePicker } from '../features/drive/DriveTransferUi';
 import type { DriveAction } from '../core/domain/DriveActionProtocol';
 import type { DriveActionRecord } from '../core/domain/DriveActionState';
 import { DriveActionPage, DriveActionSummary, DriveActionCard } from '../features/drive/DriveActionUi';
@@ -25,7 +25,7 @@ import { ShareLinksPage } from '../features/fileSharing/ShareLinksPage';
 import { DownloadStationPage } from '../features/downloadStation/DownloadStationPage';
 import { NasTelemetrySummary, NasTelemetryStorageCard, NasTelemetryDashboard } from '../features/telemetry/TelemetryDashboard';
 import { photoTakenDate, photoMediaLabel, workbenchBytes,
-  workbenchCanUseDestination, workbenchBottomInset, workbenchShortcutColumns,
+  workbenchCanUseDestination, workbenchBottomInset,
   connectionRouteLabel } from '../features/workbench/WorkbenchPresentation';
 import { bundledDeviceArtwork, fallbackDeviceArtwork, hasModelArtwork, deviceArtworkPath } from '../features/workbench/NasDeviceArtwork';
 
@@ -38,6 +38,24 @@ import { FileStationPage } from '../features/files/FileStationPage';
 import { DriveModulePage } from '../features/drive/DriveModulePage';
 import { PhotoModulePage } from '../features/photos/PhotoModulePage';
 import type { PhotoLibrarySection } from '../features/photos/PhotoLibrary';
+
+class TitleMenuItem {
+  label: string;
+  enabled: boolean;
+  action: () => void;
+  constructor(label: string, enabled: boolean, action: () => void) {
+    this.label = label; this.enabled = enabled; this.action = action;
+  }
+}
+
+@Builder
+function titleMenu(items: TitleMenuItem[]) {
+  Menu() {
+    ForEach(items, (item: TitleMenuItem): void => {
+      MenuItem({ content: item.label }).enabled(item.enabled).onClick(item.action)
+    }, (item: TitleMenuItem): string => item.label)
+  }
+}
 
 @Entry
 @ComponentV2
@@ -115,6 +133,8 @@ struct Index {
   @Local private pendingOperation: string = '';
   @Local private transferSubmitting: boolean = false;
   @Local private transferErrorText: string = '';
+  @Local private titleMenuError: string = '';
+  private titleMenuContent: ComponentContent<TitleMenuItem[]> | undefined = undefined;
   @Local private backup: PhotoBackup = new PhotoBackup();
   @Local private photosInitialized: boolean = false;
   @Local private contentWidth: number = 360;
@@ -168,6 +188,7 @@ struct Index {
     }).catch((): void => { hilog.error(0x0000, 'NasLayout', 'operation=navigation_avoid_area result=failed'); });
   }
   aboutToDisappear(): void {
+    this.closeTitleMenu();
     this.pageActive = false;
     this.stopBootTimer();
     this.updateTelemetryMode();
@@ -203,6 +224,7 @@ struct Index {
   }
 
   onBackPress(): boolean {
+    if (this.titleMenuContent !== undefined) { this.closeTitleMenu(); return true; }
     if (this.bootPending) { this.leaveBootScreen(); return true; }
     if (this.sheetVisible) { if (!this.formSubmitting && !this.backup.submitting) { this.sheetVisible = false; } return true; }
     if (this.navStack.size() > 0) {
@@ -471,11 +493,11 @@ struct Index {
   }
 
   private sheetTitle(): string {
+    if (this.sheetKind === 'drive-upload') { return '确认上传'; }
+    if (this.sheetKind === 'drive-transfer-settings') { return '传输方式'; }
     if (this.sheetKind === 'create') { return '新建文件夹'; }
     if (this.sheetKind === 'rename') { return '重命名'; }
     if (this.sheetKind === 'sort') { return '排序'; }
-    if (this.sheetKind === 'file-add') { return '上传与新建'; }
-    if (this.sheetKind === 'file-tools') { return '文件'; }
     if (this.sheetKind === 'backup') { return '备份内容'; }
     if (this.sheetKind === 'device') { return '设备信息'; }
     if (this.sheetKind === 'actions') { return '文件操作'; }
@@ -488,7 +510,7 @@ struct Index {
    * HdsNavigation 需要有确定高度，FIT_CONTENT 的小弹层给不出来。
    */
   private sheetUsesModalTitleBar(): boolean {
-    return this.sheetKind === 'device' || this.sheetKind === 'task' || this.sheetKind === 'backup';
+    return ['device', 'task', 'backup', 'drive-upload', 'drive-transfer-settings'].includes(this.sheetKind);
   }
 
   /** 连接方式按当前实际连接策略呈现，避免 http 连接被写死成“HTTPS 安全连接”。 */
@@ -784,8 +806,8 @@ struct Index {
           isEnabled: !this.navigationBusy() && this.driveViewMatches(), action: (): void => { this.showDriveSearch(); } } });
       }
       if (this.driveTabId !== 'more' || this.driveMoreView.length > 0) {
-        items.push({ content: { label: '刷新', icon: $r('sys.symbol.arrow_clockwise'), type: IconStyleMode.SMALL,
-          isEnabled: !this.navigationBusy(), action: (): void => { this.refreshDriveView(); } } });
+        items.push({ content: { label: '新增与工具', icon: $r('sys.symbol.plus'), componentId: 'drive-add-menu', type: IconStyleMode.SMALL,
+          isEnabled: !this.navigationBusy(), action: (): void => { this.openDriveTitleMenu(); } } });
       }
       return items;
     }
@@ -796,33 +818,189 @@ struct Index {
     if (this.module === 'root' && this.activeTab === 1) {
       const items: HdsNavigationMenuItemOptions[] = [];
       if (this.model.supports('SYNO.FileStation.Upload') || this.model.supports('SYNO.FileStation.CreateFolder')) {
-        items.push({ content: { label: '上传与新建', icon: $r('sys.symbol.plus'), type: IconStyleMode.SMALL,
-          isEnabled: this.model.directory.length > 0 && !this.model.busy, action: (): void => { this.openForm('file-add'); } } });
+        items.push({ content: { label: '上传与新建', icon: $r('sys.symbol.plus'), componentId: 'file-add-menu', type: IconStyleMode.SMALL,
+          isEnabled: this.model.directory.length > 0 && !this.model.busy, action: (): void => { this.openFileTitleMenu(true); } } });
       }
-      items.push({ content: { label: '更多', icon: $r('sys.symbol.ellipsis_circle'), type: IconStyleMode.SMALL,
-        isEnabled: !this.model.busy, action: (): void => { this.openForm('file-tools'); } } });
+      items.push({ content: { label: '目录工具', icon: $r('sys.symbol.more'), componentId: 'file-tools-menu', type: IconStyleMode.SMALL,
+        isEnabled: !this.model.busy, action: (): void => { this.openFileTitleMenu(false); } } });
       return items;
+    }
+    if (this.module === 'root' && this.activeTab === ROOT_TASK_TAB || this.module === 'photos' && this.photoTabId === 'transfers') {
+      return [{ content: { label: '任务操作', icon: $r('sys.symbol.more'), componentId: 'tasks-tools-menu', type: IconStyleMode.SMALL,
+        isEnabled: !this.navigationBusy(), action: (): void => { this.openTaskTitleMenu(); } } }];
     }
     return [];
   }
 
+  private async openTitleMenu(id: string, items: TitleMenuItem[]): Promise<void> {
+    if (this.titleMenuContent !== undefined) { return; }
+    this.titleMenuError = '';
+    const content = new ComponentContent<TitleMenuItem[]>(this.getUIContext(), wrapBuilder(titleMenu), items);
+    this.titleMenuContent = content;
+    try {
+      await this.getUIContext().getPromptAction().openMenu(content, { id: id }, {
+        placement: Placement.BottomRight,
+        onDidDisappear: (): void => {
+          if (this.titleMenuContent === content) { this.titleMenuContent = undefined; content.dispose(); }
+        }
+      });
+    } catch (error) {
+      if (this.titleMenuContent === content) { this.titleMenuContent = undefined; content.dispose(); }
+      this.showTitleMenuError('无法打开操作菜单，请重试。');
+    }
+  }
+
+  private closeTitleMenu(): void {
+    const content = this.titleMenuContent;
+    if (content !== undefined) {
+      this.getUIContext().getPromptAction().closeMenu(content).catch((): void => {
+        this.showTitleMenuError('无法关闭操作菜单，请返回后重试。');
+      });
+    }
+  }
+
+  private showTitleMenuError(message: string): void {
+    this.titleMenuError = message;
+    if (!this.pageActive) { return; }
+    try { this.getUIContext().getPromptAction().showToast({ message: message }); }
+    catch { hilog.error(0x0000, 'NasWorkbench', 'operation=menu_feedback result=failed'); }
+  }
+
+  private openFileTitleMenu(adding: boolean): void {
+    const items: TitleMenuItem[] = [];
+    if (adding) {
+      if (this.model.supports('SYNO.FileStation.Upload')) {
+        items.push(new TitleMenuItem('上传文件', this.model.queue.ready && !this.model.queue.busy && !this.transferSubmitting,
+          (): void => { this.closeTitleMenu(); this.runTransfer(async (): Promise<void> => { await this.model.uploadFiles(); }); }));
+      }
+      if (this.model.supports('SYNO.FileStation.CreateFolder')) {
+        items.push(new TitleMenuItem('新建文件夹', true, (): void => { this.closeTitleMenu(); this.openForm('create'); }));
+      }
+    } else {
+      if (this.model.directory.length > 0) {
+        items.push(new TitleMenuItem('排序 · ' + this.sortLabel(), true,
+          (): void => { this.closeTitleMenu(); this.openForm('sort'); }));
+      }
+      if (this.model.supports('SYNO.FileStation.Sharing')) {
+        items.push(new TitleMenuItem('我的分享链接', true,
+          (): void => { this.closeTitleMenu(); this.navStack.pushPathByName('share-links', undefined); }));
+      }
+      if (driveTabs((view: DriveView): boolean => this.model.drive.supportsView(view), this.drivePinned).length > 0) {
+        items.push(new TitleMenuItem('Synology Drive', true, (): void => { this.closeTitleMenu(); this.enterModule('drive'); }));
+      }
+      items.push(new TitleMenuItem('刷新目录', true, (): void => { this.closeTitleMenu(); this.model.refresh(); }));
+    }
+    this.openTitleMenu(adding ? 'file-add-menu' : 'file-tools-menu', items);
+  }
+
+  private openTaskTitleMenu(): void {
+    const available = !this.model.busy && !this.transferSubmitting &&
+      (this.taskSection === 'drive' ? !this.model.driveTransfers.busy : this.taskSection === 'drive-actions' ?
+        !this.model.driveActions.busy : this.taskSection === 'files' || !this.model.queue.busy);
+    const items: TitleMenuItem[] = [new TitleMenuItem('刷新状态', available,
+      (): void => { this.closeTitleMenu(); this.refreshTaskSection(); })];
+    if (this.taskSection === 'transfers') {
+      items.push(new TitleMenuItem('清理已结束的记录', this.model.queue.ready && this.model.queue.items.some((item: TransferQueueItem): boolean => item.canRemove),
+        (): void => { this.closeTitleMenu(); this.confirmClearHistory(); }));
+    }
+    if (this.taskSection === 'drive') {
+      items.push(new TitleMenuItem('传输方式', !this.model.driveTransfers.busy,
+        (): void => { this.closeTitleMenu(); this.openForm('drive-transfer-settings'); }));
+    }
+    if (this.model.supports('SYNO.DownloadStation.Task')) {
+      items.push(new TitleMenuItem('NAS 下载', true, (): void => { this.closeTitleMenu(); this.openNasDownloads(); }));
+    }
+    this.openTitleMenu('tasks-tools-menu', items);
+  }
+
+  private async refreshTaskSection(): Promise<void> {
+    const origin = this.model.address;
+    const account = this.model.account;
+    if (this.taskSection === 'drive') {
+      if (!this.model.driveTransfers.ready) { await this.model.driveTransfers.reload(); }
+      if (this.model.authenticated && this.model.address === origin && this.model.account === account && this.model.driveTransfers.ready) {
+        await this.model.driveTransfers.refresh();
+      }
+    } else if (this.taskSection === 'drive-actions') {
+      if (!this.model.driveActions.ready) { await this.model.driveActions.reload(); }
+      const ids = this.model.driveActions.items.filter((item: DriveActionRecord): boolean => item.state === 'accepted')
+        .map((item: DriveActionRecord): string => item.id);
+      for (const id of ids) {
+        if (!this.model.authenticated || this.model.address !== origin || this.model.account !== account) { return; }
+        await this.model.driveActions.refresh(id);
+      }
+    } else if (this.taskSection === 'files') {
+      if (!this.model.fileTasksReady) { await this.model.reloadFileTasks(); }
+      const ids = this.model.fileTasks.filter((item: FileTaskItem): boolean => item.state === 'pending' || item.state === 'unknown')
+        .map((item: FileTaskItem): string => item.id);
+      for (const id of ids) {
+        if (!this.model.authenticated || this.model.address !== origin || this.model.account !== account) { return; }
+        await this.model.checkFileTask(id);
+      }
+    } else { await this.runTransfer(async (): Promise<void> => { await this.model.queue.reconcile(); }); }
+  }
+
+  private openDriveTitleMenu(): void {
+    const target = this.driveViewMatches() ? this.model.drive.uploadDestination() : undefined;
+    const items: TitleMenuItem[] = [];
+    if (this.model.driveTransfers.available) {
+      items.push(new TitleMenuItem(target === undefined ? '进入可写文件夹后上传' : '上传文件',
+        target !== undefined && this.model.driveTransfers.ready && !this.model.driveTransfers.busy,
+        (): void => { this.closeTitleMenu(); if (target !== undefined) { this.prepareDriveUpload(target); } }));
+    }
+    items.push(new TitleMenuItem('刷新目录', true, (): void => { this.closeTitleMenu(); this.refreshDriveView(); }));
+    items.push(new TitleMenuItem('查看传输记录', true, (): void => { this.closeTitleMenu(); this.openDriveTransfers(); }));
+    if (this.model.driveTransfers.available) {
+      items.push(new TitleMenuItem('传输方式', !this.model.driveTransfers.busy,
+        (): void => { this.closeTitleMenu(); this.openForm('drive-transfer-settings'); }));
+    }
+    this.openTitleMenu('drive-add-menu', items);
+  }
+
+  private async prepareDriveUpload(entry: DriveEntry): Promise<void> {
+    if (this.navigationBusy() || this.model.driveTransfers.busy) { return; }
+    this.model.driveTransfers.clearDraft();
+    await this.model.driveTransfers.prepareUpload(entry);
+    if (this.pageActive && this.model.driveTransfers.draft !== undefined) { this.openForm('drive-upload'); }
+    else if (this.pageActive && this.model.driveTransfers.errorText.length > 0) { this.openDriveTransfers(); }
+  }
+
+  private startDriveUpload(): void {
+    if (this.model.driveTransfers.busy || this.model.driveTransfers.draft === undefined) { return; }
+    const draft = this.model.driveTransfers.draft;
+    this.model.driveTransfers.upload().then((): void => {
+      if (!this.sheetVisible && this.model.driveTransfers.draft === draft) { this.model.driveTransfers.clearDraft(); }
+    });
+    this.sheetVisible = false;
+    this.openDriveTransfers();
+  }
+
+  @Monitor('sheetVisible')
+  private uploadSheetClosed(): void {
+    if (!this.sheetVisible && this.sheetKind === 'drive-upload') { this.model.driveTransfers.clearDraft(); }
+  }
+
   private tabIcon(id: string): Resource {
     if (id === 'home') { return $r('sys.symbol.house'); }
-    if (['files', 'mydrive', 'teamFolders'].includes(id)) { return $r('sys.symbol.folder'); }
-    if (['photos', 'albums'].includes(id)) { return $r('sys.symbol.picture'); }
+    if (['files', 'mydrive'].includes(id)) { return $r('sys.symbol.folder'); }
+    if (id === 'teamFolders') { return $r('sys.symbol.person_2'); }
+    if (id === 'photos') { return $r('sys.symbol.picture'); }
+    if (id === 'albums') { return $r('sys.symbol.picture_2'); }
+    if (id === 'settings') { return $r('sys.symbol.gearshape'); }
     if (['tasks', 'transfers'].includes(id)) { return $r('sys.symbol.arrow_down_circle'); }
     if (id === 'backup') { return $r('sys.symbol.arrow_up_circle'); }
     if (id === 'starred') { return $r('sys.symbol.star'); }
     if (id === 'recent') { return $r('sys.symbol.clock'); }
     if (id === 'trash') { return $r('sys.symbol.trash'); }
     if (['shared', 'sharedWithMe', 'sharedWithOthers'].includes(id)) { return $r('sys.symbol.person_2'); }
-    return $r('sys.symbol.ellipsis_circle');
+    return $r('sys.symbol.more');
   }
 
   private effectivePhotoTab(): string { return this.photoTabId === 'more' && this.photoMoreShared ? 'shared' : this.photoTabId; }
 
   @Builder
   notices() {
+    WorkbenchNotice({ text: this.titleMenuError, warning: true })
     WorkbenchNotice({ text: this.visibleError(), warning: true })
     if (this.visibleError().length === 0 && this.model.actionNotice.length > 0) {
       WorkbenchNotice({ text: this.model.actionNotice })
@@ -935,7 +1113,7 @@ struct Index {
         Text(label).fontSize(14).fontColor($r('sys.color.font_primary')).textAlign(TextAlign.Center)
           .width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       }.width('100%').padding({ top: 12, bottom: 12, left: 4, right: 4 })
-    }.width((100 / workbenchShortcutColumns(this.windowWidth)).toString() + '%')
+    }.width('33.33%')
       .type(ButtonType.Normal).backgroundColor(Color.Transparent).enabled(!this.navigationBusy())
       .onClick(action).accessibilityText(label)
   }
@@ -982,19 +1160,11 @@ struct Index {
       Column({ space: WorkbenchMetrics.sectionGap }) {
         this.deviceHeader()
         Flex({ wrap: FlexWrap.Wrap }) {
-          this.shortcut($r('sys.symbol.folder'), '文件', (): void => { this.switchTab(1); })
           if (driveTabs((view: DriveView): boolean => this.model.drive.supportsView(view), this.drivePinned).length > 0) {
             this.shortcut($r('sys.symbol.folder'), 'Synology Drive', (): void => { this.enterModule('drive'); })
           }
           if (this.supportsPhotos()) {
             this.shortcut($r('sys.symbol.picture'), '照片', (): void => { this.enterModule('photos'); })
-          }
-          if (this.model.supports('SYNO.FileStation.Upload')) {
-            this.shortcut($r('sys.symbol.arrow_up_circle'), '照片备份', (): void => { this.openPhotoBackup(); })
-          }
-          this.shortcut($r('sys.symbol.arrow_down_circle'), '传输任务', (): void => { this.switchTab(ROOT_TASK_TAB); })
-          if (this.model.supports('SYNO.FileStation.Sharing')) {
-            this.shortcut($r('sys.symbol.doc'), '我的分享', (): void => { this.navStack.pushPathByName('share-links', undefined); })
           }
           if (this.model.supports('SYNO.DownloadStation.Task')) {
             this.shortcut($r('sys.symbol.arrow_down_circle'), 'NAS 下载', (): void => { this.openNasDownloads(); })
@@ -1019,20 +1189,20 @@ struct Index {
             WorkbenchActionRow({ icon: $r('sys.symbol.externaldrive'), label: '设备信息', description: this.model.account,
               available: !this.model.busy, onAction: (): void => { this.showDeviceInfo(); } })
             Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
-            WorkbenchActionRow({ icon: $r('sys.symbol.externaldrive'), label: '连接地址', description: this.model.address,
+            WorkbenchActionRow({ icon: $r('sys.symbol.wifi'), label: '连接地址', description: this.model.address,
               available: !this.model.busy, onAction: (): void => { this.openConnectionAddresses(); } })
             if (this.model.supports('SYNO.Core.System')) {
               Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
-              WorkbenchActionRow({ icon: $r('sys.symbol.ellipsis_circle'), label: '系统控制',
+              WorkbenchActionRow({ icon: $r('sys.symbol.power'), label: '系统控制',
                 available: !this.model.busy, onAction: (): void => { this.navStack.pushPath({ name: 'system-control' }); } })
             }
           }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
         }.width('100%')
 
         Column() {
-          WorkbenchActionRow({ icon: $r('sys.symbol.ellipsis_circle'), label: '模块底栏',
+          WorkbenchActionRow({ icon: $r('sys.symbol.rectangle_split_3x1'), label: '模块底栏',
             description: '选择 Drive 与照片的常用功能', onAction: (): void => { this.navStack.pushPathByName('module-tabs', undefined); } })
-          WorkbenchActionRow({ icon: $r('sys.symbol.externaldrive'), label: '登出 NAS', destructive: true,
+          WorkbenchActionRow({ icon: $r('sys.symbol.arrow_right_and_square'), label: '登出 NAS', destructive: true, showChevron: false,
             available: !this.model.busy, onAction: (): void => { this.confirmLogout(); } })
         }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
         this.notices()
@@ -1093,36 +1263,6 @@ struct Index {
   }
 
   @Builder
-  filePageTools() {
-    if (this.sheetKind === 'file-add') {
-      if (this.model.supports('SYNO.FileStation.Upload')) {
-        WorkbenchActionRow({ icon: $r('sys.symbol.arrow_up_circle'), label: '上传文件',
-          available: this.model.directory.length > 0 && this.model.queue.ready && !this.model.busy && !this.model.queue.busy && !this.transferSubmitting,
-          onAction: (): void => { this.sheetVisible = false; this.runTransfer(async (): Promise<void> => { await this.model.uploadFiles(); }); } })
-      }
-      if (this.model.supports('SYNO.FileStation.CreateFolder')) {
-        WorkbenchActionRow({ icon: $r('sys.symbol.folder'), label: '新建文件夹', available: this.model.directory.length > 0 && !this.model.busy,
-          onAction: (): void => { this.openForm('create'); } })
-      }
-    } else {
-      if (this.model.directory.length > 0) {
-        WorkbenchActionRow({ icon: $r('sys.symbol.ellipsis_circle'), label: '排序', description: this.sortLabel(),
-          onAction: (): void => { this.openForm('sort'); } })
-      }
-      if (this.model.supports('SYNO.FileStation.Sharing')) {
-        WorkbenchActionRow({ icon: $r('sys.symbol.doc'), label: '我的分享链接',
-          onAction: (): void => { this.sheetVisible = false; this.navStack.pushPathByName('share-links', undefined); } })
-      }
-      if (driveTabs((view: DriveView): boolean => this.model.drive.supportsView(view), this.drivePinned).length > 0) {
-        WorkbenchActionRow({ icon: $r('sys.symbol.folder'), label: 'Synology Drive',
-          onAction: (): void => { this.sheetVisible = false; this.enterModule('drive'); } })
-      }
-      WorkbenchActionRow({ icon: $r('sys.symbol.arrow_clockwise'), label: '刷新目录', available: !this.model.busy,
-        onAction: (): void => { this.sheetVisible = false; this.model.refresh(); } })
-    }
-  }
-
-  @Builder
   modulePage(tab: ModuleTab) {
     if (this.module === 'drive') {
       DriveModulePage({ model: this.model, tabId: tab.id, active: tab.id === this.driveTabId,
@@ -1131,6 +1271,7 @@ struct Index {
         searchVisible: this.driveSearchVisible, moreView: this.driveMoreView, moreViews: this.driveMoreViews(),
         onSelectMore: (view: DriveView): void => { this.selectDriveMore(view); }, onBackToMore: (): void => { this.backToDriveMore(); },
         onExitSearch: (): void => { this.exitDriveSearch(); }, onOpenTransfers: (): void => { this.openDriveTransfers(); },
+        onUploadTo: (entry: DriveEntry): void => { this.prepareDriveUpload(entry); },
         onOpenAction: (action: DriveAction, entry?: DriveEntry): void => { if (entry !== undefined) { this.prepareDriveAction(entry, action); } },
         onOpenActionRecords: (): void => { this.taskSection = 'drive-actions'; this.switchTab(ROOT_TASK_TAB); },
         onOpenOriginal: (entry: DriveEntry): void => { this.openDriveOriginal(entry); },
@@ -1142,7 +1283,10 @@ struct Index {
       else {
         Column() {
           if (tab.id === 'more' && this.photoMoreShared) {
-            Button('返回更多').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
+            Button() {
+              SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(20).fontColor([$r('sys.color.icon_primary')])
+            }.type(ButtonType.Normal).backgroundColor(Color.Transparent).width(48).padding(0)
+              .constraintSize({ minHeight: WorkbenchMetrics.touchSize }).accessibilityText('返回更多')
               .onClick((): void => { this.photoMoreShared = false; }).margin({ top: this.contentTopInset() + 8 })
           }
           PhotoModulePage({ model: this.model, backup: this.backup, tabId: tab.id === 'more' && this.photoMoreShared ? 'shared' : tab.id,
@@ -1177,7 +1321,7 @@ struct Index {
   fileActions(entry: NasFileEntry) {
     Column() {
       if (this.model.supports('SYNO.FileStation.Sharing')) {
-        WorkbenchActionRow({ icon: $r('sys.symbol.doc'), label: '创建分享链接', available: this.model.extensions.canWrite('fileSharing'),
+        WorkbenchActionRow({ icon: $r('sys.symbol.link'), label: '创建分享链接', available: this.model.extensions.canWrite('fileSharing'),
           onAction: (): void => {
             this.sheetVisible = false;
             this.model.extensions.shareDraftPaths = [entry.path];
@@ -1202,16 +1346,16 @@ struct Index {
         if (this.model.supports('SYNO.FileStation.CopyMove')) {
           WorkbenchActionRow({ icon: $r('sys.symbol.folder'), label: '复制到…', available: !this.model.busy,
             onAction: (): void => { this.chooseDestination(entry, 'copy'); } })
-          WorkbenchActionRow({ icon: $r('sys.symbol.folder'), label: '移动到…', available: !this.model.busy,
+          WorkbenchActionRow({ icon: $r('sys.symbol.arrowshape_turn_up_right'), label: '移动到…', available: !this.model.busy,
             onAction: (): void => { this.chooseDestination(entry, 'move'); } })
         }
         if (this.model.supports('SYNO.FileStation.Rename')) {
-          WorkbenchActionRow({ icon: $r('sys.symbol.doc'), label: '重命名', available: !this.model.busy,
+          WorkbenchActionRow({ icon: $r('sys.symbol.pencil_line'), label: '重命名', available: !this.model.busy,
             onAction: (): void => { this.openForm('rename', entry); } })
         }
         if (this.model.supports('SYNO.FileStation.Delete')) {
           Divider().color($r('app.color.workbench_divider')).margin({ left: 16, right: 16 })
-          WorkbenchActionRow({ icon: $r('sys.symbol.doc'), label: '删除', destructive: true, available: !this.model.busy,
+          WorkbenchActionRow({ icon: $r('sys.symbol.trash'), label: '删除', destructive: true, showChevron: false, available: !this.model.busy,
             onAction: (): void => { this.confirmDelete(entry); } })
         }
       }
@@ -1533,20 +1677,12 @@ struct Index {
   }
 
   @Builder
-  taskPageMenu() {
-    Menu() {
-      MenuItem({ content: '清理已结束的记录' })
-        .enabled(this.model.queue.ready && this.model.queue.items.some((item: TransferQueueItem): boolean => item.canRemove))
-        .onClick((): void => { this.confirmClearHistory(); })
-    }
-  }
-
-  @Builder
   tasksView() {
     Column() {
       List({ space: 12, scroller: this.tasksScroller }) {
         ListItem() {
-          Flex({ wrap: FlexWrap.Wrap }) {
+          Scroll() {
+          Row() {
             WorkbenchChoice({ label: '传输任务', selected: this.taskSection === 'transfers',
               onSelect: (): void => { this.taskSection = 'transfers'; } })
             WorkbenchChoice({ label: '文件整理', selected: this.taskSection === 'files',
@@ -1559,10 +1695,9 @@ struct Index {
               WorkbenchChoice({ label: 'Drive 文件操作', selected: this.taskSection === 'drive-actions',
                 onSelect: (): void => { this.taskSection = 'drive-actions'; } })
             }
-            if (this.model.supports('SYNO.DownloadStation.Task')) {
-              WorkbenchChoice({ label: 'NAS 下载', selected: false, onSelect: (): void => { this.openNasDownloads(); } })
-            }
-          }.width('100%').padding({ top: this.contentTopInset() + 8 })
+          }
+          }.width('100%').scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+            .accessibilityText('任务分类，左右滑动查看')
         }
         if (this.taskSection === 'drive') {
           ListItem() { DriveTransferSummary({ model: this.model.driveTransfers }) }
@@ -1580,10 +1715,6 @@ struct Index {
           Column({ space: 8 }) {
             Row({ space: 12 }) {
               Text('文件整理').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).layoutWeight(1)
-              if (!this.model.fileTasksReady) {
-                Button('重新加载').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
-                  .onClick((): void => { this.model.reloadFileTasks(); })
-              }
             }.width('100%')
             if (this.model.fileTasksErrorText.length > 0) {
               Text(this.model.fileTasksErrorText).fontSize(14).fontColor($r('sys.color.font_primary')).width('100%')
@@ -1610,22 +1741,12 @@ struct Index {
         } else {
         ListItem() {
           Column({ space: 8 }) {
-            Row({ space: 12 }) {
-              Text('传输队列').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).layoutWeight(1)
-              Button(this.model.queue.ready ? '刷新状态' : '重新加载').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
-                .enabled(!this.model.queue.busy && !this.model.busy && !this.transferSubmitting)
-                .onClick((): void => { this.runTransfer(async (): Promise<void> => { await this.model.queue.reconcile(); }); })
-              Button() { SymbolGlyph($r('sys.symbol.ellipsis_circle')).fontSize(22).fontColor([$r('sys.color.icon_primary')]) }
-                .width(48).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).type(ButtonType.Circle).backgroundColor(Color.Transparent)
-                .enabled(!this.model.queue.busy && !this.model.busy && !this.transferSubmitting)
-                .bindMenu(this.taskPageMenu()).accessibilityText('任务，更多操作')
-            }.width('100%')
-            Flex({ wrap: FlexWrap.Wrap }) {
-              ForEach(['all', 'active', 'finished'], (filter: string): void => {
-                WorkbenchChoice({ label: filter === 'all' ? '全部' : filter === 'active' ? '待处理' : '已结束',
-                  selected: this.taskFilter === filter, onSelect: (): void => { this.taskFilter = filter; } })
-              }, (filter: string): string => filter)
-            }.width('100%')
+            Select([{ value: '全部状态' }, { value: '待处理' }, { value: '已结束' }])
+              .selected(['all', 'active', 'finished'].indexOf(this.taskFilter))
+              .value(this.taskFilter === 'all' ? '全部状态' : this.taskFilter === 'active' ? '待处理' : '已结束')
+              .constraintSize({ minHeight: WorkbenchMetrics.chipHeight }).font({ size: 14 })
+              .onSelect((index: number): void => { this.taskFilter = ['all', 'active', 'finished'][index]; })
+              .accessibilityText('筛选任务状态')
             this.notices()
           }.width('100%').padding({ top: 8, bottom: 8 })
         }
@@ -1670,7 +1791,7 @@ struct Index {
                   .buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.queue.busy && !this.model.busy && !this.transferSubmitting)
                   .onClick((): void => { this.confirmCancelTask(task.item); }).accessibilityText('取消' + task.item.name)
               }
-              Button() { SymbolGlyph($r('sys.symbol.ellipsis_circle')).fontSize(20).fontColor([$r('sys.color.font_secondary')]) }
+              Button() { SymbolGlyph($r('sys.symbol.more')).fontSize(20).fontColor([$r('sys.color.font_secondary')]) }
                 .width(48).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).type(ButtonType.Circle).backgroundColor(Color.Transparent)
                 .enabled(!this.model.queue.busy && !this.model.busy && !this.transferSubmitting)
                 .bindMenu(this.taskMenu(task.item)).accessibilityText(task.item.name + '，更多操作')
@@ -1679,7 +1800,8 @@ struct Index {
           }
         }).key((item: TransferQueueItem): string => item.id).virtualScroll()
         }
-      }.width('100%').height('100%').scrollBar(BarState.Auto).contentEndOffset(this.bottomInset())
+      }.width('100%').height('100%').scrollBar(BarState.Auto)
+        .contentStartOffset(this.contentTopInset() + 8).contentEndOffset(this.bottomInset())
     }.width('100%').constraintSize({ maxWidth: 960 }).height('100%').padding({ left: 16, right: 16 })
   }
 
@@ -1830,13 +1952,16 @@ struct Index {
         if (!this.sheetUsesModalTitleBar()) {
           this.sheetPlainTitle()
         }
-        if (this.sheetKind === 'device') {
+        if (this.sheetKind === 'drive-upload') {
+          DriveUploadReview({ model: this.model.driveTransfers,
+            onStart: (): void => { this.startDriveUpload(); }, onCancel: (): void => { this.sheetVisible = false; } })
+        } else if (this.sheetKind === 'drive-transfer-settings') {
+          DriveTransferModePicker({ model: this.model.driveTransfers })
+        } else if (this.sheetKind === 'device') {
           this.deviceSheet()
         } else if (this.sheetKind === 'task') {
           if (this.selectedTask() !== undefined) { this.taskDetail(this.selectedTask()!) }
           else { WorkbenchNotice({ text: '此任务记录已清理。' }) }
-        } else if (this.sheetKind === 'file-add' || this.sheetKind === 'file-tools') {
-          this.filePageTools()
         } else if (this.sheetKind === 'sort') {
           Column() {
             this.sortOption('name', '名称')
@@ -1980,7 +2105,8 @@ struct Index {
         .navDestination(this.destinationBuilder).bindToScrollable(this.activeScrollers())
         .titleMode(HdsNavigationTitleMode.MINI).titleBar({ enableComponentSafeArea: false,
           content: { title: { mainTitle: this.pageTitle() },
-            backIcon: this.module === 'root' ? undefined : { label: '返回', action: (): void => { this.exitModule(); }, type: TextStyleMode.NORMAL },
+            backIcon: this.module === 'root' ? undefined : { icon: $r('sys.symbol.chevron_left'),
+              action: (): void => { this.exitModule(); }, type: IconStyleMode.SMALL },
             menu: { value: this.pageMenu(), maxCount: 2 } },
           style: { scrollEffectOpts: { enableScrollEffect: false, scrollEffectType: ScrollEffectType.GRADIENT_BLUR },
             systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE },
@@ -1992,7 +2118,7 @@ struct Index {
         this.windowHeight = Number(newArea.height);
       })
       .bindSheet($$this.sheetVisible, this.fileSheet(), {
-        height: this.sheetKind === 'backup' || this.sheetKind === 'device' || this.sheetKind === 'task' ? SheetSize.LARGE : SheetSize.FIT_CONTENT,
+        height: this.sheetUsesModalTitleBar() ? SheetSize.LARGE : SheetSize.FIT_CONTENT,
         preferType: this.windowWidth < 600 ? SheetType.BOTTOM : SheetType.CENTER,
         // 关闭按钮由 sheetTitleBar() 自绘，系统关闭图标关闭，避免出现两个关闭入口。
         // HDS 半模态标题栏自带关闭按钮时关掉系统的那个，避免两个关闭入口。

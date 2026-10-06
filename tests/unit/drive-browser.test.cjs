@@ -138,6 +138,23 @@ test('blank search never submits and a response after reset cannot restore its q
   assert.equal(f.model.loaded, false);
 });
 
+test('title upload uses accepted directory capabilities and never invents a writable root', async () => {
+  const f = fixture(() => ({ total: 1, items: [{ ...entry(71), capabilities: { can_read: true, can_write: true } }] }));
+  await f.model.open();
+  assert.equal(f.model.uploadDestination(), undefined);
+  const folder = f.model.entries[0];
+  await f.model.openFolder(folder);
+  assert.equal(f.model.uploadDestination(), folder);
+  await f.model.reload();
+  assert.equal(f.model.uploadDestination(), folder);
+  await f.model.goUp();
+  assert.equal(f.model.uploadDestination(), undefined);
+  await f.model.openFolder({ ...folder, capabilities: { ...folder.capabilities, canWrite: false } });
+  assert.equal(f.model.uploadDestination(), undefined);
+  f.model.reset();
+  assert.equal(f.model.uploadDestination(), undefined);
+});
+
 test('short pages never skip entries and previous-page navigation uses visited offsets', async () => {
   const f = fixture(({ fields }) => ({ total: 5, items: [entry(Number(fields.offset) + 1)] }));
   await f.model.open();

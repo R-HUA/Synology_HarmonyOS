@@ -16,14 +16,14 @@ export struct DriveSharingPage {
 
   private async submit(): Promise<void> { if (await this.model.submit()) { this.onSubmitted(); } }
   build() {
-    List({ space: WorkbenchMetrics.itemGap, scroller: this.scroller }) {
+    List({ space: 8, scroller: this.scroller }) {
       ListItem() {
-        Column({ space: 12 }) {
+        Column({ space: 8 }) {
           if (this.model.draft !== undefined) {
             Text('获取“' + this.model.draft.name + '”的文件链接')
-              .fontSize(18).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
+              .fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
             Text('链接访问以 NAS 当前权限为准。')
-              .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
+              .fontSize(12).fontColor($r('sys.color.font_secondary')).width('100%')
             Flex({ wrap: FlexWrap.Wrap }) {
               Button(this.model.busy ? '正在获取…' : '确认获取文件链接')
                 .constraintSize({ minHeight: WorkbenchMetrics.touchSize })
@@ -33,9 +33,11 @@ export struct DriveSharingPage {
                 .enabled(!this.model.busy).onClick((): void => { this.model.clearDraft(); this.onCancel(); })
             }.width('100%')
           }
-          Text('已获取的链接').fontSize(18).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
-          Text('仅显示本机通过当前账号获取的链接。')
-            .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
+          if (this.model.draft !== undefined) {
+            Text('已获取的链接').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
+          }
+          Text('当前账号在本机获取的文件链接。')
+            .fontSize(12).fontColor($r('sys.color.font_secondary')).width('100%')
           if (!this.model.available) {
             WorkbenchNotice({ text: '此 NAS 未提供可用的 Drive 文件链接功能。', warning: true })
           }
@@ -47,7 +49,7 @@ export struct DriveSharingPage {
           }
           WorkbenchNotice({ text: this.model.errorText, warning: true })
           WorkbenchNotice({ text: this.model.notice })
-        }.width('100%').padding(16).alignItems(HorizontalAlign.Start)
+        }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: 8 }).alignItems(HorizontalAlign.Start)
       }
       ForEach(this.model.items, (item: DriveLinkRecord): void => {
         ListItem() { DriveLinkCard({ model: this.model, item }) }
@@ -78,26 +80,40 @@ struct DriveLinkCard {
       secondaryButton: { value: '已核对，关闭', action: (): void => { this.model.closeUnknown(this.item.id); } } });
   }
   build() {
-    Column({ space: 8 }) {
-      Text(this.item.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
-      Text(driveLinkStateText(this.item.state) + ' · ' + driveCollaborationTime(this.item.createdAt / 1000))
-        .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
+    Column({ space: 4 }) {
+      Row({ space: 12 }) {
+        SymbolGlyph($r('sys.symbol.link')).fontSize(20).fontColor([$r('sys.color.icon_emphasize')])
+        Column({ space: 4 }) {
+          Text(this.item.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
+            .width('100%').maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text(driveLinkStateText(this.item.state) + ' · ' + driveCollaborationTime(this.item.createdAt / 1000))
+            .fontSize(12).fontColor(this.item.state === 'unknown' ? $r('app.color.workbench_danger') :
+              $r('sys.color.font_secondary')).width('100%')
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      }.width('100%')
       if (this.item.url !== undefined) {
         Text(this.item.url).fontSize(14).fontColor($r('sys.color.font_primary')).width('100%').copyOption(CopyOptions.None)
-        Button('复制文件链接').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
-          .enabled(!this.model.busy).onClick((): void => { this.copy(); }).accessibilityText('复制“' + this.item.name + '”的文件链接')
+          .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
       }
       if (this.item.state === 'unknown') {
         WorkbenchNotice({ text: '获取结果待确认，请先在 Drive 网页核对，应用不会自动重试。', warning: true })
-        Button('已核对，关闭记录').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
-          .enabled(this.model.ready && !this.model.busy).onClick((): void => { this.confirmClose(); })
-      } else {
-        Button('移除本机记录').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
-          .enabled(this.model.ready && !this.model.busy).onClick((): void => { this.model.remove(this.item.id); })
       }
+      Flex({ wrap: FlexWrap.Wrap }) {
+        if (this.item.url !== undefined) {
+          Button('复制链接').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
+            .enabled(!this.model.busy).onClick((): void => { this.copy(); }).accessibilityText('复制“' + this.item.name + '”的文件链接')
+        }
+        if (this.item.state === 'unknown') {
+          Button('核对结果').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
+            .enabled(this.model.ready && !this.model.busy).onClick((): void => { this.confirmClose(); })
+        } else {
+          Button('移除本机记录').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
+            .enabled(this.model.ready && !this.model.busy).onClick((): void => { this.model.remove(this.item.id); })
+        }
+      }.width('100%')
       WorkbenchNotice({ text: this.copyNotice })
       WorkbenchNotice({ text: this.copyError, warning: true })
-    }.width('100%').padding(16).borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_surface'))
+    }.width('100%').padding(12).borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_surface'))
       .alignItems(HorizontalAlign.Start)
   }
 }
@@ -107,10 +123,10 @@ export struct DriveNotificationsPage {
   @Param model: DriveNotificationsModel = new DriveNotificationsModel();
   @Param scroller: Scroller = new Scroller();
   build() {
-    List({ space: WorkbenchMetrics.itemGap, scroller: this.scroller }) {
+    List({ space: 8, scroller: this.scroller }) {
       ListItem() {
-        Column({ space: 12 }) {
-          Text('已读标记保留到本次连接结束。').fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
+        Column({ space: 8 }) {
+          Text('已读标记保留到本次连接结束。').fontSize(12).fontColor($r('sys.color.font_secondary')).width('100%')
           Flex({ wrap: FlexWrap.Wrap }) {
             Button(this.model.busy ? '正在刷新…' : '刷新通知').buttonStyle(ButtonStyleMode.TEXTUAL)
               .constraintSize({ minHeight: WorkbenchMetrics.touchSize }).enabled(this.model.available && !this.model.busy)
@@ -128,26 +144,28 @@ export struct DriveNotificationsPage {
             WorkbenchNotice({ text: '还有更多通知，可在 Drive 网页查看。' })
           }
           WorkbenchNotice({ text: this.model.errorText, warning: true })
-        }.width('100%').padding(16).alignItems(HorizontalAlign.Start)
+        }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: 8 }).alignItems(HorizontalAlign.Start)
       }
       ForEach(this.model.items, (item: DriveNotificationItem): void => {
         ListItem() {
-          Column({ space: 8 }) {
-            Text(item.title).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
+          Column({ space: 4 }) {
+            Row({ space: 12 }) {
+              SymbolGlyph($r('sys.symbol.bell')).fontSize(20).fontColor([item.read ? $r('sys.color.font_secondary') :
+                $r('sys.color.icon_emphasize')])
+              Text(item.title).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).layoutWeight(1)
+              Button(item.read ? '已读' : '标为已读').buttonStyle(ButtonStyleMode.TEXTUAL).fontSize(12)
+                .constraintSize({ minHeight: WorkbenchMetrics.touchSize }).enabled(!item.read && !this.model.busy)
+                .onClick((): void => { this.model.markRead(item.id); }).accessibilityText(item.read ? '已读通知' : '将此通知标为已读')
+            }.width('100%')
             if (item.name.length > 0) {
-              Text(item.name).fontSize(16).fontColor($r('sys.color.font_primary')).width('100%')
+              Text(item.name).fontSize(14).fontColor($r('sys.color.font_primary')).width('100%')
             }
-            if (item.senderName.length > 0) {
-              Text('发送者：' + item.senderName).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
-            }
-            Text(driveCollaborationTime(item.time)).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
+            Text((item.senderName.length > 0 ? item.senderName + ' · ' : '') + driveCollaborationTime(item.time))
+              .fontSize(12).fontColor($r('sys.color.font_secondary')).width('100%')
             if (!item.known) {
-              Text('请前往 Drive 网页查看详情。').fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
+              Text('请前往 Drive 网页查看详情。').fontSize(12).fontColor($r('sys.color.font_secondary')).width('100%')
             }
-            Button(item.read ? '已读' : '标为已读').buttonStyle(ButtonStyleMode.TEXTUAL)
-              .constraintSize({ minHeight: WorkbenchMetrics.touchSize }).enabled(!item.read && !this.model.busy)
-              .onClick((): void => { this.model.markRead(item.id); }).accessibilityText(item.read ? '已读通知' : '将此通知标为已读')
-          }.width('100%').padding(16).borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_surface'))
+          }.width('100%').padding(12).borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_surface'))
             .alignItems(HorizontalAlign.Start)
         }
       }, (item: DriveNotificationItem): string => JSON.stringify(item))

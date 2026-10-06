@@ -167,13 +167,33 @@ test('Drive and photo content guards keep the shared model data out of unrelated
   p.tabId = 'albums'; p.expectedSection = p.model.photoLibrary.section = 'albums'; assert.equal(canShow.call(p), true);
   p.model.photoLibrary.selectedAlbum.space = P.Shared; assert.equal(canShow.call(p), false);
 });
+
+test('Drive file menu keeps metadata details available without granting unavailable or pending write operations', () => {
+  const file = { fileId: '71', name: '只读目录', kind: drive.DriveEntryKind.Folder,
+    capabilities: { canRead: true, canWrite: false } };
+  for (const condition of ['not-ready', 'busy', 'pending', 'trash', 'no-operations']) {
+    const state = { model: {
+      drive: { view: condition === 'trash' ? V.Trash : V.MyDrive },
+      driveTransfers: { ready: condition !== 'not-ready', busy: condition === 'busy', available: false },
+      driveActions: { ready: true, busy: false, hasPending: condition === 'pending', available: false },
+      driveSharing: { available: false }
+    }, detailVisible: false };
+    const menu = method(drivePage, 'driveEntryMenu').call(state, file);
+    assert.equal(menu.length, 1);
+    assert.equal(menu[0].value, '查看详情');
+    menu[0].action();
+    assert.equal(state.detailEntry, file);
+    assert.equal(state.detailVisible, true);
+  }
+});
 test('one floating HdsTabs owns every module and file tools remain in the title bar', () => {
   assert.equal((index.match(/HdsTabs\(/g) || []).length, 1);
   assert.doesNotMatch(drivePage + photoPage + filePage, /HdsTabs|HdsNavigation|NavPathStack/);
   assert.match(index, /barPosition\(BarPosition.End\).*scrollable\(false\)/);
   assert.match(index, /barOverlap\(true\).vertical\(false\)/);
   assert.match(index, /barFloatingStyle\(\{ barBottomMargin: this.navigationInset/);
-  assert.match(index, /backIcon:.*label: '返回'.*this.exitModule\(\)/);
+  assert.match(index, /backIcon:[\s\S]*?icon: \$r\('sys.symbol.chevron_left'\)[\s\S]*?this.exitModule\(\)/);
+  assert.doesNotMatch(index, /backIcon:.*label: '返回'/);
   assert.doesNotMatch(filePage, /fileSourceSwitch|filePageActions|sortLabel|Button\('上传'\)/);
   assert.match(filePage, /workbenchBreadcrumbs\(this.model.directory\)/);
 });

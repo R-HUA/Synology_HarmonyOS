@@ -49,12 +49,18 @@ export function photoTakenDate(item: NasPhotoItem): string {
   return date.getFullYear().toString() + '年' + (date.getMonth() + 1).toString() + '月' + date.getDate().toString() + '日';
 }
 
-export function photoTimelineRows(items: NasPhotoItem[], columns: number): PhotoTimelineRow[] {
-  const result: PhotoTimelineRow[] = [];
-  let previousMonth: string = '';
+export function photoTimelineRows(items: NasPhotoItem[], columns: number,
+  previous: PhotoTimelineRow[] = []): PhotoTimelineRow[] {
+  if (items.length === 0) { return previous; }
+  // 追加只重组最后一行；前面的行保留对象身份，避免虚拟列表重新绑定。
+  const result = previous.slice();
+  let previousMonth: string = result.length === 0 ? '' : photoMonth(result[result.length - 1].items[0]);
+  if (result.length > 0) {
+    const tail = result[result.length - 1];
+    result[result.length - 1] = { key: tail.key, title: tail.title, items: tail.items.slice() };
+  }
   for (const item of items) {
-    const date = item.takenAt === undefined ? undefined : new Date(item.takenAt * 1000);
-    const month = date === undefined ? '拍摄时间未提供' : date.getFullYear().toString() + '年' + (date.getMonth() + 1).toString() + '月';
+    const month = photoMonth(item);
     const last = result.length === 0 ? undefined : result[result.length - 1];
     if (month !== previousMonth || last === undefined || last.items.length >= columns) {
       result.push({ key: item.space.toString() + ':' + item.id.toString(), title: month !== previousMonth ? month : '', items: [item] });
@@ -62,6 +68,11 @@ export function photoTimelineRows(items: NasPhotoItem[], columns: number): Photo
     previousMonth = month;
   }
   return result;
+}
+
+function photoMonth(item: NasPhotoItem): string {
+  const date = item.takenAt === undefined ? undefined : new Date(item.takenAt * 1000);
+  return date === undefined ? '拍摄时间未提供' : date.getFullYear().toString() + '年' + (date.getMonth() + 1).toString() + '月';
 }
 
 export function photoMediaLabel(item: NasPhotoItem): string {
@@ -89,11 +100,17 @@ export function photoAlbumColumns(width: number): number {
   return Math.max(1, Math.min(4, Math.floor(Math.max(160, width - 32) / 160)));
 }
 
-export function photoAlbumRows(albums: NasPhotoAlbum[], columns: number): PhotoAlbumRow[] {
-  const rows: PhotoAlbumRow[] = [];
-  for (let offset = 0; offset < albums.length; offset += columns) {
-    const album = albums[offset];
-    rows.push({ key: album.space.toString() + ':' + album.id.toString(), albums: albums.slice(offset, offset + columns) });
+export function photoAlbumRows(albums: NasPhotoAlbum[], columns: number, previous: PhotoAlbumRow[] = []): PhotoAlbumRow[] {
+  if (albums.length === 0) { return previous; }
+  const rows = previous.slice();
+  const tail = rows.length === 0 ? undefined : rows[rows.length - 1];
+  const remaining = albums.slice();
+  if (tail !== undefined && tail.albums.length < columns) {
+    rows[rows.length - 1] = { key: tail.key, albums: tail.albums.concat(remaining.splice(0, columns - tail.albums.length)) };
+  }
+  for (let offset = 0; offset < remaining.length; offset += columns) {
+    const album = remaining[offset];
+    rows.push({ key: album.space.toString() + ':' + album.id.toString(), albums: remaining.slice(offset, offset + columns) });
   }
   return rows;
 }

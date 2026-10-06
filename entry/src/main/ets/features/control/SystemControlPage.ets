@@ -42,11 +42,11 @@ export struct NasSystemControlPage {
   targetCard() {
     Column({ space: 8 }) {
       Text(this.control.model.length > 0 ? this.control.model : '设备身份尚未确认')
-        .fontSize(20).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
+        .fontSize(18).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
       Text(this.control.origin).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
       Text('系统控制会中断 NAS 上所有用户的服务；这里只提供重启与关机。')
         .fontSize(14).fontColor($r('sys.color.font_primary')).width('100%')
-      Text('独立授权不保存密码或会话，退出页面、退后台或两分钟到期后失效。')
+      Text('授权在离开页面、切入后台或两分钟后失效。')
         .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
     }.width('100%').padding(16).borderRadius(WorkbenchMetrics.cardRadius).alignItems(HorizontalAlign.Start)
       .backgroundColor($r('app.color.workbench_surface'))
@@ -56,7 +56,7 @@ export struct NasSystemControlPage {
   authorizationForm() {
     Column({ space: 12 }) {
       WorkbenchSectionTitle({ title: '独立登录授权', subtitle: this.control.authorized ? '临时授权已生效' : '验证账号后才能操作' })
-      Text('是否允许操作由 NAS 在提交时判定，不将 File Station 管理权限作为系统授权。')
+      Text('请使用有系统控制权限的 NAS 账号。')
         .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
       TextInput({ text: this.control.account, placeholder: '系统控制账号' }).maxLength(128).constraintSize({ minHeight: 48 })
         .enabled(!this.control.busy && !this.control.authorized)
@@ -84,16 +84,16 @@ export struct NasSystemControlPage {
   @Builder
   actionCard() {
     Column({ space: 12 }) {
-      WorkbenchSectionTitle({ title: '危险操作', subtitle: '操作会中断 NAS 上的服务' })
+      WorkbenchSectionTitle({ title: '危险操作' })
       Text('本 App 内进行中、结果不确定或未读取的任务会阻止提交。')
         .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
       Column() {
-        WorkbenchActionRow({ icon: $r('sys.symbol.externaldrive'), label: '重启 NAS', destructive: true,
+        WorkbenchActionRow({ icon: $r('sys.symbol.arrow_clockwise'), label: '重启 NAS', destructive: true, showChevron: false,
           available: this.control.authorized && !this.control.busy, onAction: (): void => { this.control.prepare('reboot'); } })
         Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
-        WorkbenchActionRow({ icon: $r('sys.symbol.externaldrive'), label: '关闭 NAS', destructive: true,
+        WorkbenchActionRow({ icon: $r('sys.symbol.power'), label: '关闭 NAS', destructive: true, showChevron: false,
           available: this.control.authorized && !this.control.busy, onAction: (): void => { this.control.prepare('shutdown'); } })
-      }.width('100%').borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_subtle'))
+      }.width('100%')
       if (this.control.selectedAction !== undefined) {
         Text('请输入“' + this.control.confirmationWord() + '”，然后再次核对设备并确认。')
           .fontSize(14).fontColor($r('sys.color.font_primary')).width('100%')
@@ -148,6 +148,7 @@ export struct NasSystemControlPage {
         this.actionCard()
       }.width('100%').constraintSize({ maxWidth: 840 }).padding({ left: 16, right: 16, top: 12, bottom: 32 })
         .alignItems(HorizontalAlign.Start)
-    }.width('100%').height('100%').scrollBar(BarState.Auto).backgroundColor($r('app.color.workbench_background'))
+    }.width('100%').height('100%').scrollBar(BarState.Auto).align(Alignment.TopStart)
+      .backgroundColor($r('app.color.workbench_background'))
   }
 }

@@ -16,7 +16,7 @@ export struct DriveOriginalPage {
   private resetView(): void { this.scaleValue = 1; this.offsetX = 0; this.offsetY = 0; }
 
   build() {
-    Column({ space: 8 }) {
+    Column({ space: 4 }) {
       if (this.model.pixels !== undefined) {
         Stack() {
           Image(this.model.pixels).width('100%').height('100%').objectFit(ImageFit.Contain)
@@ -41,14 +41,21 @@ export struct DriveOriginalPage {
               }),
             TapGesture({ count: 2 }).onAction((): void => { this.resetView(); this.model.refine(1); })
           ))
-        Button('还原显示').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
-          .onClick((): void => { this.resetView(); this.model.refine(1); })
-        if (this.model.staticFrame) {
-          Text('动态图像以静态画面显示。').fontSize(14).fontColor($r('sys.color.font_secondary'))
-        }
+        Row({ space: 8 }) {
+          Button() {
+            Row({ space: 6 }) {
+              SymbolGlyph($r('sys.symbol.arrow_counterclockwise')).fontSize(16).fontColor([$r('sys.color.icon_emphasize')])
+              Text('还原显示').fontSize(14).fontColor($r('sys.color.font_emphasize'))
+            }
+          }.buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
+            .onClick((): void => { this.resetView(); this.model.refine(1); }).accessibilityText('还原原图显示比例')
+          if (this.model.staticFrame) {
+            Text('动态图像以静态画面显示。').fontSize(12).fontColor($r('sys.color.font_secondary')).layoutWeight(1)
+          }
+        }.width('100%')
       } else if (this.model.busy) {
         Column({ space: 8 }) {
-          LoadingProgress().width(36).height(36)
+          LoadingProgress().width(32).height(32)
           Text('正在加载原图…').fontColor($r('sys.color.font_secondary'))
           if (this.model.progress !== undefined) { Progress({ value: this.model.progress, total: 100 }).width('70%') }
         }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
@@ -60,6 +67,7 @@ export struct DriveOriginalPage {
         }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
       }
       WorkbenchNotice({ text: this.model.errorText, warning: true })
-    }.width('100%').height('100%').padding(12).backgroundColor($r('app.color.workbench_surface'))
+    }.width('100%').height('100%').padding({ left: 8, right: 8, top: 4, bottom: 8 })
+      .backgroundColor($r('app.color.workbench_surface'))
   }
 }

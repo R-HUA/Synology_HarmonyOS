@@ -11,7 +11,7 @@ export class WorkbenchMetrics {
   static readonly cardRadius: number = 16;
   static readonly innerRadius: number = 12;
   static readonly touchSize: number = 48;
-  static readonly rowMinHeight: number = 56;
+  static readonly rowMinHeight: number = 64;
   static readonly chipHeight: number = 40;
   /** 信息行行高（左标签 + 右取值），与官方设置列表的单行条目一致。 */
   static readonly infoRowHeight: number = 48;
@@ -114,6 +114,7 @@ export struct WorkbenchActionRow {
   @Param icon: Resource = $r('sys.symbol.folder');
   @Param available: boolean = true;
   @Param destructive: boolean = false;
+  @Param showChevron: boolean = true;
   @Event onAction: () => void = (): void => {};
 
   build() {
@@ -127,10 +128,13 @@ export struct WorkbenchActionRow {
             .fontColor(this.destructive ? $r('app.color.workbench_danger') : $r('sys.color.font_primary'))
           if (this.description.length > 0) {
             Text(this.description).fontSize(14).fontColor($r('sys.color.font_secondary'))
-              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+              .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
           }
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-        SymbolGlyph($r('sys.symbol.arrow_right')).fontSize(12).fontColor([$r('sys.color.font_tertiary')])
+        if (this.showChevron) {
+          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(12).fontColor([$r('sys.color.font_tertiary')])
+            .accessibilityLevel('no')
+        }
       }.width('100%').padding({ left: 16, right: 16, top: 10, bottom: 10 })
     }.type(ButtonType.Normal).width('100%').constraintSize({ minHeight: WorkbenchMetrics.rowMinHeight })
       .backgroundColor(Color.Transparent).enabled(this.available).onClick(this.onAction)
@@ -141,7 +145,6 @@ export struct WorkbenchActionRow {
 /**
  * 文件/条目列表行：图标底板 + 主标题 + 副标题。
  * 作为 @ComponentV2 + @Param 实现，数据后到时能正常刷新（@Builder 按值传参不会刷新）。
- * P0 的 Drive 条目还没有可选操作，因此不设行内操作入口；P1 起在行内接操作菜单。
  */
 @ComponentV2
 export struct WorkbenchEntryRow {
@@ -159,19 +162,20 @@ export struct WorkbenchEntryRow {
         Button() {
           Row({ space: 12 }) {
             if (this.thumbnail.length > 0) {
-              Image(this.thumbnail).width(44).height(44).objectFit(ImageFit.Cover).borderRadius(12)
+              Image(this.thumbnail).width(40).height(40).objectFit(ImageFit.Cover).borderRadius(8)
                 .accessibilityLevel('no')
             } else {
-              WorkbenchIconTile({ icon: this.icon, iconSize: 24, tileSize: 44, tileRadius: 12,
+              WorkbenchIconTile({ icon: this.icon, iconSize: 22, tileSize: 40, tileRadius: 12,
                 iconColor: this.iconColor, tileColor: $r('app.color.workbench_subtle') })
             }
-            Column({ space: 4 }) {
+            Column({ space: 2 }) {
               Text(this.title).fontSize(16).fontWeight(FontWeight.Medium).maxLines(2)
                 .textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('sys.color.font_primary')).width('100%')
               Text(this.subtitle).fontSize(14).fontColor($r('sys.color.font_secondary'))
             }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-          }.width('100%').padding({ left: 16, top: 12, bottom: 12, right: 16 })
-        }.width('100%').type(ButtonType.Normal).backgroundColor(Color.Transparent).enabled(this.available)
+          }.width('100%').padding({ left: 16, top: 10, bottom: 10, right: 16 })
+        }.width('100%').constraintSize({ minHeight: WorkbenchMetrics.rowMinHeight })
+          .type(ButtonType.Normal).backgroundColor(Color.Transparent).enabled(this.available)
           .onClick(this.onOpen).accessibilityText(this.title)
       }.width('100%')
       Divider().color($r('app.color.workbench_divider')).margin({ left: 72, right: 16 })

@@ -15,10 +15,10 @@ export struct DriveActionPage {
   build() {
     List({ scroller: this.scroller }) {
       ListItem() {
-        Column({ space: 12 }) {
+        Column({ space: 8 }) {
           if (this.model.draft !== undefined) {
             Text(driveActionText(this.model.draft.action) + '“' + this.model.draft.entry.name + '”')
-              .fontSize(18).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
+              .fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
             if (this.model.draft.action === 'rename') {
               TextInput({ text: this.model.newName, placeholder: '新名称' }).maxLength(255)
                 .constraintSize({ minHeight: WorkbenchMetrics.touchSize }).enabled(!this.model.busy)
@@ -41,13 +41,18 @@ export struct DriveActionPage {
                   available: !this.model.busy && !this.model.destinations.busy && this.model.destinations.supportsView(DriveView.TeamFolders),
                   onSelect: (): void => { this.model.destinations.selectView(DriveView.TeamFolders); } })
               }.width('100%')
-              Text(this.model.destinations.trail.map((item): string => item.name).join(' / '))
-                .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
-              Button('返回上级').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
-                .enabled(!this.model.busy && !this.model.destinations.busy && this.model.destinations.canGoUp())
-                .onClick((): void => { this.model.destinations.goUp(); })
-              Button('刷新文件夹').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
-                .enabled(!this.model.busy && !this.model.destinations.busy).onClick((): void => { this.model.destinations.reload(); })
+              Row({ space: 8 }) {
+                Text(this.model.destinations.trail.map((item): string => item.name).join(' / '))
+                  .fontSize(12).fontColor($r('sys.color.font_secondary')).layoutWeight(1)
+                Button('上级').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
+                  .enabled(!this.model.busy && !this.model.destinations.busy && this.model.destinations.canGoUp())
+                  .onClick((): void => { this.model.destinations.goUp(); }).accessibilityText('返回上级文件夹')
+                Button() {
+                  SymbolGlyph($r('sys.symbol.arrow_2_circlepath')).fontSize(20).fontColor([$r('sys.color.icon_primary')])
+                }.width(WorkbenchMetrics.touchSize).height(WorkbenchMetrics.touchSize).backgroundColor(Color.Transparent)
+                  .enabled(!this.model.busy && !this.model.destinations.busy)
+                  .onClick((): void => { this.model.destinations.reload(); }).accessibilityText('刷新目标文件夹')
+              }.width('100%')
               WorkbenchNotice({ text: this.model.destinations.errorText, warning: true })
             }
             Flex({ wrap: FlexWrap.Wrap }) {
@@ -62,7 +67,7 @@ export struct DriveActionPage {
           }
           WorkbenchNotice({ text: this.model.errorText, warning: true })
           if (this.model.busy || this.model.destinations.busy) { LoadingProgress().width(24).height(24) }
-        }.width('100%').padding(16).alignItems(HorizontalAlign.Start)
+        }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: 8 }).alignItems(HorizontalAlign.Start)
       }
       if (this.model.draft?.action === 'move' || this.model.draft?.action === 'copy') {
         if (!this.model.destinations.busy && !this.model.destinations.entries.some((entry: DriveEntry): boolean => entry.kind === DriveEntryKind.Folder)) {
@@ -93,7 +98,7 @@ export struct DriveActionPage {
             Button('下一页').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
               .enabled(!this.model.busy && !this.model.destinations.busy && this.model.destinations.more())
               .onClick((): void => { this.model.destinations.nextPage(); })
-          }.width('100%').padding(16)
+          }.width('100%').padding({ left: 16, right: 16, top: 4, bottom: 4 })
         }
       }
     }.width('100%').height('100%').scrollBar(BarState.Auto)
@@ -105,9 +110,11 @@ export struct DriveActionSummary {
   @Param model: DriveActionModel = new DriveActionModel();
   build() {
     Column({ space: 8 }) {
-      Text('Drive 文件操作').fontSize(18).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
-      Text('结果待确认时，请先在 NAS 核对，再关闭记录。')
-        .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
+      Text('文件操作').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
+      if (this.model.items.some((item: DriveActionRecord): boolean => item.state === 'unknown' || item.state === 'accepted' && item.errorText.length > 0)) {
+        Text('请先在 NAS 核对待确认的操作，再关闭记录。')
+          .fontSize(12).fontColor($r('sys.color.font_secondary')).width('100%')
+      }
       if (!this.model.ready) {
         Button('重新加载记录').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
           .enabled(!this.model.busy).onClick((): void => { this.model.reload(); })
@@ -116,7 +123,7 @@ export struct DriveActionSummary {
       }
       WorkbenchNotice({ text: this.model.errorText, warning: true })
       WorkbenchNotice({ text: this.model.notice })
-    }.width('100%').padding(16).alignItems(HorizontalAlign.Start)
+    }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: 8 }).alignItems(HorizontalAlign.Start)
   }
 }
 
@@ -134,12 +141,19 @@ export struct DriveActionCard {
       secondaryButton: { value: '已核对，关闭', action: (): void => { this.model.closeUnknown(this.item.id); } } });
   }
   build() {
-    Column({ space: 8 }) {
-      Text(this.item.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
-      Text(driveActionText(this.item.action) + ' · ' + driveActionStateText(this.item.state))
-        .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
+    Column({ space: 4 }) {
+      Row({ space: 12 }) {
+        SymbolGlyph($r('sys.symbol.doc_text')).fontSize(20).fontColor([$r('sys.color.icon_emphasize')])
+        Column({ space: 4 }) {
+          Text(this.item.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
+            .width('100%').maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text(driveActionText(this.item.action) + ' · ' + driveActionStateText(this.item.state))
+            .fontSize(12).fontColor(this.item.state === 'unknown' || this.item.state === 'failed' ?
+              $r('app.color.workbench_danger') : $r('sys.color.font_secondary')).width('100%')
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      }.width('100%')
       if (this.item.destination.length > 0) {
-        Text(this.item.destination).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
+        Text(this.item.destination).fontSize(12).fontColor($r('sys.color.font_secondary')).width('100%')
       }
       if (this.item.state === 'accepted' && this.item.progress !== undefined) {
         Progress({ value: this.item.progress, total: 100, type: ProgressType.Linear }).width('100%').height(4)
@@ -158,9 +172,9 @@ export struct DriveActionCard {
           Button('移除记录').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
             .enabled(this.model.ready && !this.model.busy).onClick((): void => { this.model.remove(this.item.id); })
         }
-        Button('返回文件').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).onClick(this.onFiles)
+        Button('查看文件').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).onClick(this.onFiles)
       }.width('100%')
-    }.width('100%').padding(16).borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_surface'))
+    }.width('100%').padding(12).borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_surface'))
       .alignItems(HorizontalAlign.Start)
   }
 }

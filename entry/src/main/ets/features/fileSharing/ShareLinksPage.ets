@@ -13,6 +13,7 @@ export struct ShareLinksPage {
   @Param scroller: Scroller = new Scroller();
   @Local private filter: string = 'all';
   @Local private editing: boolean = false;
+  @Local private showingDetail: boolean = false;
   @Local private editingId: string = '';
   @Local private passwordMode: SharePasswordMode = 'retain';
   @Local private password: string = '';
@@ -35,12 +36,17 @@ export struct ShareLinksPage {
     return '状态待核对';
   }
   private openEditor(link?: ShareLink): void {
+    this.showingDetail = false;
     this.editingId = link?.id ?? '';
     this.passwordMode = 'retain';
     this.password = '';
     this.availableDate = link === undefined || link.availableDate === '0' ? '' : link.availableDate;
     this.expiredDate = link === undefined || link.expiredDate === '0' ? '' : link.expiredDate;
     this.editing = true;
+  }
+  private async openDetail(link: ShareLink): Promise<void> {
+    await this.model.showShare(link.id);
+    if (this.model.selectedShare?.id === link.id) { this.showingDetail = true; }
   }
   private async submit(): Promise<void> {
     const options: ShareLinkOptions = { password: { mode: this.passwordMode, value: this.passwordMode === 'set' ? this.password : undefined },
@@ -81,7 +87,7 @@ export struct ShareLinksPage {
       Column({ space: 12 }) {
         Text(this.editingId.length === 0 ? this.model.shareDraftPaths.join('、') : this.model.selectedShare?.name ?? '分享链接')
           .fontSize(16).fontColor($r('sys.color.font_primary')).width('100%')
-        Text('日期按 NAS 的日期规则生效；留空表示不限制，口令不会保存到本机记录。')
+        Text('日期留空表示不限制，按 NAS 的日期生效。')
           .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
         Flex({ wrap: FlexWrap.Wrap }) {
           ForEach(['retain', 'set', 'remove'], (mode: string): void => {
@@ -114,7 +120,7 @@ export struct ShareLinksPage {
     Column({ space: 8 }) {
       WorkbenchInfoRow({ label: '分享对象', value: link.name })
       WorkbenchInfoRow({ label: '状态', value: this.stateText(link.status) })
-      WorkbenchInfoRow({ label: '口令', value: link.hasPassword ? '已保护，不返回原口令' : '未设置' })
+      WorkbenchInfoRow({ label: '口令', value: link.hasPassword ? '已设置' : '未设置' })
       WorkbenchInfoRow({ label: '可用日期', value: link.availableDate === '0' ? '不限制' : link.availableDate })
       WorkbenchInfoRow({ label: '过期日期', value: link.expiredDate === '0' ? '不限制' : link.expiredDate })
       Text(link.url).fontSize(14).fontColor($r('sys.color.font_primary')).width('100%').copyOption(CopyOptions.LocalDevice)
@@ -123,10 +129,22 @@ export struct ShareLinksPage {
         Button('系统分享').constraintSize({ minHeight: 48 }).buttonStyle(ButtonStyleMode.TEXTUAL).onClick((): void => { this.share(link); })
         Button('编辑').constraintSize({ minHeight: 48 }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(this.model.canWrite('fileSharing'))
           .onClick((): void => { this.openEditor(link); })
-        Button('撤销').constraintSize({ minHeight: 48 }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(this.model.canWrite('fileSharing'))
+        Button('撤销链接').constraintSize({ minHeight: 48 }).buttonStyle(ButtonStyleMode.TEXTUAL).fontColor($r('app.color.workbench_danger'))
+          .enabled(this.model.canWrite('fileSharing'))
           .onClick((): void => { this.confirmRevoke(link); })
       }.width('100%')
     }.width('100%').padding(16).borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
+  }
+
+  @Builder
+  detailSheet() {
+    Scroll() {
+      Column() {
+        if (this.model.selectedShare !== undefined) { this.detail(this.model.selectedShare) }
+        WorkbenchNotice({ text: this.platformError, warning: true })
+        ExtensionStatusPanel({ model: this.model, feature: 'fileSharing' })
+      }.width('100%').padding(16).alignItems(HorizontalAlign.Start)
+    }.width('100%').scrollBar(BarState.Auto).align(Alignment.TopStart)
   }
 
   build() {
@@ -145,36 +163,40 @@ export struct ShareLinksPage {
         }.width('100%')
         ExtensionStatusPanel({ model: this.model, feature: 'fileSharing' })
         WorkbenchNotice({ text: this.platformError, warning: true })
-        Text('撤销只使链接失效，不删除 NAS 文件；发送前请核对接收方是否可达。')
-          .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
         if (this.model.sharesLoaded && this.model.shareError.length === 0 && this.links().length === 0) {
           Text('当前页此分类暂无分享链接。').fontSize(14).fontColor($r('sys.color.font_secondary'))
         }
         Column() {
           ForEach(this.links(), (link: ShareLink): void => {
-            Row({ space: 12 }) {
-              WorkbenchIconTile({ icon: $r('sys.symbol.doc'), iconSize: 20, tileSize: 40, tileRadius: 12,
-                iconColor: $r('sys.color.icon_emphasize'), tileColor: $r('app.color.workbench_accent_surface') })
-              Column({ space: 2 }) {
-                Text(link.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
-                  .width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                Text((link.hasPassword ? '口令保护 · ' : '仅链接可访问 · ') + this.stateText(link.status))
-                  .fontSize(12).fontColor($r('sys.color.font_secondary'))
-              }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-              Button('详情').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: 48 }).enabled(!this.model.busy)
-                .onClick((): void => { this.model.showShare(link.id); })
-            }.width('100%').padding({ left: 12, right: 8, top: 8, bottom: 8 })
-            Divider().color($r('app.color.workbench_divider'))
+            Button() {
+              Row({ space: 12 }) {
+                WorkbenchIconTile({ icon: $r('sys.symbol.link'), iconSize: 22, tileSize: 40, tileRadius: 12,
+                  iconColor: $r('sys.color.icon_emphasize'), tileColor: $r('app.color.workbench_accent_surface') })
+                Column({ space: 2 }) {
+                  Text(link.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
+                    .width('100%').maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+                  Text((link.hasPassword ? '口令保护 · ' : '无需口令 · ') + this.stateText(link.status))
+                    .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
+                }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+                SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(12).fontColor([$r('sys.color.font_tertiary')])
+                  .accessibilityLevel('no')
+              }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: 8 })
+            }.width('100%').type(ButtonType.Normal).padding(0).constraintSize({ minHeight: 64 })
+              .backgroundColor(Color.Transparent).enabled(!this.model.busy).onClick((): void => { this.openDetail(link); })
+              .accessibilityText(link.name + '，' + this.stateText(link.status) + '，查看详情')
+            Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
           }, (link: ShareLink): string => link.id)
         }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
-        Row() {
-          Button('上一页').buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy && this.model.shareOffset > 0)
-            .onClick((): void => { this.model.refreshShares(Math.max(0, this.model.shareOffset - 50)); })
-          Text(this.model.sharesLoaded ? '共 ' + this.model.shareTotal.toString() + ' 个链接' : '尚未读取').fontSize(12).fontColor($r('sys.color.font_secondary')).layoutWeight(1).textAlign(TextAlign.Center)
-          Button('下一页').buttonStyle(ButtonStyleMode.TEXTUAL)
-            .enabled(!this.model.busy && this.model.shareOffset + this.model.shares.length < this.model.shareTotal)
-            .onClick((): void => { this.model.refreshShares(this.model.shareOffset + 50); })
-        }.width('100%')
+        if (this.model.shareOffset > 0 || this.model.shareOffset + this.model.shares.length < this.model.shareTotal) {
+          Row() {
+            Button('上一页').buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy && this.model.shareOffset > 0)
+              .onClick((): void => { this.model.refreshShares(Math.max(0, this.model.shareOffset - 50)); })
+            Text(this.model.sharesLoaded ? '共 ' + this.model.shareTotal.toString() + ' 个链接' : '尚未读取').fontSize(12).fontColor($r('sys.color.font_secondary')).layoutWeight(1).textAlign(TextAlign.Center)
+            Button('下一页').buttonStyle(ButtonStyleMode.TEXTUAL)
+              .enabled(!this.model.busy && this.model.shareOffset + this.model.shares.length < this.model.shareTotal)
+              .onClick((): void => { this.model.refreshShares(this.model.shareOffset + 50); })
+          }.width('100%')
+        }
         ForEach(this.model.shareResults, (result: ShareCreateResult): void => {
           Column({ space: 6 }) {
             Text(result.path).fontSize(14).fontColor($r('sys.color.font_primary')).width('100%')
@@ -186,12 +208,13 @@ export struct ShareLinksPage {
             }
           }.width('100%').padding(12).borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
         }, (result: ShareCreateResult): string => result.path)
-        if (this.model.selectedShare !== undefined) { this.detail(this.model.selectedShare) }
       }.width('100%').padding(16).alignItems(HorizontalAlign.Start)
-    }.width('100%').height('100%').scrollBar(BarState.Auto)
+    }.width('100%').height('100%').scrollBar(BarState.Auto).align(Alignment.TopStart)
       .bindSheet($$this.editing, this.editor(), { height: SheetSize.LARGE, showClose: true,
         title: { title: this.editingId.length === 0 ? '创建分享链接' : '编辑分享链接' },
         keyboardAvoidMode: SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL,
         onDisappear: (): void => { this.password = ''; } })
+      .bindSheet($$this.showingDetail, this.detailSheet(), { height: SheetSize.LARGE, showClose: true,
+        title: { title: '分享详情' } })
   }
 }

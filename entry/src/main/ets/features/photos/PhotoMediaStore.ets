@@ -9,12 +9,14 @@ import { NasConnector } from '../../core/network/NasConnector';
 import { RcpNasTransport } from '../../core/network/RcpNasTransport';
 import { copyTransferFile } from '../transfers/TransferQueueFiles';
 
-interface PhotoCacheEntry { key: string; path: string; bytes: number; }
+interface PhotoCacheEntry { key: string; identity: string; size: 'm' | 'xl'; path: string; bytes: number; }
 interface PhotoThumbnailTask {
   item: NasPhotoItem;
   key: string;
   size: 'm' | 'xl';
   ticket: number;
+  cancelled: boolean;
+  transport?: RcpNasTransport;
   access?: NasPhotoMediaAccess;
   resolve: (path: string) => void;
   reject: (error: Error) => void;
@@ -26,14 +28,18 @@ export class PhotoMediaStore {
   private connector: NasConnector | undefined = undefined;
   private directory: string = '';
   private generation: number = 0;
-  private transport: RcpNasTransport | undefined = undefined;
   private originalTransport: RcpNasTransport | undefined = undefined;
   private originalGeneration: number = 0;
   private cache: PhotoCacheEntry[] = [];
+  private cacheByKey: Map<string, PhotoCacheEntry> = new Map();
   private pending: PhotoThumbnailTask[] = [];
+  private running: Map<string, PhotoThumbnailTask> = new Map();
   private promises: Map<string, Promise<string>> = new Map();
   private active: number = 0;
   private pinnedKeys: string[] = [];
+  private visibleKeys: Set<string> = new Set();
+  private demandKeys: Set<string> = new Set();
+  private managedDemand: boolean = false;
   private access: NasPhotoMediaAccess | undefined = undefined;
   private originalFile: string = '';
   private originalBytes: number = 0;
@@ -41,9 +47,12 @@ export class PhotoMediaStore {
   private insecureTls: boolean = false;
   cleanupErrorText: string = '';
   private cleanupPaths: string[] = [];
-  private changed: () => void = (): void => {};
+  private cancelFailures: number = 0;
+  private cleanupFailures: number = 0;
+  private diagnosticTimer: number = -1;
+  private changed: (identity?: string, path?: string) => void = (): void => {};
 
-  attach(context: common.UIAbilityContext | undefined, connector: NasConnector, changed: () => void,
+  attach(context: common.UIAbilityContext | undefined, connector: NasConnector, changed: (identity?: string, path?: string) => void,
     insecureTls: boolean = false, access?: NasPhotoMediaAccess): void {
     this.reset();
     this.connector = connector;
@@ -63,21 +72,25 @@ export class PhotoMediaStore {
     this.pinnedKeys = [this.key(item, size)];
     this.evict();
     this.changed();
-    const entry = this.cache.find((cached: PhotoCacheEntry): boolean => cached.key === this.pinnedKeys[0]);
+    const entry = this.cacheByKey.get(this.pinnedKeys[0]);
     return entry === undefined ? '' : entry.path;
   }
 
   reset(): void {
     this.generation++;
     this.cancelOriginal();
-    this.transport?.close();
-    this.transport = undefined;
+    for (const task of this.running.values()) { this.cancelTask(task); }
     for (const task of this.pending) { task.reject(this.cancelled() as Error); }
     this.pending = [];
+    this.running.clear();
     this.promises.clear();
     this.active = 0;
     this.cache = [];
+    this.cacheByKey.clear();
     this.pinnedKeys = [];
+    this.visibleKeys.clear();
+    this.demandKeys.clear();
+    this.managedDemand = false;
     const directory = this.directory;
     this.directory = '';
     this.context = undefined;
@@ -94,8 +107,32 @@ export class PhotoMediaStore {
 
   thumbnailPath(item: NasPhotoItem): string {
     const key = this.key(item, 'm');
-    const entry = this.cache.find((cached: PhotoCacheEntry): boolean => cached.key === key);
+    const entry = this.cacheByKey.get(key);
     return entry === undefined ? '' : entry.path;
+  }
+
+  /** 只保留可见行与相邻预取行的需求；可见文件在引用释放前不得淘汰。 */
+  setDemand(visible: NasPhotoItem[], prefetch: NasPhotoItem[]): void {
+    this.managedDemand = true;
+    this.visibleKeys = new Set(visible.map((item: NasPhotoItem): string => this.key(item, 'm')));
+    this.demandKeys = new Set(visible.concat(prefetch).map((item: NasPhotoItem): string => this.key(item, 'm')));
+    const retained: PhotoThumbnailTask[] = [];
+    for (const task of this.pending) {
+      if (this.wanted(task)) { retained.push(task); }
+      else { task.cancelled = true; this.promises.delete(task.key); task.reject(this.cancelled() as Error); }
+    }
+    // 可见项始终排在预取前；取消的进行中请求仍占槽，直到传输确实退出。
+    this.pending = retained.filter((task: PhotoThumbnailTask): boolean => this.visibleKeys.has(task.key) || task.size === 'xl')
+      .concat(retained.filter((task: PhotoThumbnailTask): boolean => !this.visibleKeys.has(task.key) && task.size !== 'xl'));
+    for (const task of this.running.values()) { if (!this.wanted(task)) { this.cancelTask(task); } }
+    this.evict();
+    this.drain();
+  }
+
+  invalidateThumbnail(item: NasPhotoItem): void {
+    const key = this.key(item, 'm');
+    const entry = this.cacheByKey.get(key);
+    if (entry !== undefined) { this.removeCache(entry); }
   }
 
   thumbnail(item: NasPhotoItem, size: 'm' | 'xl' = 'm'): Promise<string> {
@@ -103,21 +140,28 @@ export class PhotoMediaStore {
       return Promise.reject(new NasFailure(NasErrorKind.Unsupported, '此照片尚未提供可访问的缩略图。'));
     }
     const key = this.key(item, size);
+    if (size === 'm' && this.managedDemand && !this.demandKeys.has(key)) { return Promise.reject(this.cancelled()); }
     // 等待大预览时继续保护现有 m；大预览展示成功后由 pinPreview 释放 m。
     if (size === 'xl' && !this.pinnedKeys.includes(key)) { this.pinnedKeys.push(key); }
-    const index = this.cache.findIndex((entry: PhotoCacheEntry): boolean => entry.key === key);
-    if (index >= 0) {
-      const entry = this.cache[index];
+    const entry = this.cacheByKey.get(key);
+    if (entry !== undefined) {
+      const index = this.cache.indexOf(entry);
       this.cache.splice(index, 1);
       this.cache.push(entry);
       return Promise.resolve(entry.path);
     }
     const existing = this.promises.get(key);
     if (existing !== undefined) { return existing; }
-    if (this.pending.length >= 60) { return Promise.reject(new NasFailure(NasErrorKind.Cancelled, '缩略图队列已满，请刷新后重试。')); }
+    if (this.pending.length >= 60) { return Promise.reject(new NasFailure(NasErrorKind.Protocol, '等待读取的缩略图过多，请稍后重试。')); }
     const ticket = this.generation;
     const promise = new Promise<string>((resolve, reject): void => {
-      this.pending.push({ item: item, key: key, size: size, ticket: ticket, access: this.access, resolve: resolve, reject: reject });
+      const task: PhotoThumbnailTask = { item: item, key: key, size: size, ticket: ticket, cancelled: false,
+        access: this.access, resolve: resolve, reject: reject };
+      const prefetchIndex = this.pending.findIndex((queued: PhotoThumbnailTask): boolean =>
+        queued.size !== 'xl' && !this.visibleKeys.has(queued.key));
+      if ((size === 'xl' || this.visibleKeys.has(key)) && prefetchIndex >= 0) {
+        this.pending.splice(prefetchIndex, 0, task);
+      } else { this.pending.push(task); }
     });
     this.promises.set(key, promise);
     this.drain();
@@ -127,8 +171,15 @@ export class PhotoMediaStore {
   closeDetail(): void {
     this.pinnedKeys = [];
     this.cancelOriginal();
+    if (this.managedDemand) { this.setDemandFromKeys(); }
     this.evict();
     this.changed();
+  }
+
+  cancelThumbnails(): void {
+    for (const task of this.pending) { this.promises.delete(task.key); task.reject(this.cancelled() as Error); }
+    this.pending = [];
+    for (const task of this.running.values()) { this.cancelTask(task); }
   }
 
   cancelOriginal(): void {
@@ -201,10 +252,13 @@ export class PhotoMediaStore {
     while (this.active < 3 && this.pending.length > 0) {
       const task = this.pending.shift();
       if (task === undefined) { return; }
+      // 视口引用已用完预算时，不派发无处保留的预取请求。
+      if (!this.canCachePrefetch(task, 0)) { this.promises.delete(task.key); task.resolve(''); continue; }
       this.active++;
-      this.fetchThumbnail(task).then(task.resolve, task.reject).finally((): void => {
-        if (task.ticket === this.generation) { this.promises.delete(task.key); this.active--; this.drain(); }
-      });
+      this.running.set(task.key, task);
+      this.fetchThumbnail(task).then((path: string): void => {
+        this.finish(task); task.resolve(path);
+      }, (error: Error): void => { this.finish(task); task.reject(error); });
     }
   }
 
@@ -212,21 +266,61 @@ export class PhotoMediaStore {
     const connector = this.requireConnector();
     const plan = connector.photoThumbnailPlan(task.item, task.size, task.access);
     const destination = this.privatePath();
-    if (this.transport === undefined) { this.transport = new RcpNasTransport(this.insecureTls); }
+    const transport = new RcpNasTransport(this.insecureTls);
+    task.transport = transport;
     try {
-      const bytes = await this.transport.downloadMedia(plan, destination, true, undefined,
-        (): boolean => task.ticket === this.generation);
-      if (task.ticket !== this.generation) { this.removeFile(destination); throw this.cancelled(); }
-      this.cache.push({ key: task.key, path: destination, bytes: bytes });
+      const bytes = await transport.downloadMedia(plan, destination, true, undefined,
+        (): boolean => this.currentTask(task));
+      if (!this.currentTask(task) || !this.wanted(task)) { throw this.cancelled(); }
+      if (!this.canCachePrefetch(task, bytes)) { this.removeFile(destination); return ''; }
+      const entry: PhotoCacheEntry = { key: task.key, identity: this.identity(task.item), size: task.size, path: destination, bytes: bytes };
+      this.cache.push(entry);
+      this.cacheByKey.set(task.key, entry);
       this.evict();
-      this.changed();
+      if (task.size === 'm' && this.cacheByKey.has(task.key)) { this.changed(entry.identity, destination); }
       return destination;
     } catch (error) {
       this.removeFile(destination);
-      if (task.ticket !== this.generation) { throw this.cancelled(); }
+      if (!this.currentTask(task)) { throw this.cancelled(); }
       if (error instanceof NasFailure) { await connector.photoMediaFailure(error); }
       throw error as Error;
+    } finally { transport.close(); task.transport = undefined; }
+  }
+
+  private finish(task: PhotoThumbnailTask): void {
+    if (task.ticket !== this.generation) { return; }
+    this.promises.delete(task.key);
+    this.running.delete(task.key);
+    this.active--;
+    this.drain();
+  }
+  private currentTask(task: PhotoThumbnailTask): boolean { return task.ticket === this.generation && !task.cancelled; }
+  private wanted(task: PhotoThumbnailTask): boolean {
+    return !this.managedDemand || (task.size === 'xl' ? this.pinnedKeys.includes(task.key) : this.demandKeys.has(task.key));
+  }
+  private canCachePrefetch(task: PhotoThumbnailTask, bytes: number): boolean {
+    if (!this.managedDemand || this.visibleKeys.has(task.key) || this.pinnedKeys.includes(task.key)) { return true; }
+    let protectedCount = 0;
+    let protectedBytes = 0;
+    for (const entry of this.cache) {
+      if (this.visibleKeys.has(entry.key) || this.pinnedKeys.includes(entry.key)) { protectedCount++; protectedBytes += entry.bytes; }
     }
+    return protectedCount < 60 && (bytes === 0 ? protectedBytes < 24 * 1024 * 1024 : protectedBytes + bytes <= 24 * 1024 * 1024);
+  }
+  private cancelTask(task: PhotoThumbnailTask): void {
+    if (task.cancelled) { return; }
+    task.cancelled = true;
+    try { task.transport?.close(); }
+    catch { this.cancelFailures++; this.scheduleDiagnostics(); }
+  }
+  private setDemandFromKeys(): void {
+    const retained: PhotoThumbnailTask[] = [];
+    for (const task of this.pending) {
+      if (this.wanted(task)) { retained.push(task); }
+      else { this.promises.delete(task.key); task.reject(this.cancelled() as Error); }
+    }
+    this.pending = retained;
+    for (const task of this.running.values()) { if (!this.wanted(task)) { this.cancelTask(task); } }
   }
 
   private privatePath(): string {
@@ -253,13 +347,21 @@ export class PhotoMediaStore {
   private evict(): void {
     let bytes = this.cache.reduce((total: number, entry: PhotoCacheEntry): number => total + entry.bytes, 0);
     while (this.cache.length > 60 || bytes > 24 * 1024 * 1024) {
-      const index = this.cache.findIndex((cached: PhotoCacheEntry): boolean => !this.pinnedKeys.includes(cached.key));
+      const index = this.cache.findIndex((cached: PhotoCacheEntry): boolean => !this.pinnedKeys.includes(cached.key) && !this.visibleKeys.has(cached.key));
       if (index < 0) { return; }
-      const entry = this.cache.splice(index, 1)[0];
-      this.removeFile(entry.path);
+      const entry = this.cache[index];
+      this.removeCache(entry);
       bytes -= entry.bytes;
     }
   }
+
+  private removeCache(entry: PhotoCacheEntry): void {
+    this.cacheByKey.delete(entry.key);
+    this.cache.splice(this.cache.indexOf(entry), 1);
+    if (entry.size === 'm') { this.changed(entry.identity, ''); }
+    this.removeFile(entry.path);
+  }
+  private identity(item: NasPhotoItem): string { return item.space.toString() + ':' + item.id.toString(); }
 
   private key(item: NasPhotoItem, size: string): string {
     return JSON.stringify([item.space, item.sourceSpace, item.id, item.thumbnail?.unitId, item.thumbnail?.cacheKey, size, this.access?.scope]);
@@ -285,8 +387,26 @@ export class PhotoMediaStore {
     } catch { this.cleanupFailed(path); }
   }
   private cleanupFailed(path: string): void {
-    if (!this.cleanupPaths.includes(path)) { this.cleanupPaths.push(path); }
+    if (this.cleanupPaths.includes(path)) { return; }
+    this.cleanupPaths.push(path);
     this.cleanupErrorText = '照片私有缓存清理失败，已停止继续缓存；请重新登录后重试。';
-    hilog.error(0x0000, 'NasPhotos', 'operation=cache_cleanup result=failed');
+    this.cleanupFailures++;
+    this.scheduleDiagnostics();
+  }
+
+  /** 故障在滚动过程中可能成批出现，立即保留错误状态，日志每秒汇总一次。 */
+  private scheduleDiagnostics(): void {
+    if (this.diagnosticTimer >= 0) { return; }
+    this.diagnosticTimer = setTimeout((): void => {
+      this.diagnosticTimer = -1;
+      if (this.cancelFailures > 0) {
+        hilog.error(0x0000, 'NasPhotos', 'operation=thumbnail_cancel result=failed count=%{public}d', this.cancelFailures);
+        this.cancelFailures = 0;
+      }
+      if (this.cleanupFailures > 0) {
+        hilog.error(0x0000, 'NasPhotos', 'operation=cache_cleanup result=failed count=%{public}d', this.cleanupFailures);
+        this.cleanupFailures = 0;
+      }
+    }, 1000);
   }
 }

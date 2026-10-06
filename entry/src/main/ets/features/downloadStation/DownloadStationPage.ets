@@ -92,11 +92,11 @@ export struct DownloadStationPage {
     Row({ space: 4 }) {
       Button() {
         Row({ space: 12 }) {
-          WorkbenchIconTile({ icon: $r('sys.symbol.arrow_down_circle'), iconSize: 20, tileSize: 40, tileRadius: 12,
+          WorkbenchIconTile({ icon: $r('sys.symbol.arrow_down'), iconSize: 22, tileSize: 40, tileRadius: 12,
             iconColor: $r('sys.color.icon_emphasize'), tileColor: $r('app.color.workbench_accent_surface') })
           Column({ space: 4 }) {
             Text(task.title).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
-              .width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+              .width('100%').maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
             Progress({ value: this.progress(task), total: 100, type: ProgressType.Linear }).width('100%').height(4)
               .visibility(task.totalBytes !== undefined && task.totalBytes > 0 && task.downloadedBytes !== undefined ? Visibility.Visible : Visibility.Hidden)
             Row({ space: 6 }) {
@@ -106,37 +106,40 @@ export struct DownloadStationPage {
             }.width('100%')
             Text(this.statusText(task)).fontSize(12).fontColor($r('sys.color.font_secondary')).width('100%')
           }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-        }.width('100%')
+          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(12).fontColor([$r('sys.color.font_tertiary')])
+            .accessibilityLevel('no')
+        }.width('100%').padding({ top: 8, bottom: 8, right: 4 })
       }.layoutWeight(1).type(ButtonType.Normal).backgroundColor(Color.Transparent).padding(0)
-        .constraintSize({ minHeight: 48 }).enabled(!this.model.busy).onClick((): void => { this.openDetail(task); })
+        .constraintSize({ minHeight: 64 }).enabled(!this.model.busy).onClick((): void => { this.openDetail(task); })
         .accessibilityText(task.title + '，' + this.statusText(task) + '，查看详情')
       if (this.canPause(task) || task.status === 'paused' || task.status === 'error') {
-        Button(this.canPause(task) ? '暂停' : '恢复').fontSize(12).width(48).constraintSize({ minHeight: 48 })
-          .buttonStyle(ButtonStyleMode.TEXTUAL).enabled(this.model.canWrite('nasDownloads'))
+        Button() {
+          SymbolGlyph(this.canPause(task) ? $r('sys.symbol.pause') : $r('sys.symbol.play')).fontSize(18)
+            .fontColor([$r('sys.color.icon_emphasize')])
+        }.width(48).constraintSize({ minHeight: 48 }).type(ButtonType.Normal).padding(0).backgroundColor(Color.Transparent)
+          .enabled(this.model.canWrite('nasDownloads')).accessibilityText(task.title + (this.canPause(task) ? '，暂停' : '，恢复'))
           .onClick((): void => { this.model.controlDownload(task.id, this.canPause(task) ? 'pause' : 'resume'); })
-      } else { Blank().width(48) }
-      Button() { SymbolGlyph($r('sys.symbol.ellipsis_circle')).fontSize(20).fontColor([$r('sys.color.font_secondary')]) }
-        .width(48).constraintSize({ minHeight: 48 }).type(ButtonType.Circle).backgroundColor(Color.Transparent)
+      }
+      Button() { SymbolGlyph($r('sys.symbol.more')).fontSize(22).fontColor([$r('sys.color.font_secondary')]) }
+        .width(48).constraintSize({ minHeight: 48 }).type(ButtonType.Normal).padding(0).backgroundColor(Color.Transparent)
         .enabled(!this.model.busy).bindMenu(this.taskMenu(task)).accessibilityText(task.title + '，更多操作')
-    }.width('100%').padding({ left: 12, right: 4, top: 10, bottom: 10 })
+    }.width('100%').constraintSize({ minHeight: 64 }).padding({ left: 16, right: 8 })
   }
 
   @Builder
   createForm() {
     Scroll() {
       Column({ space: 12 }) {
-        Text('由 NAS 执行，不下载到手机；关闭页面不会停止下载。')
+        Text('文件保存到 NAS，离开页面后会继续下载。')
           .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
         TextInput({ text: this.model.downloadUri, placeholder: 'HTTP(S)、FTP 或 magnet 下载链接' }).enabled(!this.model.busy)
           .onChange((value: string): void => { this.model.downloadUri = value; })
         WorkbenchInfoRow({ label: 'NAS 目标目录', value: this.model.downloadDestination.length === 0 ? '尚未选择' : '/' + this.model.downloadDestination })
         Button('浏览并选择 NAS 目录').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: 48 }).enabled(!this.model.busy)
           .onClick((): void => { this.creating = false; this.onChooseDirectory(); })
-        Text('目标目录权限由 NAS 在提交时验证；链接与认证参数不会写入普通任务记录。')
-          .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
         ExtensionStatusPanel({ model: this.model, feature: 'nasDownloads' })
         if (!this.model.canCreateDownload) {
-          WorkbenchNotice({ text: '此服务器尚未发现支持链接与目标目录创建的接口版本，可继续查看和控制已有任务。', warning: true })
+          WorkbenchNotice({ text: '当前无法在此 NAS 创建下载任务，可查看和管理已有任务。', warning: true })
         }
         Button('创建 NAS 下载').width('100%').constraintSize({ minHeight: 48 })
           .enabled(this.model.canCreateDownload && this.model.canWrite('nasDownloads') && this.model.downloadUri.trim().length > 0 &&
@@ -183,25 +186,28 @@ export struct DownloadStationPage {
           }, (filter: string): string => filter)
         }.width('100%')
         ExtensionStatusPanel({ model: this.model, feature: 'nasDownloads' })
-        Text('状态和速率为最近一次刷新采样；做种表示仍在上传。')
-          .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
         if (this.model.downloadsLoaded && this.model.downloadError.length === 0 && this.tasks().length === 0) {
           Text('当前页此分类暂无下载任务。').fontSize(14).fontColor($r('sys.color.font_secondary'))
         }
         Column() {
-          ForEach(this.tasks(), (task: DownloadTask): void => { this.taskRow(task); Divider().color($r('app.color.workbench_divider')) },
+          ForEach(this.tasks(), (task: DownloadTask): void => {
+            this.taskRow(task)
+            Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
+          },
             (task: DownloadTask): string => task.id)
         }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
-        Row() {
-          Button('上一页').buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy && this.model.downloadOffset > 0)
-            .onClick((): void => { this.model.refreshDownloads(Math.max(0, this.model.downloadOffset - 50)); })
-          Text(this.model.downloadsLoaded ? '共 ' + this.model.downloadTotal.toString() + ' 个任务' : '尚未读取').fontSize(12).fontColor($r('sys.color.font_secondary')).layoutWeight(1).textAlign(TextAlign.Center)
-          Button('下一页').buttonStyle(ButtonStyleMode.TEXTUAL)
-            .enabled(!this.model.busy && this.model.downloadOffset + this.model.downloads.length < this.model.downloadTotal)
-            .onClick((): void => { this.model.refreshDownloads(this.model.downloadOffset + 50); })
-        }.width('100%')
+        if (this.model.downloadOffset > 0 || this.model.downloadOffset + this.model.downloads.length < this.model.downloadTotal) {
+          Row() {
+            Button('上一页').buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy && this.model.downloadOffset > 0)
+              .onClick((): void => { this.model.refreshDownloads(Math.max(0, this.model.downloadOffset - 50)); })
+            Text(this.model.downloadsLoaded ? '共 ' + this.model.downloadTotal.toString() + ' 个任务' : '尚未读取').fontSize(12).fontColor($r('sys.color.font_secondary')).layoutWeight(1).textAlign(TextAlign.Center)
+            Button('下一页').buttonStyle(ButtonStyleMode.TEXTUAL)
+              .enabled(!this.model.busy && this.model.downloadOffset + this.model.downloads.length < this.model.downloadTotal)
+              .onClick((): void => { this.model.refreshDownloads(this.model.downloadOffset + 50); })
+          }.width('100%')
+        }
       }.width('100%').padding(16).alignItems(HorizontalAlign.Start)
-    }.width('100%').height('100%').scrollBar(BarState.Auto)
+    }.width('100%').height('100%').scrollBar(BarState.Auto).align(Alignment.TopStart)
       .bindSheet($$this.creating, this.createForm(), { height: SheetSize.LARGE, showClose: true, title: { title: '新增 NAS 下载' },
         keyboardAvoidMode: SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL })
       .bindSheet($$this.showingDetail, this.detail(), { height: SheetSize.LARGE, showClose: true, title: { title: 'NAS 下载详情' } })

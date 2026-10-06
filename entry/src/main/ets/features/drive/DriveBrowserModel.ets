@@ -13,6 +13,8 @@ export const DRIVE_BROWSER_VIEWS: DriveView[] = [DriveView.MyDrive, DriveView.Te
 export interface DriveTrailItem {
   name: string;
   fileId?: string;
+  /** 保留服务器给出的目录能力，标题上传入口不为虚拟根或未知祖先伪造权限。 */
+  entry?: DriveEntry;
 }
 
 interface DriveSearchQuery {
@@ -159,7 +161,7 @@ export class DriveBrowserModel {
       this.notice = '暂不支持打开回收站内的文件夹。';
       return;
     }
-    const target: DriveTrailItem = { name: entry.name, fileId: entry.fileId };
+    const target: DriveTrailItem = { name: entry.name, fileId: entry.fileId, entry: entry };
     const crossDirectory = this.trail.length === 1 &&
       this.view !== DriveView.MyDrive && this.view !== DriveView.TeamFolders;
     await this.load(this.trail.concat([target]), 0, this.view, [], this.searchQuery,
@@ -176,6 +178,11 @@ export class DriveBrowserModel {
   async goUp(): Promise<void> {
     if (this.trail.length === 1 && this.view === DriveView.Search) { await this.exitSearch(); }
     else { await this.goToTrail(this.trail.length - 2); }
+  }
+
+  uploadDestination(): DriveEntry | undefined {
+    const entry = this.trail[this.trail.length - 1].entry;
+    return this.loaded && !this.busy && this.view !== DriveView.Trash && entry?.capabilities.canRead && entry.capabilities.canWrite ? entry : undefined;
   }
 
   async previousPage(): Promise<void> {
