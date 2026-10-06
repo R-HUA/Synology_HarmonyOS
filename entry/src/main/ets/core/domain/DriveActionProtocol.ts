@@ -51,6 +51,9 @@ export function driveActionFields(input: DriveActionInput, preview: boolean = fa
 
 export function decodeDrivePreflight(data: Record<string, Object>): number {
   const result: Object = data['result'];
+  if (data['async_task_id'] !== undefined) { throw new NasFailure(NasErrorKind.Protocol, '无法确认目标文件夹的检查结果。'); }
+  // Drive 网页只对非空冲突列表提示冲突；兼容空 JSON 结果，缺失或非空未知结构仍拒绝。
+  if (result === null || typeof result === 'object' && !Array.isArray(result) && Object.keys(result).length === 0) { return 0; }
   if (!Array.isArray(result) || (result as Object[]).length > 1000) { throw new NasFailure(NasErrorKind.Protocol, '无法确认目标文件夹的检查结果。'); }
   return (result as Object[]).length;
 }

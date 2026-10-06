@@ -1,4 +1,4 @@
-import { NasErrorKind, NasFailure } from './DsmProtocol';
+import { nasRecord, NasErrorKind, NasFailure } from './DsmProtocol';
 import type { NasFormField } from './DsmProtocol';
 import { decodeDriveResponse, DRIVE_FILES_API, validateDriveFileId } from './DriveProtocol';
 import { NAS_TRANSFER_PREFIX_BYTES, validateNasTransferFilename } from '../network/NasTransferTransport';
@@ -18,6 +18,38 @@ export interface DriveDownloadRequest {
   preview: boolean;
 }
 export interface DriveUploadResult { uploadedBytes: number; }
+export interface DriveSliceProbe { uploadedBytes: number; newlyCreated: boolean; }
+export interface DriveSliceHeaders { 'X-TMP-FILE': string; 'X-TYPE-NAME': string; 'X-FILE-CHUNK-END': string; }
+
+/** 网页 SLICEUPLOAD 固定使用 version；普通 autorename 上传不能冒充同一临时会话续传。 */
+export function driveSliceHeaders(token: string, final: boolean): DriveSliceHeaders {
+  if (!/^[0-9a-f]{32}$/.test(token)) { throw new NasFailure(NasErrorKind.InvalidInput, '上传临时会话无效，请核对原上传结果。'); }
+  return { 'X-TMP-FILE': token, 'X-TYPE-NAME': 'SLICEUPLOAD', 'X-FILE-CHUNK-END': final ? 'true' : 'false' };
+}
+
+export function decodeDriveSliceProbe(status: number, text: string, total: number, started: boolean): DriveSliceProbe {
+  const data = decodeDriveResponse(DRIVE_FILES_API, status, text);
+  const offset = data['uploaded_size'];
+  const newly = data['tmp_newly_created'];
+  if (!Number.isSafeInteger(total) || total < 0 || typeof offset !== 'number' || !Number.isSafeInteger(offset) ||
+    offset < 0 || offset > total || typeof newly !== 'boolean' || (!started && (!newly || offset !== 0))) {
+    throw new NasFailure(NasErrorKind.Protocol, '无法确认原上传的进度，请先在 NAS 核对目标文件。');
+  }
+  // 原 token 消失后探测会创建空会话：旧请求可能已经提交，不能从头重新上传。
+  if (started && newly || started && offset === total) {
+    throw new NasFailure(NasErrorKind.Protocol, '原上传可能已完成或临时会话已过期，请在 NAS 核对后关闭记录。');
+  }
+  return { uploadedBytes: offset, newlyCreated: newly };
+}
+
+/** SDK extras 的 body 才是业务回执；处理量与 COMPLETED 均不能代替它。 */
+export function driveAgentUploadReceipt(status: number, extras: Object | undefined, total: number): DriveUploadResult {
+  const body = extras === undefined ? undefined : nasRecord(extras)['body'];
+  if (typeof body !== 'string' || body.length > 1024 * 1024) {
+    throw new NasFailure(NasErrorKind.Protocol, '上传结果未能确认，请在 NAS 核对目标文件。');
+  }
+  return decodeDriveUpload(status, body, total);
+}
 
 /** multipart 的标量没有 JSON 引号，区别于 P0 普通 RPC；依据原始上传抓包。 */
 export function driveUploadFields(input: DriveUploadRequest): NasFormField[] {

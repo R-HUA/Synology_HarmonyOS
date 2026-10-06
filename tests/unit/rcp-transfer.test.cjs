@@ -111,6 +111,18 @@ const control = onProgress => ({ cancellation: new contracts.NasTransferCancella
 const uploadReply = uploaded => encoder.encode(JSON.stringify({ success: true, data: { tmp_newly_created: true, uploaded_size: uploaded } })).buffer;
 const withSource = (disk, bytes) => { disk.files.set('/cache/src.bin', { name: '/cache/src.bin', bytes: new Uint8Array(bytes) }); return { path: '/cache/src.bin', bytes }; };
 
+test('download ownership is announced only after exclusive creation, and callback failures discard only the new directory', async () => {
+  const f = runtime([]), transport = new f.RcpNasTransport(); let created = 0;
+  f.disk.dirs.add('/cache/existing');
+  await assert.rejects(transport.transfers.download(downloadPlan(), { directory: '/cache/existing', maximumBytes: 10,
+    onDirectoryCreated() { created++; } }, control(), () => {}));
+  assert.equal(created, 0); assert.equal(f.disk.dirs.has('/cache/existing'), true);
+  await assert.rejects(transport.transfers.download(downloadPlan(), { directory: '/cache/new', maximumBytes: 10,
+    onDirectoryCreated() { created++; throw new NasFailure(K.Cancelled, 'closed'); } }, control(), () => {}));
+  assert.equal(created, 1); assert.equal(f.disk.dirs.has('/cache/new'), false); assert.equal(f.requests.length, 0);
+  transport.close();
+});
+
 test('the transfer capability reuses the connection session, uploads from the local path and never follows redirects', async () => {
   const f = runtime([{ chunks: [uploadReply(4)] }]);
   const transport = new f.RcpNasTransport();
@@ -140,6 +152,19 @@ test('the transfer capability reuses the connection session, uploads from the lo
   // 整文件按路径交给 RCP，传输层没有读取它的能力。
   assert.equal(typeof form.fields['file'].contentOrPath, 'string');
   assert.equal(f.disk.io.readSync, undefined);
+  transport.close();
+});
+
+test('the foreground slice transport forwards the original temporary-session headers without changing authentication', async () => {
+  const f = runtime([{ chunks: [uploadReply(4)] }]);
+  const transport = new f.RcpNasTransport();
+  const plan = uploadPlan();
+  plan.headers = { 'X-TMP-FILE': 'a'.repeat(32), 'X-TYPE-NAME': 'SLICEUPLOAD', 'X-FILE-CHUNK-END': 'true' };
+  await transport.transfers.upload(plan, withSource(f.disk, 4), 'PLAN.md', control());
+  assert.equal(f.requests[0].headers['X-TMP-FILE'], 'a'.repeat(32));
+  assert.equal(f.requests[0].headers['X-FILE-CHUNK-END'], 'true');
+  assert.equal(f.requests[0].headers['X-SYNO-TOKEN'], 'private-token');
+  assert.equal(f.requests[0].cookies.id, 'private-sid');
   transport.close();
 });
 

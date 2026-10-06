@@ -55,6 +55,18 @@ async function fixture(options = {}) {
   return { connector, transport, calls, discovery };
 }
 
+test('kernel preserves the background network guard and exclusive-directory ownership notification', async () => {
+  let checked = 0, created = 0;
+  const checkNetwork = () => checked++, onDirectoryCreated = () => created++;
+  const f = await fixture({ onUpload: async ({ control }) => { control.checkNetwork(); return ok({ uploaded_size: 4 }); },
+    onDownload: ({ target, control }) => { target.onDirectoryCreated(); control.checkNetwork(); } });
+  await f.connector.uploadDrive(upload(), source(), { ...control(), background: true, checkNetwork });
+  assert.equal(f.calls[0].control.background, true); assert.equal(f.calls[0].control.checkNetwork, checkNetwork);
+  await f.connector.downloadDrive(download(), { directory: '/cache/owned', maximumBytes: 8, onDirectoryCreated },
+    { ...control(), background: true, checkNetwork });
+  assert.equal(f.calls[1].control.background, true); assert.equal(checked, 2); assert.equal(created, 1);
+});
+
 test('thumbnail uses authenticated GET, bounded binary transport and the current revision', async () => {
   const prefix = new Uint8Array([137,80,78,71,13,10,26,10,0]);
   const f = await fixture({ binary: { status: 200, contentType: 'image/png', contentLength: '9',
@@ -109,6 +121,25 @@ test('Drive upload is an authenticated POST the kernel builds, and the caller ne
   // 调用方多带的字段不会被转发。
   await f.connector.uploadDrive(upload({ version: '9', api: 'SYNO.FileStation.Upload', temp: 'x' }), source(), control());
   assert.equal(f.calls[1].request.fields.length, 7);
+});
+
+test('slice upload uses an empty probe and the same final token, confirming total rather than remainder bytes', async () => {
+  const token = 'a'.repeat(32);
+  const f = await fixture({ onUpload: async context => context.request.headers['X-FILE-CHUNK-END'] === 'false' ?
+    ok({ uploaded_size: 3, tmp_newly_created: false }) : ok({ uploaded_size: 8 }) });
+  const probe = await f.connector.probeDriveUpload(upload(), token, { path: '/cache/empty', bytes: 0 }, 8, true, control());
+  assert.equal(probe.uploadedBytes, 3);
+  const result = await f.connector.uploadDriveSlice(upload(), token, { path: '/cache/remainder', bytes: 5 }, 8, control());
+  assert.equal(result.uploadedBytes, 8);
+  assert.equal(f.calls[0].source.bytes, 0); assert.equal(f.calls[1].source.bytes, 5);
+  assert.equal(f.calls[0].request.headers['X-TMP-FILE'], token); assert.equal(f.calls[1].request.headers['X-TMP-FILE'], token);
+  assert.equal(f.calls[0].request.headers['X-FILE-CHUNK-END'], 'false'); assert.equal(f.calls[1].request.headers['X-FILE-CHUNK-END'], 'true');
+  await assert.rejects(f.connector.probeDriveUpload(upload(), token, source(), 8, true, control()), isKind(K.InvalidInput));
+  assert.throws(() => f.connector.driveUploadPlan(upload({ conflict: 'autorename' }), token), isKind(K.InvalidInput));
+  assert.equal(f.calls.length, 2);
+  const expired = await fixture({ onUpload: async () => errorReply(119) });
+  await assert.rejects(expired.connector.probeDriveUpload(upload(), token, { path: '/cache/empty', bytes: 0 }, 8, true, control()), isKind(K.SessionExpired));
+  assert.equal(expired.connector.hasBusinessSession('FileStation'), false);
 });
 
 test('Drive download builds a GET with the kernel-injected token and an encoded single-file name', async () => {

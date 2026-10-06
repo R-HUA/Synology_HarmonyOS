@@ -64,6 +64,20 @@ test('only visible permitted media loads; duplicate observations share one reque
   assert.equal(f.calls.length, 2);
 });
 
+test('renaming an unchanged media revision reuses its cached thumbnail across row recreation', async () => {
+  const f = fixture();
+  const original = item(1);
+  f.store.setVisible(original, true); await flush();
+  const cached = f.store.path(original);
+  assert.ok(cached.endsWith('/content'));
+  f.store.setVisible(original, false);
+  const renamed = { ...original, name: 'renamed.jpg' };
+  f.store.setVisible(renamed, true); await flush();
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.store.path(renamed), cached);
+  assert.equal(f.removed.length, 0);
+});
+
 test('concurrency is bounded and hidden queued rows never start', async () => {
   const pending = gate(); const f = fixture({ download: () => pending.promise });
   for (let n = 1; n <= 8; n++) f.store.setVisible(item(n), true);

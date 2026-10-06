@@ -19,6 +19,9 @@ import { DriveBrowserModel } from '../drive/DriveBrowserModel';
 import { DriveTransferModel } from '../drive/DriveTransferModel';
 import { DriveThumbnailStore } from '../drive/DriveThumbnailStore';
 import { DriveActionModel } from '../drive/DriveActionModel';
+import { DriveOriginalModel } from '../drive/DriveOriginalModel';
+import { DriveSharingModel } from '../drive/DriveSharingModel';
+import { DriveNotificationsModel } from '../drive/DriveNotificationsModel';
 import type { NasConnectionAddress } from '../../core/domain/ConnectionRoutes';
 
 export { FileEditResult, FileTaskItem } from '../../core/domain/FileOperations';
@@ -63,6 +66,9 @@ export class ConnectionViewModel {
   readonly driveTransfers: DriveTransferModel = new DriveTransferModel();
   readonly driveThumbnails: DriveThumbnailStore = new DriveThumbnailStore();
   readonly driveActions: DriveActionModel = new DriveActionModel();
+  readonly driveOriginal: DriveOriginalModel = new DriveOriginalModel();
+  readonly driveSharing: DriveSharingModel = new DriveSharingModel();
+  readonly driveNotifications: DriveNotificationsModel = new DriveNotificationsModel();
   @Trace deviceCheckText: string = '尚未登记设备身份';
   /** 首页设备卡：型号与服务器名称（设备名称），任一读不到就留空由界面兜底。 */
   @Trace deviceModel: string = '';
@@ -391,11 +397,12 @@ export class ConnectionViewModel {
       if (ticket !== this.generation || connector !== this.connector || !this.authenticated) {
         throw new NasFailure(NasErrorKind.Cancelled, '当前 NAS 连接已变化，请重新进入系统控制。');
       }
-      if (!this.queue.ready || !this.fileTasksReady || !this.driveTransfers.ready || !this.driveActions.ready) {
+      if (!this.queue.ready || !this.fileTasksReady || !this.driveTransfers.ready || !this.driveActions.ready || !this.driveSharing.ready) {
         throw new NasFailure(NasErrorKind.InvalidInput, '请先在任务页成功读取传输和文件操作记录，再进行系统控制。');
       }
-      if (this.driveActions.busy || this.driveActions.hasPending || this.driveTransfers.busy || this.driveTransfers.items.some((item): boolean =>
-        ['preparing', 'running', 'unknown'].includes(item.state)) || this.queue.busy || this.queue.items.some((item): boolean =>
+      if (this.driveSharing.busy || this.driveSharing.hasPending || this.driveActions.busy || this.driveActions.hasPending ||
+        this.driveTransfers.busy || this.driveTransfers.items.some((item): boolean =>
+        !['completed', 'failed', 'cancelled', 'closed'].includes(item.state)) || this.queue.busy || this.queue.items.some((item): boolean =>
         !['completed', 'cancelled', 'failed', 'closed'].includes(item.state)) ||
         this.fileTasks.some((item: FileTaskItem): boolean => !['completed', 'failed'].includes(item.state))) {
         throw new NasFailure(NasErrorKind.InvalidInput, '仍有进行中或结果待核对的传输、文件操作，请先处理任务；不会为系统控制自动停止或重试它们。');
@@ -677,16 +684,31 @@ export class ConnectionViewModel {
     }, this.insecureTls);
     if (this.context === undefined) { return; }
     const ticket = this.generation;
+    this.driveOriginal.attach(this.context, connector, async (error: NasFailure): Promise<void> => {
+      if (ticket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'drive-original'); }
+    });
+    this.driveNotifications.attach(connector, async (error: NasFailure): Promise<void> => {
+      if (ticket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'drive-notifications'); }
+    });
+    await this.driveSharing.attach(this.context, connector, this.address, this.account.trim(), async (error: NasFailure): Promise<void> => {
+      if (ticket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'drive-sharing'); }
+    }, (): boolean => !this.busy && this.authenticated && ticket === this.generation && connector === this.connector &&
+      this.driveActions.ready && !this.driveActions.busy && !this.driveActions.hasPending &&
+      this.driveTransfers.ready && !this.driveTransfers.busy &&
+      !this.driveTransfers.items.some((item): boolean => !['completed', 'failed', 'cancelled', 'closed'].includes(item.state)));
+    if (ticket !== this.generation) { return; }
     await this.driveTransfers.attach(this.context, connector, this.address, this.account.trim(), async (error: NasFailure): Promise<void> => {
       if (ticket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'drive-transfer'); }
     }, (): boolean => !this.busy && this.authenticated && ticket === this.generation && connector === this.connector &&
-      this.driveActions.ready && !this.driveActions.busy && !this.driveActions.hasPending);
+      this.driveActions.ready && !this.driveActions.busy && !this.driveActions.hasPending &&
+      this.driveSharing.ready && !this.driveSharing.busy && !this.driveSharing.hasPending, this.insecureTls);
     if (ticket !== this.generation) { return; }
     await this.driveActions.attach(this.context, connector, this.address, this.account.trim(), async (error: NasFailure): Promise<void> => {
       if (ticket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'drive-action'); }
     }, (): boolean => !this.busy && this.authenticated && ticket === this.generation && connector === this.connector &&
       this.driveTransfers.ready && !this.driveTransfers.busy &&
-      !this.driveTransfers.items.some((item): boolean => item.state === 'unknown'));
+      !this.driveTransfers.items.some((item): boolean => !['completed', 'failed', 'cancelled', 'closed'].includes(item.state)) &&
+      this.driveSharing.ready && !this.driveSharing.busy && !this.driveSharing.hasPending);
     if (ticket !== this.generation) { return; }
     await this.attachFileTasks();
     if (ticket !== this.generation) { return; }
@@ -756,7 +778,7 @@ export class ConnectionViewModel {
   async disconnect(): Promise<void> {
     if (this.busy || this.queue.busy) { return; }
     this.busy = true;
-    try { await this.driveActions.stopAll(); await this.driveTransfers.stopAll(); await this.queue.stopAll(); }
+    try { await this.driveSharing.stopAll(); await this.driveActions.stopAll(); await this.driveTransfers.stopAll(); await this.queue.stopAll(); }
     catch (error) {
       this.errorText = error instanceof NasFailure ? error.message : '停止传输失败，请在任务页重试后再退出账号。';
       this.busy = false;
@@ -892,6 +914,9 @@ export class ConnectionViewModel {
     this.driveTransfers.detach();
     this.driveThumbnails.detach();
     this.driveActions.detach();
+    this.driveOriginal.detach();
+    this.driveSharing.detach();
+    this.driveNotifications.detach();
     this.fileSort = 'name';
     this.sortDescending = false;
     this.actionNotice = '';
@@ -927,6 +952,14 @@ export class ConnectionViewModel {
     if (error instanceof NasFailure) {
       if (error.kind === NasErrorKind.OtpRequired || error.kind === NasErrorKind.OtpInvalid) { this.needsOtp = true; }
       if (error.kind === NasErrorKind.SessionExpired) {
+        try {
+          await this.driveSharing.stopAll(); await this.driveActions.stopAll(); await this.driveTransfers.stopAll(); await this.queue.stopAll();
+        } catch (stopError) {
+          this.errorText = '登录已失效，后台任务未能停止，请在任务页处理后再退出账号。' +
+            (stopError instanceof NasFailure ? ' ' + stopError.message : '');
+          return;
+        }
+        if (ticket !== this.generation) { return; }
         this.connector?.close();
         this.connector = undefined;
         this.connected = false;

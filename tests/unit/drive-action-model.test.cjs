@@ -58,7 +58,7 @@ function fixture(options = {}) {
   };
   const model = new mod.exports.DriveActionModel();
   const attach = account => model.attach({ filesDir: '/private' }, kernel, 'https://nas.test', account,
-    async error => failures.push(error), () => options.canWrite !== false);
+    async error => { failures.push(error); if (options.sessionFailure) await options.sessionFailure(model, error); }, () => options.canWrite !== false);
   return { model, events, history, failures, timers, attach, options,
     requests: () => events.filter(e => e[0] === 'request') };
 }
@@ -85,6 +85,30 @@ test('target selection performs only dry run; accepted task is stored then queri
   await f.model.refresh(id); await f.model.refresh(id);
   assert.deepEqual(f.requests().map(e => e[1]), ['move', 'move', 'get']);
   assert.equal(f.model.items[0].state, 'completed');
+});
+
+test('empty preflight results make move and copy destinations selectable and still require explicit submission', async () => {
+  for (const action of ['move', 'copy']) {
+    for (const result of [null, {}]) {
+      const f = fixture({ request: (_, params) => params.dry_run === 'true' ? { result } : undefined });
+      await f.attach('alice');
+      await f.model.prepare(file(), action);
+      await f.model.selectDestination(folder());
+      assert.equal(f.model.errorText, '');
+      assert.equal(f.model.draft.target.fileId, folder().fileId);
+      assert.equal(f.model.draft.conflicts, 0);
+      assert.equal(f.model.items.length, 0);
+      assert.equal(f.events.filter(e => e[0] === 'save').length, 0);
+      assert.equal(f.requests().length, 1);
+      assert.equal(f.requests()[0][2].dry_run, 'true');
+      assert.equal(await f.model.submit(), true);
+      assert.equal(f.model.items[0].state, 'accepted');
+      const write = f.events.findIndex(e => e[0] === 'request' && e[2].dry_run !== 'true');
+      assert.equal(f.events[write - 1][0], 'save');
+      assert.equal(f.events[write - 1][2][0].state, 'unknown');
+      assert.equal(f.requests()[1][2].conflict_action, '"autorename"');
+    }
+  }
 });
 
 test('failed persistence before dispatch sends nothing and completion-save failure freezes further writes', async () => {
@@ -197,4 +221,11 @@ test('accepted work cannot be removed or submitted again; session expiry retains
   const expired = fixture({ request: () => { throw new dsm.NasFailure(dsm.NasErrorKind.SessionExpired, 'expired'); } });
   await expired.attach('alice'); await expired.model.prepare(file(), 'delete'); await expired.model.submit();
   assert.equal(expired.failures.length, 1); assert.equal(expired.history.get('alice')[0].state, 'unknown');
+});
+
+test('session expiry permits the connection callback to await action shutdown without waiting on its own tail', { timeout: 2000 }, async () => {
+  const f = fixture({ request: () => { throw new dsm.NasFailure(dsm.NasErrorKind.SessionExpired, 'expired'); },
+    sessionFailure: async model => { await model.stopAll(); } });
+  await f.attach('alice'); await f.model.prepare(file(), 'delete'); await f.model.submit();
+  assert.equal(f.failures.length, 1); assert.equal(f.model.items[0].state, 'unknown');
 });

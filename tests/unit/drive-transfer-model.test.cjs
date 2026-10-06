@@ -54,6 +54,10 @@ function fixture(options = {}) {
     '../../core/domain/DriveTransferState': state, '../../core/network/DriveTransferAdapter': adapter,
     '../../core/network/NasConnector': {}, '../../core/network/NasTransferTransport': transport,
     '../../platform/SdkFileIO': { async closeFile() {} }, './DriveTransferStore': { DriveTransferStore: Store },
+    './DriveBackgroundTransfer': { DriveBackgroundTransfer: class {} },
+    '../../platform/SdkBackgroundTransfer': { SdkBackgroundTransfer: class { static available() { return false; } async stop() {} active = false; } },
+    './DriveDownloadVerification': { async verifyDriveDownloadedFile() { throw new Error('unexpected verification'); } },
+    './DriveUploadSlice': { async copyDriveUploadRemainder() {} },
     '../transfers/TransferQueueFiles': {
       async ensureTransferDirectory(dir) { events.push(['mkdir', dir]); },
       async removeTransferFile(file) { events.push(['unlink', file]); },

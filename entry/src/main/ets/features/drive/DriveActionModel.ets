@@ -243,6 +243,7 @@ export class DriveActionModel {
     this.busy = true;
     this.errorText = '';
     this.notice = '';
+    let failure: NasFailure | undefined = undefined;
     const job = async (): Promise<void> => {
       try { this.check(session); await action(session); }
       catch (error) {
@@ -250,11 +251,12 @@ export class DriveActionModel {
         this.publish(session);
         this.errorText = error instanceof NasFailure ? error.message : 'Drive 操作未完成，请保留记录后重试。';
         hilog.error(0x0000, 'NasDrive', 'operation=file_action kind=%{public}d', error instanceof NasFailure ? error.kind : -1);
-        if (error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) { await session.onSessionFailure(error); }
+        if (error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) { failure = error; }
       } finally { if (this.session === session) { this.busy = false; this.schedule(); } }
     };
     this.tail = this.tail.then(job, job);
     await this.tail;
+    if (failure !== undefined && this.session === session) { await session.onSessionFailure(failure); }
   }
   private stopTimer(): void { if (this.timer >= 0) { clearTimeout(this.timer); this.timer = -1; } }
   private schedule(): void {

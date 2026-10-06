@@ -190,6 +190,11 @@ async function fixture(options = {}) {
     '../extensions/NasExtensionsModel': { NasExtensionsModel: class { async attach() {} reset() {} } },
     '../drive/DriveBrowserModel': { DriveBrowserModel: class { attach() {} detach() {} reset() {} } },
     '../drive/DriveThumbnailStore': { DriveThumbnailStore: class { attach() {} detach() {} } },
+    '../drive/DriveOriginalModel': { DriveOriginalModel: class { attach() {} detach() {} async close() {} } },
+    '../drive/DriveSharingModel': { DriveSharingModel: class {
+      ready = true; busy = false; hasPending = false; async attach() {} detach() {} async stopAll() {}
+    } },
+    '../drive/DriveNotificationsModel': { DriveNotificationsModel: class { attach() {} detach() {} } },
     '../drive/DriveActionModel': { DriveActionModel: class {
       ready = true; busy = false; hasPending = false;
       async attach(...args) { this.canWrite = args[5]; }
@@ -197,7 +202,7 @@ async function fixture(options = {}) {
     } },
     '../drive/DriveTransferModel': { DriveTransferModel: class {
       ready = true; busy = false; items = [];
-      async attach(...args) { this.canStart = args[5]; }
+      async attach(...args) { this.canStart = args[5]; this.insecureTls = args[6]; }
       async stopAll() { record('drive.stopAll'); if (state.driveStopGate) await state.driveStopGate.promise; }
       detach() { record('drive.detach'); }
     } },
@@ -633,6 +638,20 @@ test('failed new-origin discovery is not successful switching and cannot restore
   assert.equal(model.savedSession, false);
   assert.equal(model.account, '');
   assert.ok(model.errorText);
+});
+
+test('Drive background mode receives the active TLS policy when the connection attaches', async () => {
+  const { model } = await fixture(); model.insecureTls = true;
+  await model.connect(); await model.login();
+  assert.equal(model.driveTransfers.insecureTls, true);
+});
+
+test('session expiry waits for old Drive background tasks to stop before clearing the account', async () => {
+  const { model, state } = await fixture(); await model.connect(); await model.login();
+  const stopping = deferred(); state.driveStopGate = stopping;
+  const expiring = model.showFailure(failure(K.SessionExpired), 'drive');
+  await new Promise(setImmediate); assert.equal(model.authenticated, true);
+  stopping.resolve(); await expiring; assert.equal(model.authenticated, false);
 });
 
 for (const kind of [K.Permission, K.Unsupported]) {

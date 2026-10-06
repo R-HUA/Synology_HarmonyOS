@@ -121,6 +121,11 @@ export interface DriveEntry {
   capabilities: DriveCapabilities;
 }
 
+/** 元数据变化也要重建 ForEach 行及其回调；不能复用仅标识内容修订的缩略图缓存键。 */
+export function driveEntryRenderKey(entry: DriveEntry): string {
+  return JSON.stringify(entry);
+}
+
 export interface DrivePage {
   items: DriveEntry[];
   total: number;

@@ -5,7 +5,7 @@ const {
   decodeDrivePage, decodeDriveEntry, decodeDriveEntryList, decodeDriveResponse, driveListFields,
   drivePathExpression, precisionSafeDriveJson, relabelDriveFailure, unknownDriveEntryKeys,
   validateDriveFileId, DRIVE_ENTRY_KEYS, DRIVE_PAGE_SIZE, DriveEntryKind, DriveSortBy, DriveSortDirection,
-  DriveSpace, DriveView, decodeDriveViewPage, driveViewFields, driveSearchFields, decodeDriveAncestors,
+  DriveSpace, DriveView, decodeDriveViewPage, driveViewFields, driveSearchFields, decodeDriveAncestors, driveEntryRenderKey,
 } = require('../../work/core-build/domain/DriveProtocol.js');
 const readonlyContract = require('../fixtures/drive-readonly-contract.json');
 const { DriveAdapter } = require('../../work/core-build/network/DriveAdapter.js');
@@ -37,6 +37,41 @@ function entryFixture(overrides = {}) {
     ...overrides,
   };
 }
+
+test('Drive render keys stay stable for identical decoded data and never mutate an entry', () => {
+  const entry = decodeDriveEntry(entryFixture());
+  const before = JSON.stringify(entry);
+  const key = driveEntryRenderKey(entry);
+  assert.equal(key, driveEntryRenderKey(decodeDriveEntry(entryFixture())));
+  assert.equal(key, driveEntryRenderKey(JSON.parse(before)));
+  assert.equal(JSON.stringify(entry), before);
+  assert.notEqual(key, driveEntryRenderKey({ ...entry, fileId: ROOT_ID }));
+});
+
+test('Drive render keys change for metadata-only updates without changing the content revision', () => {
+  const original = decodeDriveEntry(entryFixture());
+  const key = driveEntryRenderKey(original);
+  for (const change of [
+    { name: 'renamed.docx' }, { kind: DriveEntryKind.Folder }, { parentId: '7' },
+    { pathText: '/mydrive/other/report.docx' }, { displayPath: 'other/report.docx' },
+    { revisionCount: 4 }, { revisionCount: undefined }, { starred: false }, { shared: false },
+    { owner: { ...original.owner, displayName: '新名称' } },
+  ]) {
+    const updated = { ...original, ...change };
+    assert.deepEqual([updated.fileId, updated.versionId, updated.modifiedAt, updated.sizeBytes],
+      [original.fileId, original.versionId, original.modifiedAt, original.sizeBytes]);
+    assert.notEqual(driveEntryRenderKey(updated), key, JSON.stringify(change));
+  }
+});
+
+test('every decoded Drive capability participates in the row render key', () => {
+  const original = decodeDriveEntry(entryFixture());
+  const key = driveEntryRenderKey(original);
+  for (const capability of Object.keys(original.capabilities)) {
+    const updated = { ...original, capabilities: { ...original.capabilities, [capability]: !original.capabilities[capability] } };
+    assert.notEqual(driveEntryRenderKey(updated), key, capability);
+  }
+});
 
 test('driveListFields encodes values exactly like the captured Drive Web UI requests', () => {
   const fields = driveListFields({ space: DriveSpace.MyDrive }, 0);

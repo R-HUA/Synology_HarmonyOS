@@ -11,7 +11,7 @@ test('missing system transfer capability fails before calling SDK operations', a
   const unsupported = error => error.kind === protocol.NasErrorKind.Unsupported;
   for (const action of [() => sdkTransferAgent.create({}, {}), () => sdkTransferAgent.getTask({}, '1'),
     () => sdkTransferAgent.show('1'), () => sdkTransferAgent.search({}), () => sdkTransferAgent.remove('1'),
-    () => sdkTransferAgent.start({}), () => sdkTransferAgent.stop({})]) {
+    () => sdkTransferAgent.start({}), () => sdkTransferAgent.stop({}), () => sdkTransferAgent.pause({}), () => sdkTransferAgent.resume({})]) {
     await assert.rejects(action(), unsupported);
   }
   assert.throws(() => sdkTransferAgent.observe({}, {}), unsupported);
@@ -25,7 +25,8 @@ test('synchronous throws and asynchronous rejections preserve task-not-found cod
       const { sdkTransferAgent } = load({ create: fail, getTask: fail, show: fail, search: fail, remove: fail }, protocol);
       for (const action of [() => sdkTransferAgent.create({}, {}), () => sdkTransferAgent.getTask({}, '1'),
         () => sdkTransferAgent.show('1'), () => sdkTransferAgent.search({}), () => sdkTransferAgent.remove('1'),
-        () => sdkTransferAgent.start({ start: fail }), () => sdkTransferAgent.stop({ stop: fail })]) {
+        () => sdkTransferAgent.start({ start: fail }), () => sdkTransferAgent.stop({ stop: fail }),
+        () => sdkTransferAgent.pause({ pause: fail }), () => sdkTransferAgent.resume({ resume: fail })]) {
         await assert.rejects(action(), error => error.code === code && !/private/.test(error.message));
       }
     }

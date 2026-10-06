@@ -1,0 +1,23 @@
+{
+  "evidence": {
+    "fileLink": "Sharing.create_link v1 success shape recorded in Drive_Implementation_Plan section 16; URL below is sanitized synthetic",
+    "notificationsEmpty": "Notifications.list v1 successful empty shape recorded in Drive_Implementation_Plan API map; no non-empty live response captured",
+    "notificationsNonEmpty": "Synthetic contract fixtures derived from target NAS synodrive_common.js WebAPIDesc.list_notifications, Notification.Menu.getStore/getMsgFromNotificationType/getMsgDate/getBackgroundTaskMsg",
+    "ordinaryLink": "target NAS drive_bundle.js setFileLink always uses get_file_link outside advSharing page; can_share guards protection-link and sharing-settings controls separately",
+    "officialProductSemantics": "https://kb.synology.com/en-global/DSM/tutorial/Synology_Drive_file_sharing_mobile_client",
+    "openSourceFileLinkCrossCheck": "https://github.com/zbjdonald/synology-drive-api/blob/master/synology_drive_api/files.py#create_link: Sharing v1 create_link with path; separate share_file uses AdvanceSharing to edit protection-link permissions",
+    "openSourceNotificationCrossCheck": "https://github.com/N4S4/synology-api/blob/master/synology_api/drive_admin_console.py#drive_notification_list: Notifications.list items/total; target NAS webpage uses limit=100; offset is not used here because target NAS contract is unverified",
+    "activeSharesGap": "Share.list_active has no stable non-empty target NAS response. N4S4 drive_admin_console.py calls it active shares and describes Share.list as team-folder shares, so it cannot be interpreted as generated file-link history"
+  },
+  "fileLink": { "url": "https://drive.example.test/?launchApp=SYNO.SDS.Drive.Application#file/example-id" },
+  "notificationsEmpty": { "items": [], "total": 0 },
+  "notifications": {
+    "items": [
+      { "notification_id": "example-1", "time": 1760000000, "type": "drive#share_with_me", "sender": { "display_name": "示例同事" }, "content": { "name": "共享资料", "file_type": "dir" } },
+      { "notification_id": "example-2", "time": 1760000001, "type": "drive#comment_reply", "sender": { "display_name": "示例同事" }, "content": { "name": "示例文档.osheet", "file_type": "file" } },
+      { "notification_id": 3, "time": 1760000002, "type": "drive#upload_task", "sender": { "display_name": "示例用户" }, "content": { "names": ["示例照片.jpg", "示例笔记.txt"], "action": "upload", "success": true } },
+      { "notification_id": "example-4", "time": 1760000003, "type": "drive#future_type", "sender": { "display_name": "示例用户" }, "content": { "name": "示例文件.txt", "unexpected_message": "must not display raw server message" } }
+    ],
+    "total": 4
+  }
+}

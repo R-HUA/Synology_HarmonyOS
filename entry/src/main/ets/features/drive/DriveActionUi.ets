@@ -1,4 +1,4 @@
-import { DriveEntryKind, DriveView } from '../../core/domain/DriveProtocol';
+import { DriveEntryKind, DriveView, driveEntryRenderKey } from '../../core/domain/DriveProtocol';
 import type { DriveEntry } from '../../core/domain/DriveProtocol';
 import { driveActionText, driveActionStateText } from '../../core/domain/DriveActionState';
 import type { DriveActionRecord } from '../../core/domain/DriveActionState';
@@ -84,7 +84,7 @@ export struct DriveActionPage {
               }.width('100%')
             }
           }
-        }, (entry: DriveEntry): string => entry.fileId)
+        }, (entry: DriveEntry): string => driveEntryRenderKey(entry))
         ListItem() {
           Row({ space: 8 }) {
             Button('上一页').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: WorkbenchMetrics.touchSize })

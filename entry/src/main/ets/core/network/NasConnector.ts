@@ -28,9 +28,9 @@ import type { BusinessSessionName, BusinessSessionRecord } from './SessionRegist
 import type { NasHttpReply, NasTransport } from './DsmRpcClient';
 import type { DriveKernelPort } from './DriveAdapter';
 import type { DriveTransferKernelPort } from './DriveTransferAdapter';
-import { decodeDriveUpload, DRIVE_TRANSFER_VERSION, driveUploadFields, driveDownloadFields,
+import { decodeDriveUpload, decodeDriveSliceProbe, driveSliceHeaders, DRIVE_TRANSFER_VERSION, driveUploadFields, driveDownloadFields,
   validateDriveDownload } from '../domain/DriveTransferProtocol';
-import type { DriveUploadRequest, DriveDownloadRequest, DriveUploadResult } from '../domain/DriveTransferProtocol';
+import type { DriveUploadRequest, DriveDownloadRequest, DriveSliceProbe, DriveUploadResult } from '../domain/DriveTransferProtocol';
 import { DRIVE_THUMBNAIL_MAX_BYTES, driveThumbnailFields, validateDriveThumbnail } from '../domain/DriveThumbnailProtocol';
 import type { DriveThumbnailRequest } from '../domain/DriveThumbnailProtocol';
 import { NasTransferCancellation, validateNasDownloadTarget, validateNasUploadSource } from './NasTransferTransport';
@@ -50,7 +50,8 @@ export const NAS_DISCOVERY_QUERY = 'SYNO.API.Auth,SYNO.FileStation.List,SYNO.Fil
   'SYNO.FileStation.CreateFolder,SYNO.FileStation.Rename,SYNO.FileStation.Delete,SYNO.FileStation.CopyMove,SYNO.FileStation.MD5,' +
   'SYNO.FileStation.Sharing,SYNO.DownloadStation.Task,' +
   // Drive 是独立套件，必须单独问；SYNO.API.Info 只回答被问到的名字。
-  'SYNO.SynologyDrive.Files,SYNO.SynologyDrive.TeamFolders,SYNO.SynologyDrive.Trash,' +
+  'SYNO.SynologyDrive.Files,SYNO.SynologyDrive.TeamFolders,SYNO.SynologyDrive.Trash,SYNO.SynologyDrive.Tasks,' +
+  'SYNO.SynologyDrive.Sharing,SYNO.SynologyDrive.Share,SYNO.SynologyDrive.Settings,SYNO.SynologyDrive.Notifications,' +
   'SYNO.Core.System,SYNO.Core.System.Utilization,SYNO.Storage.CGI.Storage';
 
 interface DriveTransferScope {
@@ -85,7 +86,8 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     { feature: 'driveSearch', api: DRIVE_FILES_API, verifiedVersions: [DRIVE_SEARCH_VERSION] },
     { feature: 'driveAncestors', api: DRIVE_FILES_API, verifiedVersions: [DRIVE_ANCESTORS_VERSION] },
     { feature: 'driveTeamFolders', api: DRIVE_TEAM_FOLDERS_API, verifiedVersions: [DRIVE_TEAM_FOLDERS_VERSION] },
-    { feature: 'driveTrash', api: DRIVE_TRASH_API, verifiedVersions: [DRIVE_TRASH_VERSION] }
+    { feature: 'driveTrash', api: DRIVE_TRASH_API, verifiedVersions: [DRIVE_TRASH_VERSION] },
+    { feature: 'driveNotifications', api: 'SYNO.SynologyDrive.Notifications', verifiedVersions: [1] }
   ]);
   constructor(private transport: NasTransport, private sessionName: 'FileStation' | 'NasControl' = 'FileStation') {
     this.rpc = new DsmRpcClient(transport);
@@ -803,6 +805,50 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     } finally { scope.dispose(); }
   }
 
+  /** 计划仅交给后台驱动，不持久保存 Cookie/token 或向页面公开。 */
+  driveUploadPlan(input: DriveUploadRequest, token?: string): NasTransferRequest {
+    if (token !== undefined && input.conflict !== 'version') {
+      throw new NasFailure(NasErrorKind.InvalidInput, '继续原上传需要保存新版本。');
+    }
+    const plan = this.driveTransferRequest('upload', driveUploadFields(input));
+    if (token !== undefined) { plan.headers = { ...driveSliceHeaders(token, true) }; }
+    return plan;
+  }
+
+  driveDownloadPlan(input: DriveDownloadRequest): NasTransferRequest {
+    const suffix = (input.preview ? '/' : '/SYNO.SynologyDrive.Files/') + encodeURIComponent(input.filename);
+    return this.driveTransferRequest('download', driveDownloadFields(input), suffix);
+  }
+
+  async probeDriveUpload(input: DriveUploadRequest, token: string, source: NasUploadSource, total: number,
+    started: boolean, control: NasTransferControl): Promise<DriveSliceProbe> {
+    if (source.bytes !== 0) { throw new NasFailure(NasErrorKind.InvalidInput, '上传进度检查必须使用空文件。'); }
+    const reply = await this.sendDriveSlice(input, token, source, false, control);
+    try { return decodeDriveSliceProbe(reply.status, reply.text, total, started); }
+    catch (error) { if (error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) { this.invalidateSession('FileStation'); } throw error; }
+  }
+
+  async uploadDriveSlice(input: DriveUploadRequest, token: string, source: NasUploadSource, total: number,
+    control: NasTransferControl): Promise<DriveUploadResult> {
+    const reply = await this.sendDriveSlice(input, token, source, true, control);
+    try { return decodeDriveUpload(reply.status, reply.text, total); }
+    catch (error) { if (error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) { this.invalidateSession('FileStation'); } throw error; }
+  }
+
+  private async sendDriveSlice(input: DriveUploadRequest, token: string, source: NasUploadSource, final: boolean,
+    control: NasTransferControl): Promise<NasHttpReply> {
+    validateNasUploadSource(source);
+    const plan = this.driveUploadPlan(input, token);
+    plan.headers = { ...driveSliceHeaders(token, final) };
+    const scope = this.beginDriveTransfer(control);
+    try {
+      const reply = await scope.transport.upload(plan, { path: source.path, bytes: source.bytes }, input.filename, scope.control);
+      this.checkDriveTransfer(scope);
+      return reply;
+    } catch (error) { this.driveTransferFailed(scope, error); throw error; }
+    finally { scope.dispose(); }
+  }
+
   async downloadDrive(input: DriveDownloadRequest, target: NasDownloadTarget,
     control: NasTransferControl): Promise<NasDownloadResult> {
     validateNasDownloadTarget(target);
@@ -825,6 +871,7 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     control: NasTransferControl, validate: (reply: NasBinaryReply, output: NasDownloadTarget) => void): Promise<NasDownloadResult> {
     const output: NasDownloadTarget = { directory: target.directory, maximumBytes: target.maximumBytes,
       expectedBytes: target.expectedBytes };
+    if (target.onDirectoryCreated !== undefined) { output.onDirectoryCreated = target.onDirectoryCreated; }
     const scope = this.beginDriveTransfer(control);
     let receipt: NasDownloadReceipt | undefined = undefined;
     try {
@@ -873,7 +920,7 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     this.driveTransfers.add(cancellation);
     const unsubscribe = control.cancellation.subscribe((): void => { cancellation.cancel(); });
     const onProgress = control.onProgress;
-    return { ticket, sessionRevision, transport, control: { cancellation,
+    return { ticket, sessionRevision, transport, control: { cancellation, background: control.background, checkNetwork: control.checkNetwork,
       onProgress: (progress: NasTransferProgress): void => {
         this.ensureSessionCurrent(ticket, 'FileStation', sessionRevision);
         cancellation.check();

@@ -44,6 +44,58 @@ function fixture(reply = () => ({ items: [], total: 0 }), supported = () => true
   return { model, calls, failures, kernel };
 }
 
+function pageRenderKey(relative, dataSource) {
+  const source = fs.readFileSync(path.join(__dirname, '../../entry/src/main/ets', relative), 'utf8');
+  const start = source.indexOf(`ForEach(${dataSource},`);
+  assert.ok(start >= 0, relative);
+  const match = source.slice(start).match(/\}, \(entry: DriveEntry\): string => ([^\r\n]+)\)/);
+  assert.ok(match, relative);
+  // 执行页面实际使用的键表达式；旧的内容修订键和 id-only 键都必须被回归测试检出。
+  return vm.runInNewContext(`(entry) => ${match[1]}`, { driveEntryRenderKey: drive.driveEntryRenderKey });
+}
+
+for (const [relative, dataSource, view] of [
+  ['pages/Index.ets', 'this.model.drive.entries', V.MyDrive],
+  ['features/drive/DriveActionUi.ets', 'this.model.destinations.entries', V.TeamFolders],
+]) {
+  test(`${relative} refreshes row data and captured actions after metadata-only reloads`, async () => {
+    const keyOf = pageRenderKey(relative, dataSource);
+    const original = { ...entry('900000000000000001'), name: '旧目录', parent_id: '7', revisions: 1,
+      version_id: '1', modified_time: 1700000000, size: 0,
+      capabilities: { can_read: true, can_write: true, can_rename: true, can_delete: true } };
+    const changes = view === V.TeamFolders ? [
+      { name: '新目录' }, { capabilities: { ...original.capabilities, can_write: false } },
+    ] : [
+      { name: '新目录' }, { capabilities: { ...original.capabilities, can_delete: false } },
+      { parent_id: '8' }, { display_path: '另一位置/旧目录' }, { revisions: 2 },
+    ];
+    let raw = original;
+    const f = fixture(() => ({ total: 1, items: [raw] }));
+    for (const change of changes) {
+      raw = original;
+      await f.model.selectView(view);
+      await f.model.reload();
+      const previous = f.model.entries[0];
+      const previousKey = keyOf(previous);
+      // 只模拟 ForEach 同键保留生成结果的契约，不冒充 ArkUI 运行时渲染。
+      const rows = new Map([[previousKey, { title: previous.name, onOpen: () => previous }]]);
+      raw = { ...original, ...change };
+      await f.model.reload();
+      const current = f.model.entries[0];
+      const currentKey = keyOf(current);
+      assert.equal(current.fileId, previous.fileId);
+      assert.deepEqual([current.versionId, current.modifiedAt, current.sizeBytes],
+        [previous.versionId, previous.modifiedAt, previous.sizeBytes]);
+      assert.notEqual(currentKey, previousKey, JSON.stringify(change));
+      const row = rows.get(currentKey) || { title: current.name, onOpen: () => current };
+      assert.equal(row.title, current.name);
+      assert.equal(row.onOpen(), current);
+      await f.model.reload();
+      assert.equal(keyOf(f.model.entries[0]), currentKey);
+    }
+  });
+}
+
 test('search paging and folder return preserve the accepted query after a failed replacement', async () => {
   const f = fixture(({ method, fields }) => {
     if (method === 'search') {

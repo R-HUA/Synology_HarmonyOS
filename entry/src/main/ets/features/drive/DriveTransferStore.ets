@@ -12,6 +12,7 @@ export class DriveTransferStore {
   directory: string = '';
   private scope: string = '';
   private loaded: boolean = false;
+  get identity(): string { return this.scope; }
 
   async load(context: common.UIAbilityContext, origin: string, account: string): Promise<DriveTransferRecord[]> {
     this.loaded = false;

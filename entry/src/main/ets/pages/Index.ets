@@ -4,7 +4,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileUri } from '@kit.CoreFileKit';
 import { HdsNavigation, HdsNavigationTitleMode, HdsNavDestination, HdsTabs, HdsTabsController, hdsMaterial, IconStyleMode, ScrollEffectType } from '@kit.UIDesignKit';
 import { NasFailure, NasFileEntry } from '../core/domain/DsmProtocol';
-import { DriveEntry, DriveEntryKind, DriveView, driveViewLabel } from '../core/domain/DriveProtocol';
+import { DriveEntry, DriveEntryKind, DriveView, driveViewLabel, driveEntryRenderKey } from '../core/domain/DriveProtocol';
 import { DRIVE_BROWSER_VIEWS } from '../features/drive/DriveBrowserModel';
 import type { DriveTrailItem } from '../features/drive/DriveBrowserModel';
 import { DriveTransferRecord } from '../core/domain/DriveTransferState';
@@ -13,6 +13,11 @@ import { driveActionAllowed } from '../core/domain/DriveActionProtocol';
 import type { DriveAction } from '../core/domain/DriveActionProtocol';
 import type { DriveActionRecord } from '../core/domain/DriveActionState';
 import { DriveActionPage, DriveActionSummary, DriveActionCard } from '../features/drive/DriveActionUi';
+import { DriveOriginalPage } from '../features/drive/DriveOriginalUi';
+import { takeDriveTransferIntent } from '../features/drive/DriveTransferIntent';
+import { canPreviewDriveOriginal } from '../core/domain/DriveOriginalProtocol';
+import { DriveSharingPage, DriveNotificationsPage } from '../features/drive/DriveCollaborationUi';
+import { driveFileLinkAllowed } from '../core/domain/DriveCollaborationProtocol';
 import { NasPhotoItem, NasPhotoAlbum, PhotosSpace } from '../core/domain/PhotosProtocol';
 import { PhotoBackup } from '../features/backup/PhotoBackup';
 import { TransferUploadSource } from '../features/transfers/TransferQueue';
@@ -61,11 +66,16 @@ struct Index {
   private addressBookScroller: Scroller = new Scroller();
   private systemControlScroller: Scroller = new Scroller();
   private driveActionScroller: Scroller = new Scroller();
+  private driveLinksScroller: Scroller = new Scroller();
+  private driveNotificationsScroller: Scroller = new Scroller();
+  private transferNotificationOpened = (): void => { if (takeDriveTransferIntent()) { this.openDriveTransfers(); } };
   private foregroundChanged = (foreground: boolean): void => {
     this.foreground = foreground;
     this.model.driveTransfers.setForeground(foreground);
     this.model.driveThumbnails.setForeground(foreground);
     this.model.driveActions.setForeground(foreground);
+    this.model.driveOriginal.setForeground(foreground);
+    this.model.driveSharing.setForeground(foreground);
     if (!foreground) { this.model.addressBook.cancelProbe(); this.model.systemControl.deactivate(); }
     else if (this.systemControlOpened) { this.model.openSystemControl(); }
     this.updateTelemetryMode();
@@ -124,6 +134,8 @@ struct Index {
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
     this.abilityContext = context;
     context.eventHub.on('nas-foreground-change', this.foregroundChanged);
+    context.eventHub.on('nas-open-drive-transfers', this.transferNotificationOpened);
+    this.transferNotificationOpened();
     this.updateTelemetryMode();
     this.restoreSession(context);
     window.getLastWindow(context).then((mainWindow: window.Window): void => {
@@ -139,6 +151,7 @@ struct Index {
     this.stopBootTimer();
     this.updateTelemetryMode();
     this.abilityContext?.eventHub.off('nas-foreground-change', this.foregroundChanged);
+    this.abilityContext?.eventHub.off('nas-open-drive-transfers', this.transferNotificationOpened);
     this.abilityContext = undefined;
     this.mainWindow?.off('avoidAreaChange', this.navigationAreaChanged);
     this.mainWindow = undefined;
@@ -1051,9 +1064,15 @@ struct Index {
             DriveUploadReview({ model: this.model.driveTransfers,
               onStart: (): void => { this.model.driveTransfers.upload(); this.openDriveTransfers(); },
               onTasks: (): void => { this.openDriveTransfers(); } })
-            Row({ space: 8 }) {
-              Text('Synology Drive').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
-              Blank().layoutWeight(1)
+            Flex({ wrap: FlexWrap.Wrap }) {
+              if (this.model.driveSharing.available || this.model.driveSharing.items.length > 0) {
+                Button('文件链接').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
+                  .enabled(!this.model.driveSharing.busy).onClick((): void => { this.openDriveLinks(); })
+              }
+              if (this.model.driveNotifications.available) {
+                Button('通知').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
+                  .onClick((): void => { this.navStack.pushPathByName('drive-notifications', undefined); })
+              }
               Button('刷新').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
                 .enabled(!this.model.drive.busy).onClick((): void => { this.model.driveThumbnails.retryVisible(); this.model.drive.reload(); })
             }.width('100%')
@@ -1061,6 +1080,7 @@ struct Index {
             if (this.model.drive.notice.length > 0) { WorkbenchNotice({ text: this.model.drive.notice }) }
             if (this.model.driveThumbnails.errorText.length > 0) { WorkbenchNotice({ text: this.model.driveThumbnails.errorText }) }
             if (this.model.driveActions.errorText.length > 0) { WorkbenchNotice({ text: this.model.driveActions.errorText, warning: true }) }
+            if (this.model.driveSharing.errorText.length > 0) { WorkbenchNotice({ text: this.model.driveSharing.errorText, warning: true }) }
             if (this.model.drive.busy) {
               Row({ space: 12 }) {
                 LoadingProgress().width(24).height(24)
@@ -1104,7 +1124,7 @@ struct Index {
             this.model.driveThumbnails.setVisible(entry, visible && ratio > 0 && this.model.drive.view !== DriveView.Trash);
           })
           .onDisAppear((): void => { this.model.driveThumbnails.setVisible(entry, false); })
-        }, (entry: DriveEntry): string => JSON.stringify([entry.fileId, entry.versionId, entry.modifiedAt, entry.sizeBytes]))
+        }, (entry: DriveEntry): string => driveEntryRenderKey(entry))
         ListItem() {
           Row({ space: 8 }) {
             Button('上一页').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
@@ -1124,7 +1144,8 @@ struct Index {
 
   private driveRowSubtitle(entry: DriveEntry): string {
     return entry.kind === DriveEntryKind.Folder ? '文件夹' : workbenchBytes(entry.sizeBytes) +
-      (entry.capabilities.canRead && entry.capabilities.canDownload && this.model.drive.view !== DriveView.Trash ? ' · 点击下载到本机' : '');
+      (this.model.drive.view !== DriveView.Trash && canPreviewDriveOriginal(entry) ? ' · 点击查看原图' :
+        entry.capabilities.canRead && entry.capabilities.canDownload && this.model.drive.view !== DriveView.Trash ? ' · 点击下载到本机' : '');
   }
 
   private driveCountText(): string {
@@ -1143,6 +1164,15 @@ struct Index {
   private driveEntryMenu(entry: DriveEntry): MenuElement[] {
     const menu: MenuElement[] = [];
     if (this.model.drive.view === DriveView.Trash) { return menu; }
+    if (this.model.driveSharing.available && driveFileLinkAllowed(entry)) {
+      menu.push({ value: '获取文件链接', action: (): void => {
+        if (this.model.driveSharing.prepare(entry)) { this.navStack.pushPathByName('drive-links', undefined); }
+      } });
+    }
+    if (canPreviewDriveOriginal(entry)) {
+      menu.push({ value: '查看原图', action: (): void => { this.openDriveOriginal(entry); } });
+      menu.push({ value: '下载到本机', action: (): void => { this.model.driveTransfers.download(entry); this.openDriveTransfers(); } });
+    }
     if (entry.kind === DriveEntryKind.Folder && entry.capabilities.canRead && entry.capabilities.canWrite) {
       menu.push({ value: '上传到此文件夹', action: (): void => { this.prepareDriveUpload(entry); } });
     }
@@ -1185,8 +1215,18 @@ struct Index {
     if (this.model.drive.busy || !entry.capabilities.canRead) { return; }
     if (entry.kind === DriveEntryKind.Folder) { this.model.drive.openFolder(entry); return; }
     if (this.model.drive.view === DriveView.Trash || !entry.capabilities.canDownload) { return; }
+    if (canPreviewDriveOriginal(entry)) { this.openDriveOriginal(entry); return; }
     this.model.driveTransfers.download(entry);
     this.openDriveTransfers();
+  }
+
+  private openDriveOriginal(entry: DriveEntry): void {
+    this.navStack.pushPathByName('drive-original', undefined);
+    this.model.driveOriginal.open(entry);
+  }
+
+  private openDriveLinks(): void {
+    this.model.driveSharing.clearDraft(); this.navStack.pushPathByName('drive-links', undefined);
   }
 
   @Builder
@@ -1452,7 +1492,29 @@ struct Index {
 
   @Builder
   destinationBuilder(name: string, parameter: Object) {
-    if (name === 'drive-action') {
+    if (name === 'drive-links') {
+      HdsNavDestination() {
+        DriveSharingPage({ model: this.model.driveSharing, scroller: this.driveLinksScroller,
+          onCancel: (): void => { this.navStack.pop(); } })
+      }
+        .backgroundColor($r('app.color.workbench_background'))
+        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: 'Drive 文件链接' } } })
+        .bindToScrollable([this.driveLinksScroller])
+        .onHidden((): void => { this.model.driveSharing.clearDraft(); })
+    } else if (name === 'drive-notifications') {
+      HdsNavDestination() { DriveNotificationsPage({ model: this.model.driveNotifications, scroller: this.driveNotificationsScroller }) }
+        .backgroundColor($r('app.color.workbench_background'))
+        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: 'Drive 通知' } } })
+        .bindToScrollable([this.driveNotificationsScroller])
+        .onShown((): void => { this.model.driveNotifications.refresh(); })
+    } else if (name === 'drive-original') {
+      HdsNavDestination() { DriveOriginalPage({ model: this.model.driveOriginal }) }
+        .backgroundColor($r('app.color.workbench_background'))
+        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: this.model.driveOriginal.entry?.name || '原图' } } })
+        .onHidden((): void => {
+          if (this.foreground) { this.model.driveOriginal.close(); } else { this.model.driveOriginal.setForeground(false); }
+        })
+    } else if (name === 'drive-action') {
       HdsNavDestination() {
         DriveActionPage({ model: this.model.driveActions, scroller: this.driveActionScroller,
           onSubmit: (): void => { this.submitDriveAction(); },

@@ -56,6 +56,8 @@ export class SdkTransferAgent {
   stop(task: request.agent.Task): Promise<void> {
     return this.run((): Promise<void> => task.stop());
   }
+  pause(task: request.agent.Task): Promise<void> { return this.run((): Promise<void> => task.pause()); }
+  resume(task: request.agent.Task): Promise<void> { return this.run((): Promise<void> => task.resume()); }
 
   observe(task: request.agent.Task, listeners: TransferListeners): () => void {
     this.requireCapability();

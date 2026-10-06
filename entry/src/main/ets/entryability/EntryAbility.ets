@@ -17,6 +17,7 @@ import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.Ab
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { sharedUploadInbox } from '../features/sharing/SharedUploadInbox';
+import { receiveDriveTransferIntent } from '../features/drive/DriveTransferIntent';
 
 const DOMAIN = 0x0000;
 
@@ -28,10 +29,12 @@ export default class EntryAbility extends UIAbility {
       hilog.error(DOMAIN, 'testTag', 'Failed to set colorMode. Cause: %{public}s', JSON.stringify(err));
     }
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onCreate');
+    if (receiveDriveTransferIntent(want)) { this.context.eventHub.emit('nas-open-drive-transfers'); }
     sharedUploadInbox.receive(this.context, want, launchParam);
   }
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    if (receiveDriveTransferIntent(want)) { this.context.eventHub.emit('nas-open-drive-transfers'); }
     sharedUploadInbox.receive(this.context, want, launchParam);
   }
 

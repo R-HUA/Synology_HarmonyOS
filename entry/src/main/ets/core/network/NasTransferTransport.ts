@@ -37,6 +37,9 @@ export interface NasTransferProgress {
 export interface NasTransferControl {
   cancellation: NasTransferCancellation;
   onProgress?: (progress: NasTransferProgress) => void;
+  /** 仅由已取得长时任务资格的执行器设置，不改变普通 RPC 或原图超时。 */
+  background?: boolean;
+  checkNetwork?: () => void;
 }
 export interface NasUploadSource {
   /** 调用方准备好的应用私有文件，不接受远端 URL。 */
@@ -48,6 +51,8 @@ export interface NasDownloadTarget {
   directory: string;
   maximumBytes: number;
   expectedBytes?: number;
+  /** 仅独占创建成功后通知所有权；失败清理仍由下载层负责。 */
+  onDirectoryCreated?: () => void;
 }
 export interface NasDownloadResult { path: string; bytes: number; }
 /** 仅内核可见：最终代际检查失败时释放已经落盘的结果。 */
@@ -67,6 +72,7 @@ export interface NasTransferRequest {
   method: 'GET' | 'POST';
   fields: NasFormField[];
   session: NasLoginSession;
+  headers?: Record<string, string>;
 }
 export interface NasTransferTransport {
   upload(request: NasTransferRequest, source: NasUploadSource, filename: string,

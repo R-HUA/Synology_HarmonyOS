@@ -166,3 +166,30 @@ test('a transfer signal cancels only its own request and survives a failing list
   unsubscribe();
   assert.equal(reached, 1);
 });
+
+test('slice upload probes enforce offset boundaries and expired or completed session ambiguity', () => {
+  const token = 'a'.repeat(32);
+  assert.deepEqual(protocol.driveSliceHeaders(token, false),
+    { 'X-TMP-FILE': token, 'X-TYPE-NAME': 'SLICEUPLOAD', 'X-FILE-CHUNK-END': 'false' });
+  assert.equal(protocol.driveSliceHeaders(token, true)['X-FILE-CHUNK-END'], 'true');
+  assert.throws(() => protocol.driveSliceHeaders('new-token', true), isKind(K.InvalidInput));
+  assert.deepEqual(protocol.decodeDriveSliceProbe(200, json({ uploaded_size: 0, tmp_newly_created: true }), 8, false),
+    { uploadedBytes: 0, newlyCreated: true });
+  assert.deepEqual(protocol.decodeDriveSliceProbe(200, json({ uploaded_size: 3, tmp_newly_created: false }), 8, true),
+    { uploadedBytes: 3, newlyCreated: false });
+  for (const data of [{ uploaded_size: -1, tmp_newly_created: false }, { uploaded_size: 9, tmp_newly_created: false },
+    { uploaded_size: '3', tmp_newly_created: false }, { uploaded_size: 3.5, tmp_newly_created: false },
+    { uploaded_size: 3 }, { uploaded_size: 0, tmp_newly_created: true }, { uploaded_size: 8, tmp_newly_created: false }]) {
+    assert.throws(() => protocol.decodeDriveSliceProbe(200, json(data), 8, true), isKind(K.Protocol));
+  }
+  assert.throws(() => protocol.decodeDriveSliceProbe(200, json({ uploaded_size: 3, tmp_newly_created: false }), 8, false), isKind(K.Protocol));
+});
+
+test('system completion and sent bytes cannot substitute for a Drive business receipt', () => {
+  for (const extras of [undefined, {}, { body: '' }, { body: '{"success":true,"data":{}}' },
+    { body: json({ uploaded_size: 7 }) }, { body: json({ uploaded_size: 8 }) + 'trailing' }]) {
+    assert.throws(() => protocol.driveAgentUploadReceipt(200, extras, 8), isKind(K.Protocol));
+  }
+  assert.throws(() => protocol.driveAgentUploadReceipt(0, { body: json({ uploaded_size: 8 }) }, 8), isKind(K.Http));
+  assert.deepEqual(protocol.driveAgentUploadReceipt(200, { body: json({ uploaded_size: 8 }) }, 8), { uploadedBytes: 8 });
+});

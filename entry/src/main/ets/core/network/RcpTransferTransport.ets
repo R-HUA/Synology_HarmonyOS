@@ -42,6 +42,7 @@ export class RcpTransferTransport implements NasTransferTransport {
     const form = new rcp.MultipartForm(formFields);
     form.keys = keys;
     const request = this.request(plan, form);
+    const transferMs = control.background ? 60 * 60 * 1000 : 120000;
     const chunks: Uint8Array[] = [];
     let bytes = 0;
     let callbackFailure: NasFailure | undefined = undefined;
@@ -59,7 +60,7 @@ export class RcpTransferTransport implements NasTransferTransport {
         this.session.cancel(request);
       }
     };
-    request.configuration = { transfer: { autoRedirect: false, timeout: { connectMs: 10000, transferMs: 120000 } },
+    request.configuration = { transfer: { autoRedirect: false, timeout: { connectMs: 10000, transferMs } },
       tracing: { httpEventsHandler: {
         onUploadProgress: (total: number, processed: number): void => {
           if (callbackFailure !== undefined) { return; }
@@ -106,6 +107,8 @@ export class RcpTransferTransport implements NasTransferTransport {
     this.check(control);
     validateNasDownloadTarget(target);
     const request = this.request(plan);
+    request.configuration = { transfer: { autoRedirect: false,
+      timeout: { connectMs: 10000, transferMs: control.background ? 60 * 60 * 1000 : 120000 } } };
     const destination = target.directory + '/content';
     // 独占创建：目录已存在就退出，不触碰调用前可能已有的文件。
     try { fileIo.mkdirSync(target.directory); }
@@ -129,6 +132,7 @@ export class RcpTransferTransport implements NasTransferTransport {
     let failure: NasFailure | undefined = undefined;
     let unsubscribe = (): void => {};
     try {
+      target.onDirectoryCreated?.();
       try { descriptor = fileIo.openSync(destination, fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE).fd; }
       catch (_) { throw new NasFailure(NasErrorKind.Protocol, '无法创建下载临时文件。'); }
       const fd = descriptor;
@@ -212,6 +216,7 @@ export class RcpTransferTransport implements NasTransferTransport {
 
   private check(control: NasTransferControl): void {
     control.cancellation.check();
+    control.checkNetwork?.();
     if (this.closed()) { throw new NasFailure(NasErrorKind.Cancelled, '连接已关闭。'); }
   }
 
@@ -219,6 +224,9 @@ export class RcpTransferTransport implements NasTransferTransport {
     const headers: rcp.RequestHeaders = { 'Accept': '*/*', 'Cache-Control': 'no-store',
       'Accept-Encoding': 'identity' };
     if (plan.session.synoToken.length > 0) { headers['X-SYNO-TOKEN'] = plan.session.synoToken; }
+    if (plan.headers !== undefined) {
+      for (const name of Object.keys(plan.headers)) { headers[name] = plan.headers[name]; }
+    }
     const address = plan.method === 'GET' ? plan.address + '?' + encodeNasForm(plan.fields) : plan.address;
     const request = new rcp.Request(address, plan.method, headers, body);
     request.cookies = { id: plan.session.sid };

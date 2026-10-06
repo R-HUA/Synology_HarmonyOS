@@ -101,6 +101,11 @@ async function fixture(options = {}) {
       async attach(...args) { this.canStart = args[5]; } async stopAll() {} detach() {}
     } },
     '../drive/DriveThumbnailStore': { DriveThumbnailStore: class { attach() {} detach() {} } },
+    '../drive/DriveOriginalModel': { DriveOriginalModel: class { attach() {} detach() {} async close() {} } },
+    '../drive/DriveSharingModel': { DriveSharingModel: class {
+      ready = true; busy = false; hasPending = false; async attach() {} detach() {} async stopAll() {}
+    } },
+    '../drive/DriveNotificationsModel': { DriveNotificationsModel: class { attach() {} detach() {} } },
     '../drive/DriveActionModel': { DriveActionModel: class {
       ready = true; busy = false; hasPending = false;
       async attach(...args) { this.canWrite = args[5]; } async stopAll() {} detach() {}

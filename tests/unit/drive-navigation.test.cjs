@@ -17,7 +17,8 @@ function method(source, name) {
     compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS }
   });
   return vm.runInNewContext(compiled.outputText + '\nSubject.prototype.' + name, {
-    DriveEntryKind: { Folder: 'folder', File: 'file' }, DriveView: { Trash: 'trash' }
+    DriveEntryKind: { Folder: 'folder', File: 'file' }, DriveView: { Trash: 'trash' },
+    canPreviewDriveOriginal: require('../../work/core-build/domain/DriveOriginalProtocol.js').canPreviewDriveOriginal,
   });
 }
 function page() {
@@ -118,5 +119,17 @@ test('Drive file action downloads only readable permitted live files and opens t
   state.model.drive.view = 'mydrive';
   open.call(state, { ...file, capabilities: { canRead: true, canDownload: false } });
   open.call(state, { ...file, capabilities: { canRead: false, canDownload: true } });
+  assert.deepEqual(state.calls, []);
+});
+
+test('permitted images open original preview while ordinary files keep the download action', () => {
+  const state = page(); state.openDriveOriginal = () => state.calls.push('drive-original');
+  state.model.driveTransfers = { download() { state.calls.push('drive-download'); } };
+  state.openDriveTransfers = () => state.calls.push('drive-tasks');
+  const open = method(index, 'openDriveEntry');
+  const picture = { name: '照片.jpg', kind: 'file', capabilities: { canRead: true, canDownload: true, canPreview: true } };
+  open.call(state, picture); assert.deepEqual(state.calls, ['drive-original']);
+  state.calls.length = 0;
+  open.call(state, { ...picture, capabilities: { canRead: true, canDownload: false, canPreview: true } });
   assert.deepEqual(state.calls, []);
 });
