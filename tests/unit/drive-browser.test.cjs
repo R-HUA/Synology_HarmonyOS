@@ -55,7 +55,7 @@ function pageRenderKey(relative, dataSource) {
 }
 
 for (const [relative, dataSource, view] of [
-  ['pages/Index.ets', 'this.model.drive.entries', V.MyDrive],
+  ['features/drive/DriveModulePage.ets', 'this.model.drive.entries', V.MyDrive],
   ['features/drive/DriveActionUi.ets', 'this.model.destinations.entries', V.TeamFolders],
 ]) {
   test(`${relative} refreshes row data and captured actions after metadata-only reloads`, async () => {
@@ -354,4 +354,14 @@ test('a failed search exit keeps its query and result so the same destination ca
   assert.equal(f.model.view, V.MyDrive);
   assert.equal(f.model.searchKeyword, '');
   assert.equal(f.model.canGoUp(), false);
+});
+
+
+test('team-only browsing can refresh its accepted view without requiring My Drive', async () => {
+  const f = fixture(() => ({ total: 1, items: [{ file_id: '11', name: '团队资料', capabilities: { can_read: true } }] }),
+    api => api === 'SYNO.SynologyDrive.TeamFolders');
+  assert.equal(f.model.available, false); assert.equal(f.model.supportsView(V.TeamFolders), true);
+  await f.model.selectView(V.TeamFolders); const count = f.calls.length;
+  await f.model.reload(); assert.equal(f.calls.length, count + 1);
+  assert.equal(f.calls.at(-1).api, 'SYNO.SynologyDrive.TeamFolders'); assert.equal(f.model.entries[0].name, '团队资料');
 });

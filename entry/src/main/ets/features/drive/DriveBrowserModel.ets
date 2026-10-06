@@ -111,7 +111,7 @@ export class DriveBrowserModel {
 
   /** 手动刷新始终回到当前目录第一页。 */
   async reload(): Promise<void> {
-    if (!this.available) { return; }
+    if (!this.supportsView(this.view)) { return; }
     await this.load(this.trail, 0);
   }
 

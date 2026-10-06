@@ -8,6 +8,7 @@ import { WorkbenchMetrics, WorkbenchChoice, WorkbenchIconTile, WorkbenchInfoRow,
 export struct DownloadStationPage {
   @Param model: NasExtensionsModel = new NasExtensionsModel();
   @Param scroller: Scroller = new Scroller();
+  @Param visible: boolean = true;
   @Event onChooseDirectory: () => void = (): void => {};
   @Local private filter: string = 'all';
   @Local private creating: boolean = false;
@@ -17,6 +18,14 @@ export struct DownloadStationPage {
     this.creating = this.model.downloadFormRequested || this.model.downloadUri.length > 0;
     this.model.downloadFormRequested = false;
   }
+  @Monitor('visible')
+  private restoreDownloadForm(): void {
+    if (this.visible && this.model.downloadFormRequested) {
+      this.creating = true;
+      this.model.downloadFormRequested = false;
+    }
+  }
+
   private tasks(): DownloadTask[] {
     return this.model.downloads.filter((task: DownloadTask): boolean => this.filter === 'all' ||
       (this.filter === 'finished' ? task.status === 'finished' || task.status === 'seeding' :
