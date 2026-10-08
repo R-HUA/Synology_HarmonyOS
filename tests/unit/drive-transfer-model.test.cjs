@@ -94,13 +94,13 @@ function fixture(options = {}) {
   return { model, events, history, sessions, failures, attach };
 }
 
-test('pending file actions prevent selection and recheck before a prepared upload or download', async () => {
+test('pending writes block uploads while unrelated downloads remain available', async () => {
   const options = { canStart: false }; const f = fixture(options); await f.attach('alice');
   await f.model.prepareUpload(folder()); await f.model.download(file(3));
-  assert.equal(f.events.length, 1); assert.match(f.model.errorText, /文件操作/);
+  assert.ok(f.events.some(e => e[0] === 'download'));
   options.canStart = true; await f.model.prepareUpload(folder());
   assert.ok(f.model.draft); options.canStart = false; await f.model.upload();
-  assert.equal(f.events.some(e => e[0] === 'upload'), false); assert.equal(f.model.items.length, 0);
+  assert.equal(f.events.some(e => e[0] === 'upload'), false); assert.equal(f.model.items.length, 1);
 });
 
 test('choosing a file never uploads; confirmation sends selected conflict policy after private copy and running snapshot', async () => {
@@ -247,4 +247,20 @@ test('session expiration records the ambiguous upload before notifying the conne
   await f.attach('alice'); await f.model.prepareUpload(folder()); await f.model.upload();
   assert.equal(f.failures.length, 1);
   assert.equal(f.history.get('alice')[0].state, 'unknown');
+});
+
+test('resuming an upload cannot bypass another unresolved upload in the same module', async () => {
+  for (const otherState of ['running', 'paused', 'unknown']) {
+    const record = { id: '11111111-1111-4111-8111-111111111111', direction: 'upload',
+      resource: { nasOrigin: 'https://nas.example.test:5001', account: 'alice', fileId: '1' },
+      name: '原上传.txt', bytes: 3, state: 'paused', locationName: '测试', errorText: '' };
+    const f = fixture({ records: [record, { ...record, id: '11111111-1111-4111-8111-111111111112',
+      name: '另一上传.txt', state: otherState }] });
+    await f.attach('alice');
+    const saves = f.events.filter(e => e[0] === 'save').length;
+    await f.model.resume(record.id);
+    assert.match(f.model.errorText, /其他上传/);
+    assert.equal(f.events.filter(e => e[0] === 'save').length, saves);
+    assert.equal(f.events.some(e => e[0] === 'upload'), false);
+  }
 });

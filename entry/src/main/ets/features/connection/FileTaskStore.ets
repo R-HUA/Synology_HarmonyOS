@@ -12,10 +12,12 @@ import { writePrivateSnapshot } from '../../platform/SdkFileIO';
 export class FileTaskStore {
   private path: string = '';
   private scope: string = '';
+  private legacy: string | undefined = undefined;
 
   async load(context: common.UIAbilityContext, origin: string, account: string): Promise<FileTaskItem[]> {
     this.path = '';
     this.scope = '';
+    this.legacy = undefined;
     if (account.trim().length === 0) { throw new NasFailure(NasErrorKind.InvalidInput, '缺少账号，无法读取文件操作记录。'); }
     const scope = await sha256(new util.TextEncoder().encodeInto(JSON.stringify([normalizeNasOrigin(origin), account.trim()])));
     const directory = context.filesDir + '/file-tasks/' + scope;
@@ -31,7 +33,9 @@ export class FileTaskStore {
       missing = true;
     }
     // 仅首次 stat 确认不存在才建立空历史；存在后的读取失败不能允许覆盖原记录。
-    const tasks: FileTaskItem[] = missing ? [] : decodeFileTasks(await fileIo.readText(path), scope);
+    const text = missing ? undefined : await fileIo.readText(path);
+    const tasks: FileTaskItem[] = text === undefined ? [] : decodeFileTasks(text, scope);
+    if (text !== undefined && (JSON.parse(text) as FileTaskSnapshot).version === 1) { this.legacy = text; }
     this.scope = scope;
     this.path = path;
     return tasks;
@@ -40,9 +44,14 @@ export class FileTaskStore {
   /** 调用方串行写入；临时文件完整落盘后再替换正式记录。 */
   async save(tasks: FileTaskItem[]): Promise<void> {
     if (this.path.length === 0) { throw new NasFailure(NasErrorKind.Protocol, '尚未成功读取文件操作记录，不能覆盖原记录。'); }
-    const snapshot: FileTaskSnapshot = { version: 1, scope: this.scope, tasks: tasks };
+    const snapshot: FileTaskSnapshot = { version: 2, scope: this.scope, tasks: tasks };
+    decodeFileTasks(JSON.stringify(snapshot), this.scope);
     const bytes = new util.TextEncoder().encodeInto(JSON.stringify(snapshot));
     if (bytes.length > 1024 * 1024) { throw new NasFailure(NasErrorKind.Protocol, '文件操作记录过大，无法完整保存。'); }
+    if (this.legacy !== undefined) {
+      await writePrivateSnapshot(this.path + '.v1.backup', new util.TextEncoder().encodeInto(this.legacy));
+    }
     await writePrivateSnapshot(this.path, bytes);
+    this.legacy = undefined;
   }
 }

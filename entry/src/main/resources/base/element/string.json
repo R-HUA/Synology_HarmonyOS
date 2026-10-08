@@ -11,6 +11,21 @@
     {
       "name": "EntryAbility_label",
       "value": "NAS 工作台"
-    }
+    },
+    { "name": "connection_addresses", "value": "连接地址与安全设置" },
+    { "name": "connection_reload", "value": "重新读取连接配置" },
+    { "name": "connection_risk_title", "value": "确认连接风险" },
+    { "name": "connection_http_risk", "value": "%s\n此连接不加密，账号、密码和动态码可能被截取。仅对此地址启用？" },
+    { "name": "connection_tls_risk", "value": "%s\n此连接不验证服务器证书，无法可靠确认服务器身份。仅对此地址启用？" },
+    { "name": "connection_accept_risk", "value": "确认并保存" },
+    { "name": "connection_skip_certificate", "value": "跳过证书校验" },
+    { "name": "connection_skip_certificate_detail", "value": "仅适用于加密连接，保存时需确认风险" },
+    { "name": "connection_rebuild", "value": "保留原文件并重建地址簿" },
+    { "name": "connection_rebuild_detail", "value": "原连接配置将保留为备份，重新填写地址并登记设备。文件和任务记录不会删除。" },
+    { "name": "action_cancel", "value": "取消" },
+    { "name": "action_confirm", "value": "确认" },
+    { "name": "download_authenticate", "value": "重新验证下载套件" },
+    { "name": "download_password", "value": "当前账号密码" },
+    { "name": "download_otp", "value": "新的六位动态码" }
   ]
 }

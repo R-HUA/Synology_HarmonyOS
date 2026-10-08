@@ -37,6 +37,10 @@ export class NasExtensionsModel {
   @Trace downloadDestination: string = '';
   @Trace downloadFormRequested: boolean = false;
   @Trace canCreateDownload: boolean = false;
+  @Trace downloadAuthenticationRequired: boolean = false;
+  @Trace downloadPassword: string = '';
+  @Trace downloadOtp: string = '';
+  @Trace downloadNeedsOtp: boolean = false;
   private connector: NasConnector | undefined = undefined;
   private generation: number = 0;
   private store: ExtensionWriteStore = new ExtensionWriteStore();
@@ -44,15 +48,17 @@ export class NasExtensionsModel {
   private origin: string = '';
   private account: string = '';
   private expired: (error: NasFailure) => Promise<void> = async (): Promise<void> => {};
+  private writeAllowed: () => boolean = (): boolean => true;
 
   async attach(connector: NasConnector, context: common.UIAbilityContext | undefined, origin: string, account: string,
-    expired: (error: NasFailure) => Promise<void>): Promise<void> {
+    expired: (error: NasFailure) => Promise<void>, writeAllowed: () => boolean = (): boolean => true): Promise<void> {
     this.reset();
     this.connector = connector;
     this.context = context;
     this.origin = origin;
     this.account = account;
     this.expired = expired;
+    this.writeAllowed = writeAllowed;
     this.capabilities = connector.capabilitySnapshots();
     this.canCreateDownload = connector.supportsExtensionAction('nasDownloads', 'create');
     await this.reloadRecords();
@@ -90,6 +96,8 @@ export class NasExtensionsModel {
     this.downloadDestination = '';
     this.downloadFormRequested = false;
     this.canCreateDownload = false;
+    this.cancelDownloadAuthentication();
+    this.downloadAuthenticationRequired = false;
   }
 
   private sharing(connector: NasConnector): FileSharingRepository {
@@ -220,10 +228,38 @@ export class NasExtensionsModel {
 
   canWrite(feature: ExtensionFeature): boolean {
     const capability = this.capabilities.find((item: CapabilitySnapshot): boolean => item.feature === feature);
-    return this.connector !== undefined && !this.busy && this.recordsReady && !this.hasPending(feature) &&
+    return this.connector !== undefined && !this.busy && this.recordsReady && this.pending.length === 0 && this.writeAllowed() &&
       capability !== undefined && capability.apiVersion > 0 &&
       !['unauthorized', 'unreachable', 'schemaMismatch', 'unsupportedVersion'].includes(capability.state);
   }
+
+  /** 套件重新认证不清除主会话，也不重放任何待确认操作。 */
+  async authenticateDownloads(): Promise<boolean> {
+    const connector = this.connector;
+    if (connector === undefined || this.busy || this.downloadPassword.length === 0) { return false; }
+    const ticket = this.generation;
+    this.busy = true;
+    this.downloadError = '';
+    try {
+      await connector.authenticateDownloadStation(this.account, this.downloadPassword, this.downloadOtp);
+      if (ticket !== this.generation) { return false; }
+      this.downloadAuthenticationRequired = false;
+      this.downloadNeedsOtp = false;
+      this.capabilities = connector.capabilitySnapshots();
+      this.downloadNotice = '下载套件已重新验证。';
+      return true;
+    } catch (error) {
+      if (ticket === this.generation) {
+        this.downloadError = this.message(error as Error, '下载套件认证未完成，请重试。');
+        this.downloadNeedsOtp = error instanceof NasFailure && [NasErrorKind.OtpRequired, NasErrorKind.OtpInvalid].includes(error.kind);
+      }
+      return false;
+    } finally {
+      if (ticket === this.generation) { this.busy = false; this.cancelDownloadAuthentication(); }
+    }
+  }
+
+  cancelDownloadAuthentication(): void { this.downloadPassword = ''; this.downloadOtp = ''; }
 
   capabilityText(feature: ExtensionFeature): string {
     const capability = this.capabilities.find((item: CapabilitySnapshot): boolean => item.feature === feature);
@@ -341,6 +377,7 @@ export class NasExtensionsModel {
       error instanceof NasFailure ? error.kind : -1, error instanceof NasFailure ? error.code : 0);
     if (!(error instanceof NasFailure) || error.kind !== NasErrorKind.SessionExpired) { return; }
     if (feature === 'nasDownloads' && this.connector !== undefined) {
+      this.downloadAuthenticationRequired = true;
       try { await this.connector.list(''); }
       catch (validationError) {
         if (ticket === this.generation && validationError instanceof NasFailure && validationError.kind === NasErrorKind.SessionExpired) {
@@ -348,7 +385,7 @@ export class NasExtensionsModel {
         }
         return;
       }
-      if (ticket === this.generation) { this.downloadError = 'Download Station 套件会话未建立或已失效，请退出并重新登录；NAS 文件会话仍有效。'; }
+      if (ticket === this.generation) { this.downloadError = '下载套件需要重新验证，其他模块仍可使用。'; }
     } else if (ticket === this.generation) { await this.expired(error); }
   }
 

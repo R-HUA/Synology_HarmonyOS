@@ -54,6 +54,21 @@ function pageRenderKey(relative, dataSource) {
   return vm.runInNewContext(`(entry) => ${match[1]}`, { driveEntryRenderKey: drive.driveEntryRenderKey });
 }
 
+test('tab return preserves folder and search state and ignores a late request from another tab', async () => {
+  const late = gate();
+  let delayed = false;
+  const f = fixture(() => delayed ? late.promise : { items: [entry(7)], total: 1 });
+  await f.model.activateView(V.MyDrive); await f.model.openFolder(f.model.entries[0]);
+  const folderId = f.model.trail.at(-1).fileId;
+  await f.model.activateView(V.TeamFolders); await f.model.activateView(V.MyDrive);
+  assert.equal(f.model.trail.at(-1).fileId, folderId);
+  delayed = true;
+  const pending = f.model.activateView(V.Recent);
+  await f.model.activateView(V.MyDrive);
+  late.resolve({ items: [], total: 0 }); await pending;
+  assert.equal(f.model.view, V.MyDrive); assert.equal(f.model.trail.at(-1).fileId, folderId);
+});
+
 for (const [relative, dataSource, view] of [
   ['features/drive/DriveModulePage.ets', 'this.model.drive.entries', V.MyDrive],
   ['features/drive/DriveActionUi.ets', 'this.model.destinations.entries', V.TeamFolders],

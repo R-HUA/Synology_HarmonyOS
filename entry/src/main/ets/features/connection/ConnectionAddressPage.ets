@@ -1,5 +1,6 @@
 import { ConnectionViewModel } from './ConnectionViewModel';
 import { NasConnectionAddress, NasConnectionRouteKind } from '../../core/domain/ConnectionRoutes';
+import { normalizeNasOrigin, nasOriginScheme, NasFailure } from '../../core/domain/DsmProtocol';
 import { telemetryTimestamp } from '../../core/domain/TelemetryProtocol';
 
 import { WorkbenchMetrics, WorkbenchIconTile, WorkbenchSectionTitle, WorkbenchInfoRow, WorkbenchNotice } from '../workbench/WorkbenchUi';
@@ -30,6 +31,23 @@ export struct NasConnectionAddressPage {
     }
     this.formVisible = true;
     this.scroller.scrollTo({ xOffset: 0, yOffset: 0 });
+  }
+
+  private confirmSave(): void {
+    let origin: string;
+    try { origin = normalizeNasOrigin(this.model.addressBook.draftOrigin); }
+    catch (error) {
+      this.model.addressBook.errorText = error instanceof NasFailure ? error.message : '连接地址格式不正确。';
+      return;
+    }
+    const save = (accepted: boolean): void => {
+      this.model.addressBook.saveDraft(accepted).then((saved: boolean): void => { if (saved) { this.formVisible = false; } });
+    };
+    if (nasOriginScheme(origin) === 'https' && !this.model.addressBook.draftInsecureTls) { save(false); return; }
+    this.getUIContext().showAlertDialog({ title: $r('app.string.connection_risk_title'),
+      message: nasOriginScheme(origin) === 'http' ? $r('app.string.connection_http_risk', origin) : $r('app.string.connection_tls_risk', origin),
+      primaryButton: { value: $r('app.string.action_cancel'), action: (): void => {} },
+      secondaryButton: { value: $r('app.string.connection_accept_risk'), action: (): void => { save(true); } } });
   }
 
   @Builder
@@ -70,24 +88,20 @@ export struct NasConnectionAddressPage {
       }.width('100%')
       Row({ space: 12 }) {
         Column({ space: 2 }) {
-          Text('忽略 SSL 验证').fontSize(16).fontColor($r('sys.color.font_primary')).width('100%')
-          Text('仅 https 生效，接受自签名或不受信任的证书').fontSize(12)
+          Text($r('app.string.connection_skip_certificate')).fontSize(16).fontColor($r('sys.color.font_primary')).width('100%')
+          Text($r('app.string.connection_skip_certificate_detail')).fontSize(12)
             .fontColor($r('sys.color.font_tertiary')).width('100%')
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
         Toggle({ type: ToggleType.Switch, isOn: this.model.addressBook.draftInsecureTls })
           .enabled(!this.disabled())
           .onChange((checked: boolean): void => { this.model.addressBook.draftInsecureTls = checked; })
-          .accessibilityText('忽略 SSL 验证')
+          .accessibilityText($r('app.string.connection_skip_certificate'))
       }.width('100%').constraintSize({ minHeight: WorkbenchMetrics.rowMinHeight })
-      Text('地址类型用于分类；后台传输仍要求有效的 HTTPS 证书。')
-        .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
       Row({ space: 12 }) {
         Button('测试连接').layoutWeight(1).constraintSize({ minHeight: 48 }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.disabled())
           .onClick((): void => { this.model.addressBook.probe(); })
         Button('保存地址').layoutWeight(1).constraintSize({ minHeight: 48 }).enabled(!this.disabled() && this.model.addressBook.ready)
-          .onClick((): void => {
-            this.model.addressBook.saveDraft().then((saved: boolean): void => { if (saved) { this.formVisible = false; } });
-          })
+          .onClick((): void => { this.confirmSave(); })
       }.width('100%')
       if (this.model.addressBook.probing) {
         Button('取消测试').constraintSize({ minHeight: 48 }).buttonStyle(ButtonStyleMode.TEXTUAL)
@@ -129,7 +143,7 @@ export struct NasConnectionAddressPage {
             Column({ space: 2 }) {
               Text(address.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
                 .width('100%').maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-              Text(this.kindLabel(address.kind) + (address.insecureTls === true ? ' · 忽略 SSL 验证' : '') +
+              Text(this.kindLabel(address.kind) + (address.insecureTls === true ? ' · 跳过证书校验' : '') +
                 (this.model.authenticated && this.model.address === address.origin ? ' · 当前连接' : ''))
                 .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
             }.layoutWeight(1).alignItems(HorizontalAlign.Start)
@@ -174,6 +188,15 @@ export struct NasConnectionAddressPage {
             .fontSize(14).fontColor($r('sys.color.font_primary')).width('100%')
           Button('重新读取配置').constraintSize({ minHeight: 48 }).enabled(!this.disabled())
             .onClick((): void => { this.model.reloadAddressBook(); })
+          if (this.model.addressBook.corrupt) {
+            Button($r('app.string.connection_rebuild')).constraintSize({ minHeight: 48 }).enabled(!this.disabled())
+              .onClick((): void => {
+                this.getUIContext().showAlertDialog({ title: $r('app.string.connection_rebuild'),
+                  message: $r('app.string.connection_rebuild_detail'),
+                  primaryButton: { value: $r('app.string.action_cancel'), action: (): void => {} },
+                  secondaryButton: { value: $r('app.string.action_confirm'), action: (): void => { this.model.rebuildAddressBook(); } } });
+              })
+          }
         }
         if (this.formVisible) { this.addressForm() }
         if (this.model.addressBook.probeResult !== undefined) {

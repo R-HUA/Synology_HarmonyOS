@@ -115,7 +115,7 @@ export class PhotoBackup {
     this.status = '正在将所选照片和视频交给传输队列…';
     try {
       validateLogicalPath(directory);
-      const result = await queue.uploadSources(directory, snapshot);
+      const result = await queue.uploadSources(directory, snapshot, 'photoBackup');
       if (this.accountGeneration !== accountGeneration) { return; }
       const accepted = new Set<number>(result.acceptedIndices);
       snapshot.forEach((source: PhotoBackupSource, index: number): void => {

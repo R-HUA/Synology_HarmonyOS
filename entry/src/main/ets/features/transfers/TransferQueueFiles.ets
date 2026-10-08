@@ -5,6 +5,7 @@ import { util } from '@kit.ArkTS';
 import { SdkDigest } from '../../platform/SdkDigest';
 import { decodeResponsePrefix } from '../../platform/Utf8Codec';
 import { closeFile, writePrivateSnapshot } from '../../platform/SdkFileIO';
+import { localSpaceBudget } from '../../platform/LocalSpaceBudget';
 import { NasErrorKind, NasFailure } from '../../core/domain/DsmProtocol';
 import { decodeTransferQueue, TransferQueueRecord, TransferQueueSnapshot } from '../../core/domain/TransferQueueState';
 
@@ -55,6 +56,7 @@ export async function copyTransferFile(source: string, destination: string, byte
     if (original.isDirectory() || original.size !== bytes) {
       throw new NasFailure(NasErrorKind.InvalidInput, '所选文件已变化，请重新选择。');
     }
+    if (!exportFile) { await localSpaceBudget.reserve(destination.slice(0, destination.lastIndexOf('/')), destination, bytes); }
     const output = await fileIo.open(destination,
       fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC);
     let outputFailed = false;
@@ -67,6 +69,7 @@ export async function copyTransferFile(source: string, destination: string, byte
         if (count < 1) { throw new NasFailure(NasErrorKind.Protocol, '无法完整读取所选文件。'); }
         await writeTransferBytes(output.fd, new Uint8Array(buffer).subarray(0, count));
         copied += count;
+        if (!exportFile) { localSpaceBudget.advance(destination, bytes - copied); }
       }
       current();
       if ((await fileIo.stat(input.fd)).size !== bytes || (await fileIo.stat(output.fd)).size !== bytes) {
@@ -77,7 +80,10 @@ export async function copyTransferFile(source: string, destination: string, byte
     } catch (error) { outputFailed = true; throw error as Error; }
     finally { await closeFile(output, outputFailed); }
   } catch (error) { inputFailed = true; throw error as Error; }
-  finally { await closeFile(input, inputFailed); }
+  finally {
+    if (!exportFile) { localSpaceBudget.release(destination); }
+    await closeFile(input, inputFailed);
+  }
 }
 
 export async function readTransferPrefix(path: string, bytes: number): Promise<TransferFilePrefix> {
@@ -134,12 +140,17 @@ export async function readTransferRecords(directory: string, scope: string): Pro
   }
   if (stat.size > 4 * 1024 * 1024) { throw new NasFailure(NasErrorKind.Protocol, '传输记录过大，无法安全恢复。'); }
   // 已存在的文件在读取期间消失也属于读取失败，不能被当作首次使用的空历史。
-  return decodeTransferQueue(await fileIo.readText(path), scope);
+  const text = await fileIo.readText(path);
+  const records = decodeTransferQueue(text, scope);
+  if ((JSON.parse(text) as TransferQueueSnapshot).version === 1) {
+    await writePrivateSnapshot(path + '.v1.backup', new util.TextEncoder().encodeInto(text));
+  }
+  return records;
 }
 
 /** 调用方串行化写入；任务 ID 的 fsync + rename 完成后才能 start。 */
 export async function saveTransferRecords(directory: string, scope: string, records: TransferQueueRecord[]): Promise<void> {
-  const snapshot: TransferQueueSnapshot = { version: 1, scope: scope, records: records };
+  const snapshot: TransferQueueSnapshot = { version: 2, scope: scope, records: records };
   const path = directory + '/queue.json';
   const bytes = new util.TextEncoder().encodeInto(JSON.stringify(snapshot));
   if (bytes.length > 4 * 1024 * 1024) { throw new NasFailure(NasErrorKind.Protocol, '传输记录过大，无法完整保存。'); }

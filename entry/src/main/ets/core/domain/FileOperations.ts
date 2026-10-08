@@ -8,12 +8,17 @@ export enum NasFileTaskKind { Delete, Copy, Move }
 export enum NasFileTaskUnit { Files, Bytes }
 
 export type FileEditResult = 'completed' | 'pending' | 'failed';
-export type FileTaskState = 'pending' | 'completed' | 'failed' | 'unknown';
+export type FileTaskState = 'pending' | 'completed' | 'failed' | 'unknown' | 'closed';
+export type FileMutationKind = 'createFolder' | 'rename' | 'delete' | 'copy' | 'move' | 'legacy';
 
-/** 普通记录只保存服务端任务标识与展示信息，不保存会话凭证。 */
+/** 本地意图先于请求保存；远端回执缺失时也能保留核对依据。 */
 export interface FileTaskItem {
   id: string;
-  task: NasFileTask;
+  task?: NasFileTask;
+  operation: FileMutationKind;
+  sources: string[];
+  target?: string;
+  createdAt: number;
   label: string;
   state: FileTaskState;
   errorText: string;

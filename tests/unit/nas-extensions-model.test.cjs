@@ -76,6 +76,20 @@ test('write guard is durable before submission and cannot replay an accepted req
   assert.match(model.downloadNotice, /不代表远端操作成功/);
 });
 
+test('independent suite authentication clears credentials on every outcome and retains uncertain writes', async () => {
+  const { model, connector, calls } = await fixture();
+  model.pending = [{ feature: 'nasDownloads', operation: 'create', createdAt: 1 }];
+  model.downloadAuthenticationRequired = true; model.downloadPassword = 'secret';
+  connector.authenticateDownloadStation = async () => { throw failure(protocol.NasErrorKind.OtpRequired); };
+  assert.equal(await model.authenticateDownloads(), false); assert.equal(model.downloadNeedsOtp, true);
+  assert.equal(model.downloadPassword, ''); assert.equal(model.downloadOtp, '');
+  model.downloadPassword = 'secret'; model.downloadOtp = '123456';
+  connector.authenticateDownloadStation = async (...args) => { assert.deepEqual(args, ['alice', 'secret', '123456']); };
+  assert.equal(await model.authenticateDownloads(), true);
+  assert.equal(model.downloadAuthenticationRequired, false); assert.equal(model.pending.length, 1);
+  assert.equal(model.downloadPassword, ''); assert.equal(model.downloadOtp, ''); assert.equal(calls.remote, 0);
+});
+
 test('confirmed and explicitly rejected writes clear guards; uncertain errors preserve them', async () => {
   for (const kind of [undefined, protocol.NasErrorKind.Permission, protocol.NasErrorKind.Network]) {
     const { model, calls, saved } = await fixture();
@@ -124,7 +138,7 @@ test('package-specific session errors require a confirmed File Station expiry be
     const { model, calls } = await fixture({ fileSessionError });
     await model.read('nasDownloads', async () => { throw failure(protocol.NasErrorKind.SessionExpired); });
     assert.equal(calls.expired, fileSessionError?.kind === protocol.NasErrorKind.SessionExpired ? 1 : 0);
-    if (fileSessionError === undefined) assert.match(model.downloadError, /文件会话仍有效/);
+    if (fileSessionError === undefined) assert.match(model.downloadError, /下载套件需要重新验证/);
   }
 });
 

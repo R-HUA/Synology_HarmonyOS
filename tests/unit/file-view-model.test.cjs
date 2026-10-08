@@ -47,7 +47,7 @@ const plain = value => JSON.parse(JSON.stringify(value));
 const failure = kind => new NasFailure(kind, '测试错误。');
 
 async function fixture(options = {}) {
-  let now = 0;
+  let now = 1;
   let nextId = 1;
   const saved = new Map();
   const calls = { start: 0, status: 0, list: 0, writes: 0 };
@@ -68,6 +68,8 @@ async function fixture(options = {}) {
   class MockSessionStore { async clear() {} }
   class MockQueue {
     busy = false;
+    ready = true;
+    items = [];
     async attach() { if (options.queueError) throw failure(K.Protocol); }
     detach() {}
     async stopAll() {}
@@ -94,7 +96,7 @@ async function fixture(options = {}) {
     '../telemetry/TelemetryMonitor': { TelemetryMonitor: class { attach() {} detach() {} } },
     './ConnectionAddressBook': { ConnectionAddressBook: class { ready = true; dispose() {} } },
     '../control/SystemControlModel': { SystemControlModel: class { deactivate() {} async open(_context, _connector, _origin, _tls, validate) { this.validate = validate; } } },
-    '../extensions/NasExtensionsModel': { NasExtensionsModel: class { async attach() {} reset() {} } },
+    '../extensions/NasExtensionsModel': { NasExtensionsModel: class { recordsReady = true; pending = []; busy = false; async attach() {} reset() {} } },
     '../drive/DriveBrowserModel': { DriveBrowserModel: class { attach() {} detach() {} reset() {} } },
     '../drive/DriveTransferModel': { DriveTransferModel: class {
       ready = true; busy = false; items = [];
@@ -134,6 +136,40 @@ test('Drive write permission requires an idle authenticated connection with the 
     Object.assign(model, previous);
     assert.equal(canWrite(), true); assert.equal(canStart(), true);
   }
+});
+
+test('ambiguous File Station start is persisted before sending and cannot be sent twice', async () => {
+  const { model, connector, calls, saved } = await fixture();
+  let sent = 0;
+  connector.deleteFiles = async () => { sent++; assert.ok(calls.writes > 0); throw failure(K.Network); };
+  await model.deleteEntry(entry);
+  await model.deleteEntry(entry);
+  assert.equal(sent, 1);
+  assert.equal(model.fileTasks[0].state, 'unknown');
+  assert.equal([...saved.values()][0][0].state, 'unknown');
+});
+
+test('an accepted File Station write blocks another write including Drive and ordinary uploads', async () => {
+  const { model, calls } = await fixture();
+  await model.deleteEntry(entry);
+  await model.deleteEntry(entry);
+  assert.equal(calls.start, 1);
+  assert.equal(model.driveActions.canWrite(), false);
+  assert.equal(model.driveTransfers.canStart(), false);
+});
+
+test('unread or unsaved File Station intent prevents synchronous remote writes', async () => {
+  const { model, connector, storage } = await fixture();
+  let sent = 0;
+  connector.createFolder = async () => { sent++; };
+  connector.renameFile = async () => { sent++; };
+  model.fileTasksReady = false;
+  await model.createFolder('new');
+  await model.renameEntry(entry, 'new.txt');
+  model.fileTasksReady = true;
+  storage.failSave = true;
+  await model.createFolder('new');
+  assert.equal(sent, 0);
 });
 
 test('system control refuses unread, active or unknown Drive transfers without stopping or replaying them', async () => {
@@ -334,19 +370,19 @@ test('read failures block new long operations without overwriting saved records 
   assert.equal(model.fileTasks[0].id, original[0].id);
 });
 
-test('a failed save retains the accepted task in memory and prevents a new start until saved', async () => {
+test('a failed intent save prevents remote submission until records can be saved', async () => {
   const { model, calls, storage, options } = await fixture({ status: () => { throw failure(K.Network); } });
   storage.failSave = true;
-  assert.equal(await model.copyEntry(entry, '/other'), 'pending');
-  assert.equal(model.fileTasks[0].task.taskId, 'copy-task');
+  assert.equal(await model.copyEntry(entry, '/other'), 'failed');
+  assert.equal(model.fileTasks.length, 0);
   assert.equal(model.fileTasksReady, false);
   assert.equal(await model.moveEntry(entry, '/other'), 'failed');
-  assert.equal(calls.start, 1);
+  assert.equal(calls.start, 0);
   storage.failSave = false;
   await model.reloadFileTasks();
   assert.equal(model.fileTasksReady, true);
   options.status = async () => ({ finished: true });
-  await model.checkFileTask(model.fileTasks[0].id);
+  await model.copyEntry(entry, '/other');
   assert.equal(model.fileTasks[0].state, 'completed');
   assert.equal(calls.start, 1);
 });
@@ -388,7 +424,34 @@ function fileStoreFixture() {
 }
 
 const persistedTask = { id: '11111111-1111-4111-8111-111111111111', task: { taskId: 'server-task', kind: 1 },
+  operation: 'copy', sources: ['/share/报告.txt'], target: '/other', createdAt: 1,
   label: '复制 报告.txt', state: 'unknown', errorText: '结果待确认。' };
+
+test('account-wide write admission checks every store and other module while allowing reads', async () => {
+  const { model, calls } = await fixture();
+  for (const change of [() => { model.driveSharing.hasPending = true; }, () => { model.driveActions.ready = false; },
+    () => { model.extensions.pending = [{ feature: 'nasDownloads' }]; },
+    () => { model.queue.items = [{ direction: 'upload', state: 'unknown' }]; },
+    () => { model.driveTransfers.items = [{ direction: 'upload', state: 'running' }]; }]) {
+    change(); assert.equal(await model.deleteEntry(entry), 'failed');
+    model.driveSharing.hasPending = false; model.driveActions.ready = true; model.extensions.pending = [];
+    model.queue.items = []; model.driveTransfers.items = [];
+  }
+  assert.equal(calls.start, 0);
+  model.queue.items = [{ direction: 'download', state: 'running' }];
+  assert.equal(model.driveActions.canWrite(), true);
+  await model.refresh(); assert.ok(calls.list > 0);
+});
+
+test('closing an uncertain synchronous write requires saving and never repeats the request', async () => {
+  const { model, connector, storage } = await fixture();
+  let sent = 0; connector.renameFile = async () => { sent++; throw failure(K.Network); };
+  assert.equal(await model.renameEntry(entry, '新名称.txt'), 'pending');
+  const id = model.fileTasks[0].id;
+  storage.failSave = true; await model.closeFileTask(id); assert.equal(model.fileTasks[0].state, 'unknown');
+  storage.failSave = false; await model.reloadFileTasks(); await model.closeFileTask(id);
+  assert.equal(model.fileTasks[0].state, 'closed'); assert.equal(sent, 1);
+});
 
 test('actual private task store round-trips partial writes and isolates NAS/account scopes', async () => {
   const { FileTaskStore, files } = fileStoreFixture();

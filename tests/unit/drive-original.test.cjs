@@ -157,6 +157,7 @@ test('original model and real RCP transport agree on exclusive directory ownersh
   const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS } });
   const mocks = {
     '@kit.RemoteCommunicationKit': { rcp: { Request: class { constructor(url, method, headers) { Object.assign(this, { url, method, headers }); } } } },
+    '../../platform/LocalSpaceBudget': require('../helpers/load-space-budget.cjs')(dsm),
     '@kit.CoreFileKit': { fileIo: f.io }, '@kit.PerformanceAnalysisKit': { hilog: { error() {} } },
     '../domain/DsmProtocol': dsm, './NasTransferTransport': transport,
     '../../platform/Utf8Codec': { decodeResponsePrefix: bytes => Buffer.from(bytes).toString(), decodeUtf8Complete: bytes => Buffer.from(bytes).toString() }

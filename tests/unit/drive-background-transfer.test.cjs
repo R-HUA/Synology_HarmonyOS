@@ -44,6 +44,7 @@ function fixture(options = {}) {
     async save(records) { events.push(['save', clone(records)]); if (options.saveFailure?.(records)) throw new NasFailure(K.Protocol, '保存失败'); history.set(this.account, clone(records)); }
   }
   const sdk = {
+    async restoreDownloadSpace() {},
     requireCapability() {},
     async create(context, config) {
       events.push(['create', clone(config)]); const id = String(taskCounter++);
@@ -100,6 +101,7 @@ function fixture(options = {}) {
       async stop() {}
     } },
     '../../platform/SdkFileIO': { async closeFile() {}, async writePrivateSnapshot(file, bytes) { files.set(file, { bytes: Buffer.from(bytes), mtime: 1720000000 }); } },
+    '../../platform/LocalSpaceBudget': require('../helpers/load-space-budget.cjs')(dsm),
     '../transfers/TransferQueueFiles': filesPort, './DriveTransferStore': { DriveTransferStore: Store }
   };
   function load(name) {

@@ -34,6 +34,16 @@ interface DriveBrowseReturn {
   position: DrivePagePosition;
 }
 
+interface DriveTabContext extends DriveBrowseReturn {
+  entries: DriveEntry[];
+  total?: number;
+  hasMore: boolean;
+  searchText: string;
+  query?: DriveSearchQuery;
+  searchReturn?: DriveBrowseReturn;
+  searchPosition?: DrivePagePosition;
+}
+
 /**
  * Drive 只读浏览状态。
  *
@@ -68,6 +78,8 @@ export class DriveBrowserModel {
   private searchQuery: DriveSearchQuery | undefined = undefined;
   private searchReturn: DriveBrowseReturn | undefined = undefined;
   private searchResultsPosition: DrivePagePosition | undefined = undefined;
+  private tabContexts: Map<DriveView, DriveTabContext> = new Map();
+  private activeView: DriveView = DriveView.MyDrive;
 
   attach(connector: NasConnector, onSessionFailure: (error: NasFailure) => Promise<void>): void {
     this.detach();
@@ -85,6 +97,8 @@ export class DriveBrowserModel {
   }
 
   reset(): void {
+    this.tabContexts.clear();
+    this.activeView = DriveView.MyDrive;
     this.generation++;
     this.busy = false;
     this.errorText = '';
@@ -126,6 +140,35 @@ export class DriveBrowserModel {
     if (view === DriveView.Search) { return; }
     if (this.busy || !this.supportsView(view) || this.view === view && this.trail.length === 1 && this.loaded) { return; }
     await this.load([{ name: driveViewLabel(view) }], 0, view);
+  }
+
+  /** 页签保留目录、分页和搜索；切换使旧页请求失效，避免迟到响应覆盖新页。 */
+  async activateView(view: DriveView): Promise<void> {
+    if (!this.supportsView(view) || view === DriveView.Search) { return; }
+    if (this.activeView === view && (this.loaded || this.busy)) { return; }
+    if (this.loaded) {
+      this.tabContexts.set(this.activeView, { trail: this.trail.slice(), view: this.view,
+        position: { offset: this.pageOffset, previousOffsets: this.previousOffsets.slice() }, entries: this.entries.slice(),
+        total: this.total, hasMore: this.hasMore, searchText: this.searchText, query: this.searchQuery,
+        searchReturn: this.searchReturn, searchPosition: this.searchResultsPosition });
+    }
+    this.generation++;
+    this.busy = false;
+    this.activeView = view;
+    const saved = this.tabContexts.get(view);
+    this.errorText = ''; this.notice = '';
+    if (saved === undefined) {
+      this.loaded = false;
+      this.entries = [];
+      await this.load([{ name: driveViewLabel(view) }], 0, view);
+      return;
+    }
+    this.trail = saved.trail.slice(); this.view = saved.view; this.entries = saved.entries.slice();
+    this.pageOffset = saved.position.offset; this.previousOffsets = saved.position.previousOffsets.slice();
+    this.total = saved.total; this.hasMore = saved.hasMore; this.loaded = true;
+    this.searchText = saved.searchText; this.searchQuery = saved.query;
+    this.searchKeyword = saved.query?.keyword ?? ''; this.searchScopeName = saved.query?.scopeName ?? DRIVE_ROOT_LABEL;
+    this.searchReturn = saved.searchReturn; this.searchResultsPosition = saved.searchPosition;
   }
 
   async search(value: string): Promise<void> {

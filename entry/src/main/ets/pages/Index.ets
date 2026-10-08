@@ -32,7 +32,8 @@ import { bundledDeviceArtwork, fallbackDeviceArtwork, hasModelArtwork, deviceArt
 import { WorkbenchMetrics, WorkbenchIconTile, WorkbenchSectionTitle, WorkbenchInfoRow, WorkbenchNotice, WorkbenchChoice, WorkbenchActionRow } from '../features/workbench/WorkbenchUi';
 
 import { ModuleTab, WorkbenchModule, ModuleTabSettings, rootTabs, driveTabs, driveMoreViews, photoTabs,
-  moduleTabIndex, rootReturnIndex, ROOT_TASK_TAB, ROOT_SETTINGS_TAB, DRIVE_MORE_VIEWS, supportsPhotoSharing } from '../features/workbench/ModuleNavigation';
+  moduleTabIndex, rootReturnIndex, ROOT_TASK_TAB, ROOT_SETTINGS_TAB, DRIVE_MORE_VIEWS, supportsPhotoSharing,
+  supportsPhotos, supportsPhotoBackup } from '../features/workbench/ModuleNavigation';
 import { ModuleTabStore } from '../features/workbench/ModuleTabStore';
 import { FileStationPage } from '../features/files/FileStationPage';
 import { DriveModulePage } from '../features/drive/DriveModulePage';
@@ -136,13 +137,13 @@ struct Index {
   @Local private titleMenuError: string = '';
   private titleMenuContent: ComponentContent<TitleMenuItem[]> | undefined = undefined;
   @Local private backup: PhotoBackup = new PhotoBackup();
-  @Local private photosInitialized: boolean = false;
   @Local private contentWidth: number = 360;
   @Local private windowWidth: number = 360;
   @Local private windowHeight: number = 800;
   @Local private deviceInfo: string[] = [];
   @Local private selectedTaskId: string = '';
   @Local private taskFilter: string = 'all';
+  @Local private taskSource: string = 'all';
   /**
    * 半模态背板的沉浸式系统材质。官方《开启沉浸光感》给半模态/弹窗的推荐档位就是 ULTRA_THICK。
    * 注意材质层在 backgroundColor 之下，所以背板要设成透明色，否则材质被不透明背景盖住看不见。
@@ -269,7 +270,6 @@ struct Index {
       this.backup.reset();
       this.pickerMode = '';
       this.extensionsOpened = false; this.downloadsVisible = false;
-      this.photosInitialized = false;
       this.taskSection = 'transfers';
       this.taskFilter = 'all';
       this.navStack.clear();
@@ -333,25 +333,21 @@ struct Index {
 
   private ensurePhotosOpen(): void {
     const id = this.effectivePhotoTab();
-    if (this.module !== 'photos' || !['photos', 'albums', 'shared'].includes(id) || this.model.busy || this.model.photoLibrary.busy) { return; }
+    if (this.module !== 'photos' || !['photos', 'albums', 'shared'].includes(id) || this.navigationBusy()) { return; }
     const space = this.expectedPhotoSpace(id);
     const section = this.expectedPhotoSection(id, space);
-    if (!this.photosInitialized || this.model.photoLibrary.space !== space || this.model.photoLibrary.section !== section ||
-      this.model.photoLibrary.selectedAlbum !== undefined && id === 'photos' && space !== PhotosSpace.WithMe) {
-      this.photosInitialized = true;
-      this.model.photoLibrary.open(space, section);
-    }
+    this.model.photoLibrary.activateTab(id, space, section);
   }
 
   private switchTab(index: number): void {
+    this.taskSource = 'all';
     this.module = 'root'; this.activeTab = rootReturnIndex(index); this.rootTab = this.activeTab;
     this.tabsController.changeIndex(this.activeTab);
     this.updateTelemetryMode();
   }
 
   private supportsPhotos(): boolean {
-    return this.model.supports('SYNO.Foto.Browse.Item') || this.model.supports('SYNO.FotoTeam.Browse.Item') ||
-      this.model.supports('SYNO.Foto.Sharing.Misc');
+    return supportsPhotos((api: string): boolean => this.model.supports(api));
   }
 
   /** 首页「资源监控」与「存储空间」卡片整卡可点，进入同一张只读监控详情页。 */
@@ -382,7 +378,7 @@ struct Index {
   private activeScrollers(): Scroller[] {
     if (!this.model.authenticated) { return [this.homeScroller]; }
     if (this.module === 'drive') { return [this.driveScrollerFor(this.driveTabId)]; }
-    if (this.module === 'photos') { return [this.photoTabId === 'transfers' ? this.tasksScroller : this.photoScrollerFor(this.photoTabId)]; }
+    if (this.module === 'photos') { return [this.photoScrollerFor(this.photoTabId)]; }
     return [this.activeTab === 1 ? this.filesScroller : this.activeTab === ROOT_TASK_TAB ? this.tasksScroller :
       this.activeTab === ROOT_SETTINGS_TAB ? this.settingsScroller : this.homeScroller];
   }
@@ -394,11 +390,12 @@ struct Index {
   }
 
   private async selectBackup(): Promise<void> {
+    if (!supportsPhotoBackup((api: string): boolean => this.model.supports(api))) { return; }
     await this.backup.select(this.getUIContext().getHostContext() as common.UIAbilityContext, this.model.queue);
   }
 
   private async submitBackup(): Promise<void> {
-    if (this.model.directory.length === 0 || !this.model.queue.ready || this.model.busy) { return; }
+    if (!supportsPhotoBackup((api: string): boolean => this.model.supports(api)) || this.model.directory.length === 0 || !this.model.queue.ready || this.model.busy) { return; }
     await this.backup.submit(this.model.directory, this.model.queue);
     if (this.backup.sources.length === 0) {
       this.pickerMode = ''; this.navStack.pop(); this.taskSection = 'transfers'; this.switchTab(ROOT_TASK_TAB);
@@ -406,9 +403,9 @@ struct Index {
   }
 
   private filteredTasks(): TransferQueueItem[] {
-    return this.model.queue.items.filter((item: TransferQueueItem): boolean => this.taskFilter === 'all' ||
+    return this.model.queue.items.filter((item: TransferQueueItem): boolean => (this.taskSource === 'all' || item.source === this.taskSource) && (this.taskFilter === 'all' ||
       (this.taskFilter === 'finished' ? ['completed', 'cancelled', 'failed', 'closed', 'clearing'].includes(item.state) :
-        !['completed', 'cancelled', 'failed', 'closed', 'clearing'].includes(item.state)));
+        !['completed', 'cancelled', 'failed', 'closed', 'clearing'].includes(item.state))));
   }
 
   private showDeviceInfo(): void {
@@ -618,7 +615,7 @@ struct Index {
     return this.photoScrollers[Math.max(0, ['photos', 'albums', 'shared', 'backup', 'transfers', 'more'].indexOf(id))];
   }
 
-  private navigationBusy(): boolean { return this.model.busy || this.model.drive.busy || this.model.photoLibrary.busy; }
+  private navigationBusy(): boolean { return this.model.sessionTransition; }
 
   private enterModule(module: WorkbenchModule): void {
     if (this.navigationBusy() || !this.model.authenticated) { return; }
@@ -644,19 +641,18 @@ struct Index {
     if (this.module === 'drive') {
       this.driveTabId = tab.id;
       const view = tab.view ?? (this.driveMoreView.length > 0 ? this.driveMoreView as DriveView : undefined);
-      if (view !== undefined && !(tab.id === 'mydrive' && this.driveSearchVisible && this.model.drive.view === DriveView.Search) &&
-        (!this.model.drive.loaded || this.model.drive.view !== view)) { this.model.drive.selectView(view); }
+      if (view !== undefined) { this.model.drive.activateView(view); }
     } else if (this.module === 'photos') {
       this.photoTabId = tab.id;
-      if (tab.id === 'transfers') { this.taskSection = 'transfers'; }
+      if (tab.id === 'transfers') { this.taskSection = 'transfers'; this.taskSource = 'photoBackup'; }
       this.ensurePhotosOpen();
-    } else { this.rootTab = index; }
+    } else { this.rootTab = index; this.taskSource = 'all'; }
   }
 
   private selectDriveMore(view: DriveView): void {
     if (this.navigationBusy() || !this.model.drive.supportsView(view)) { return; }
     this.driveMoreView = view;
-    if (!this.model.drive.loaded || this.model.drive.view !== view) { this.model.drive.selectView(view); }
+    this.model.drive.activateView(view);
   }
 
   private backToDriveMore(): void { this.driveMoreView = ''; }
@@ -714,7 +710,7 @@ struct Index {
   }
 
   private openPhotoBackup(): void {
-    if (this.navigationBusy()) { return; }
+    if (this.navigationBusy() || !supportsPhotoBackup((api: string): boolean => this.model.supports(api))) { return; }
     this.photoMoreShared = false;
     this.photoTabId = photoTabs((api: string): boolean => this.model.supports(api), this.showPhotoShared, this.photoPinned)
       .some((tab: ModuleTab): boolean => tab.id === 'backup') ? 'backup' : 'more';
@@ -1035,17 +1031,7 @@ struct Index {
         top: this.statusInset + 8, bottom: this.loginBottomInset() })
   }
 
-  /** 开关设置行：整行标签 + 右侧系统开关，原地生效。 */
-  @Builder
-  switchRow(label: string, checked: boolean, onToggle: (checked: boolean) => void) {
-    Row({ space: 12 }) {
-      Text(label).fontSize(16).fontColor($r('sys.color.font_primary')).layoutWeight(1)
-      Toggle({ type: ToggleType.Switch, isOn: checked }).enabled(!this.model.busy).onChange(onToggle)
-        .accessibilityText(label)
-    }.width('100%').constraintSize({ minHeight: WorkbenchMetrics.rowMinHeight })
-  }
-
-  /** 登录页：地址、用户名、密码与协议开关整体居中。 */
+  /** 危险连接方式在地址管理中确认，登录页只提交账号凭据。 */
   @Builder
   loginView() {
     Column() {
@@ -1074,14 +1060,14 @@ struct Index {
                 .onChange((text: string): void => { this.model.otp = text; }).accessibilityText('双重验证动态码')
             }
             Divider().color($r('app.color.workbench_divider'))
-            Column() {
-              this.switchRow('HTTPS 安全访问', this.model.useHttps,
-                (checked: boolean): void => { this.model.setUseHttps(checked); })
-              if (this.model.useHttps) {
-                this.switchRow('忽略 SSL 验证', this.model.insecureTls,
-                  (checked: boolean): void => { this.model.setInsecureTls(checked); })
-              }
-            }.width('100%')
+            Button($r('app.string.connection_addresses')).buttonStyle(ButtonStyleMode.TEXTUAL)
+              .constraintSize({ minHeight: 48 }).enabled(!this.model.busy)
+              .onClick((): void => { this.openConnectionAddresses(); })
+            if (!this.model.addressBook.ready) {
+              Button($r('app.string.connection_reload')).buttonStyle(ButtonStyleMode.TEXTUAL)
+                .constraintSize({ minHeight: 48 }).enabled(!this.model.busy && !this.model.addressBook.busy)
+                .onClick((): void => { this.model.reloadAddressBook(); })
+            }
           }.width('100%').padding(16).borderRadius(WorkbenchMetrics.cardRadius)
             .backgroundColor($r('app.color.workbench_surface')).alignItems(HorizontalAlign.Start)
           Button(this.model.busy ? '正在登录…' : '登录')
@@ -1236,7 +1222,7 @@ struct Index {
             }, (view: DriveView): string => view)
           }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
         }
-        if (this.supportsPhotos() || this.model.supports('SYNO.FileStation.Upload')) {
+        if (this.supportsPhotos()) {
           WorkbenchSectionTitle({ title: '照片' })
           Column() {
             if (supportsPhotoSharing((api: string): boolean => this.model.supports(api))) {
@@ -1244,7 +1230,7 @@ struct Index {
                 photoTabs((api: string): boolean => this.model.supports(api), false, this.photoPinned).length < 5 : true,
                 (selected: boolean): void => { this.togglePhotoTab('shared', selected); })
             }
-            if (this.model.supports('SYNO.FileStation.Upload')) {
+            if (supportsPhotoBackup((api: string): boolean => this.model.supports(api))) {
               this.tabSettingRow('照片备份', this.photoPinned.includes('backup'), this.photoCanPin('backup'),
                 (selected: boolean): void => { this.togglePhotoTab('backup', selected); })
             }
@@ -1469,7 +1455,7 @@ struct Index {
           pickerMode: this.pickerMode, selectionCount: this.backup.sources.length, pickerBusy: this.backup.submitting,
           pickerError: this.pickerMode === 'backup' ? this.backup.errorText : '', errorText: this.visibleError(),
           canConfirm: this.model.directory.length > 0 && !this.model.busy && (this.pickerMode !== 'backup' ||
-            this.model.supports('SYNO.FileStation.Upload') && this.backup.sources.length > 0 && this.model.queue.ready && !this.model.queue.busy && !this.backup.submitting),
+            supportsPhotoBackup((api: string): boolean => this.model.supports(api)) && this.backup.sources.length > 0 && this.model.queue.ready && !this.model.queue.busy && !this.backup.submitting),
           onNavigateBreadcrumb: (target: string): void => { this.navigateBreadcrumb(target); },
           onConfirm: (): void => { if (this.pickerMode === 'backup') { this.submitBackup(); } else { this.useDownloadDirectory(); } },
           onCancel: (): void => { this.cancelDirectoryPicker(); } })
@@ -1524,7 +1510,8 @@ struct Index {
     } else if (name === 'nas-downloads') {
       HdsNavDestination() {
         DownloadStationPage({ model: this.model.extensions, scroller: this.downloadsScroller, visible: this.downloadsVisible,
-          onChooseDirectory: (): void => { this.chooseDownloadDirectory(); } })
+          onChooseDirectory: (): void => { this.chooseDownloadDirectory(); },
+          onAuthenticate: (): void => { this.model.authenticateDownloads(); } })
       }
         .backgroundColor($r('app.color.workbench_background'))
         .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: 'NAS 下载' } } })
@@ -1598,6 +1585,7 @@ struct Index {
   private fileTaskStateText(item: FileTaskItem): string {
     if (item.state === 'completed') { return '已完成'; }
     if (item.state === 'failed') { return '操作失败'; }
+    if (item.state === 'closed') { return '已核对并关闭'; }
     return item.state === 'pending' ? '服务器正在处理' : '结果待确认';
   }
 
@@ -1607,6 +1595,13 @@ struct Index {
       secondaryButton: { value: '取消任务', action: (): void => {
         this.runTransfer(async (): Promise<void> => { await this.model.queue.cancel(item.id); });
       } } });
+  }
+
+  private confirmCloseFileTask(item: FileTaskItem): void {
+    this.getUIContext().showAlertDialog({ title: '核对后关闭文件操作',
+      message: '请先核对服务器上的实际结果。关闭“' + item.label + '”只解除本机待核对状态，不能撤销远端操作，也不表示操作成功。',
+      primaryButton: { value: '继续核对', action: (): void => {} },
+      secondaryButton: { value: '已核对，关闭记录', action: (): void => { this.model.closeFileTask(item.id); } } });
   }
 
   private confirmCloseUpload(item: TransferQueueItem): void {
@@ -1679,7 +1674,18 @@ struct Index {
   @Builder
   tasksView() {
     Column() {
-      List({ space: 12, scroller: this.tasksScroller }) {
+      List({ space: 12, scroller: this.module === 'photos' ? this.photoScrollerFor('transfers') : this.tasksScroller }) {
+        if (this.module === 'photos') {
+          ListItem() {
+            Row() {
+              WorkbenchChoice({ label: '照片备份', selected: this.taskSource === 'photoBackup',
+                onSelect: (): void => { this.taskSource = 'photoBackup'; this.taskSection = 'transfers'; } })
+              WorkbenchChoice({ label: '全部任务', selected: this.taskSource === 'all',
+                onSelect: (): void => { this.taskSource = 'all'; } })
+            }.width('100%')
+          }
+        }
+        if (this.taskSource === 'all') {
         ListItem() {
           Scroll() {
           Row() {
@@ -1698,6 +1704,7 @@ struct Index {
           }
           }.width('100%').scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
             .accessibilityText('任务分类，左右滑动查看')
+        }
         }
         if (this.taskSection === 'drive') {
           ListItem() { DriveTransferSummary({ model: this.model.driveTransfers }) }
@@ -1719,7 +1726,7 @@ struct Index {
             if (this.model.fileTasksErrorText.length > 0) {
               Text(this.model.fileTasksErrorText).fontSize(14).fontColor($r('sys.color.font_primary')).width('100%')
             } else if (this.model.fileTasks.length === 0) {
-              Text('复制、移动和删除的处理结果会保存在这里。').fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
+              Text('文件整理的处理结果会保存在这里。').fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
             }
           }.width('100%').padding({ top: 8, bottom: 8 })
         }
@@ -1728,12 +1735,23 @@ struct Index {
             Column({ space: 6 }) {
               Text(task.item.label).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
               Text(this.fileTaskStateText(task.item)).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
+              if (task.item.sources.length > 0) {
+                Text(task.item.sources.join('、')).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
+              }
+              if (task.item.target !== undefined) {
+                Text('目标：' + task.item.target).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
+              }
               if (task.item.errorText.length > 0) {
                 WorkbenchNotice({ text: task.item.errorText, warning: true })
               }
-              if (task.item.state === 'pending' || task.item.state === 'unknown') {
+              if (task.item.task !== undefined && (task.item.state === 'pending' || task.item.state === 'unknown')) {
                 Button('查询结果').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
                   .onClick((): void => { this.model.checkFileTask(task.item.id); })
+              }
+              if (task.item.state === 'unknown') {
+                Button('核对后关闭').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
+                  .enabled(!this.model.busy && this.model.fileTasksReady)
+                  .onClick((): void => { this.confirmCloseFileTask(task.item); })
               }
             }.width('100%').padding(16).borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_surface'))
           }
@@ -1769,6 +1787,9 @@ struct Index {
                   Column({ space: 4 }) {
                     Text(task.item.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
                       .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
+                    if (task.item.source === 'legacy') {
+                      Text('历史任务').fontSize(12).fontColor($r('sys.color.font_secondary'))
+                    }
                     Progress({ value: this.taskProgress(task.item), total: 100, type: ProgressType.Linear })
                       .width('100%').height(4).visibility(task.item.bytes > 0 ? Visibility.Visible : Visibility.Hidden)
                       .accessibilityText(task.item.bytes > 0 ? '已传输 ' + this.taskProgress(task.item).toFixed(0) + '%' : '大小未知')

@@ -2,6 +2,7 @@ import { decodeNasResponse, dsmFailure, NasErrorKind, NasFailure, nasInteger, na
   validateLogicalPath } from './DsmProtocol';
 
 export type TransferDirection = 'upload' | 'download';
+export type TransferSource = 'fileUpload' | 'shareUpload' | 'photoBackup' | 'download' | 'legacy';
 export type TransferState = 'preparing' | 'queued' | 'creating' | 'running' | 'waiting' |
   'verifying' | 'completed' | 'failed' | 'unknown' | 'cancelled' | 'closed' | 'clearing';
 
@@ -9,6 +10,7 @@ export type TransferState = 'preparing' | 'queued' | 'creating' | 'running' | 'w
 export interface TransferQueueRecord {
   id: string;
   direction: TransferDirection;
+  source: TransferSource;
   name: string;
   remotePath: string;
   bytes: number;
@@ -35,6 +37,7 @@ export interface TransferQueueRecord {
 export interface TransferQueueItem {
   id: string;
   direction: TransferDirection;
+  source: TransferSource;
   name: string;
   remotePath: string;
   bytes: number;
@@ -118,7 +121,7 @@ export function transferItem(record: TransferQueueRecord): TransferQueueItem {
     case 'closed': text = '已核对并关闭'; break;
     case 'clearing': text = '正在清理记录'; break;
   }
-  return { id: record.id, direction: record.direction, name: record.name, remotePath: record.remotePath,
+  return { id: record.id, direction: record.direction, source: record.source, name: record.name, remotePath: record.remotePath,
     bytes: record.bytes, processed: record.processed, state: record.state, stateText: text,
     errorText: record.errorText, canCancel: !['completed', 'cancelled', 'failed', 'unknown', 'closed', 'clearing'].includes(record.state),
     canRetry: transferCanRetry(record), canExport: record.direction === 'download' && record.state === 'completed',
@@ -127,7 +130,7 @@ export function transferItem(record: TransferQueueRecord): TransferQueueItem {
 
 export function decodeTransferQueue(text: string, scope: string): TransferQueueRecord[] {
   const root = nasRecord(JSON.parse(text) as Object);
-  if (root['version'] !== 1 || root['scope'] !== scope || !Array.isArray(root['records'])) { throw invalidRecord(); }
+  if (![1, 2].includes(root['version'] as number) || root['scope'] !== scope || !Array.isArray(root['records'])) { throw invalidRecord(); }
   const rows = root['records'] as Object[];
   if (rows.length > 1000) { throw invalidRecord(); }
   const ids: string[] = [];
@@ -135,6 +138,7 @@ export function decodeTransferQueue(text: string, scope: string): TransferQueueR
     const row = nasRecord(value);
     const id = nasString(row['id']);
     const direction = row['direction'];
+    const source = root['version'] === 1 ? 'legacy' : row['source'];
     const state = row['state'];
     const localName = nasString(row['localName']);
     const attempts = nasInteger(row['attempts']);
@@ -148,6 +152,8 @@ export function decodeTransferQueue(text: string, scope: string): TransferQueueR
     const systemCompleted = row['systemCompleted'] === undefined ? false : row['systemCompleted'];
     if (!/^[0-9a-f-]{36}$/.test(id) || ids.includes(id) ||
       !['upload', 'download'].includes(direction as string) ||
+      !['fileUpload', 'shareUpload', 'photoBackup', 'download', 'legacy'].includes(source as string) ||
+      direction === 'download' && source !== 'download' && source !== 'legacy' || direction === 'upload' && source === 'download' ||
       !['preparing', 'queued', 'creating', 'running', 'waiting', 'verifying', 'completed', 'failed', 'unknown', 'cancelled', 'closed', 'clearing'].includes(state as string) ||
       localName !== id + '-' + attempts.toString() + '.bin' || attempts < 1 ||
       typeof taskId !== 'string' || (taskId.length > 0 && !/^[0-9]+$/.test(taskId)) ||
@@ -162,7 +168,7 @@ export function decodeTransferQueue(text: string, scope: string): TransferQueueR
     ids.push(id);
     const httpStatus = nasInteger(row['httpStatus']);
     if (httpStatus !== 0 && (httpStatus < 100 || httpStatus > 599)) { throw invalidRecord(); }
-    return { id: id, direction: direction as TransferDirection, name: validateTransferName(nasString(row['name'])),
+    return { id: id, direction: direction as TransferDirection, source: source as TransferSource, name: validateTransferName(nasString(row['name'])),
       remotePath: validateLogicalPath(nasString(row['remotePath'])), bytes: nasInteger(row['bytes']),
       localName: localName, localReady: row['localReady'] as boolean, state: state as TransferState,
       taskId: taskId as string, attempts: attempts, startAttempted: row['startAttempted'] as boolean,

@@ -53,12 +53,14 @@ function page() {
     model: { authenticated: true, directory: '/hidden', busy: false, supports: () => true, extensions: {}, queue: { ready: true },
       goBack() { calls.push('station-back'); this.directory = ''; },
       drive: { view: V.MyDrive, loaded: true, busy: false, available: true, trail: [{}], supportsView: () => true,
+        activateView(view) { if (this.view !== view) { this.selectView(view); } },
         canGoUp() { return this.trail.length > 1 || this.view === V.Search; },
         goUp() { calls.push('drive-up'); this.trail = [{}]; },
         async exitSearch() { calls.push('exit-search'); this.view = V.MyDrive; },
         selectView(view) { calls.push(['view', view]); this.view = view; this.loaded = true; },
         openFolder() { calls.push('drive-folder'); } },
       photoLibrary: { busy: false, space: P.Personal, section: 'timeline', selectedAlbum: undefined,
+        activateTab(key, space, section) { if (this.space !== space || this.section !== section) { this.open(space, section); } },
         open(space, section) { calls.push(['photos', space, section]); this.space = space; this.section = section; this.selectedAlbum = undefined; },
         backToLibrary() { calls.push('albums'); this.selectedAlbum = undefined; } }
     }
@@ -134,9 +136,12 @@ test('module entry captures the root and only loads a mismatched Drive view', ()
   state.exitModule(); state.model.drive.view = V.TeamFolders; state.enterModule('drive');
   assert.deepEqual(state.calls.filter(c => Array.isArray(c) && c[0] === 'view'), [['view', V.MyDrive]]);
 });
-test('busy or unavailable modules cannot replace the current root tab', () => {
+test('unrelated reads allow navigation while session transitions and unavailable modules block it', () => {
   const state = page(); state.module = 'root'; state.activeTab = 1;
-  state.model.drive.busy = true; state.enterModule('photos'); assert.equal(state.module, 'root');
+  state.model.drive.busy = true; state.enterModule('photos'); assert.equal(state.module, 'photos');
+  state.module = 'root'; state.activeTab = 1;
+  state.model.sessionTransition = true; state.enterModule('photos'); assert.equal(state.module, 'root');
+  state.model.sessionTransition = false;
   state.model.drive.busy = false; state.model.drive.supportsView = () => false; state.enterModule('drive');
   assert.equal(state.module, 'root'); assert.equal(state.activeTab, 1);
   assert.match(index, /\.onContentWillChange\([^]*?!this\.navigationBusy\(\)/);
@@ -257,7 +262,7 @@ test('photo backup home shortcut resets the hidden sharing subview before select
 test('returning from the directory picker reopens the retained NAS download form once', () => {
   const source = fs.readFileSync(path.join(root, 'features/downloadStation/DownloadStationPage.ets'), 'utf8');
   const restore = method(source, 'restoreDownloadForm');
-  const state = { visible: false, creating: false, model: { downloadFormRequested: true, downloadUri: 'https://example.test/a', downloadDestination: 'old' } };
+  const state = { visible: false, creating: false, model: { downloadFormRequested: true, downloadUri: 'https://example.test/a', downloadDestination: 'old', cancelDownloadAuthentication() {} } };
   restore.call(state); assert.equal(state.creating, false); assert.equal(state.model.downloadFormRequested, true);
   state.visible = true; restore.call(state); assert.equal(state.creating, true); assert.equal(state.model.downloadFormRequested, false);
   assert.equal(state.model.downloadUri, 'https://example.test/a'); assert.equal(state.model.downloadDestination, 'old');

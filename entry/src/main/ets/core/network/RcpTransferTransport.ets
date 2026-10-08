@@ -8,6 +8,7 @@ import type { NasHttpReply } from './DsmRpcClient';
 import type { NasBinaryReply, NasDownloadReceipt, NasDownloadTarget, NasTransferControl,
   NasTransferRequest, NasTransferTransport, NasUploadSource } from './NasTransferTransport';
 import { decodeResponsePrefix, decodeUtf8Complete } from '../../platform/Utf8Codec';
+import { localSpaceBudget } from '../../platform/LocalSpaceBudget';
 
 /**
  * 共用连接的 RCP Session：不创建第二套证书策略、不跟随任何重定向，
@@ -132,6 +133,8 @@ export class RcpTransferTransport implements NasTransferTransport {
     let failure: NasFailure | undefined = undefined;
     let unsubscribe = (): void => {};
     try {
+      await localSpaceBudget.reserve(target.directory, destination, target.expectedBytes ?? target.maximumBytes);
+      this.check(control);
       target.onDirectoryCreated?.();
       try { descriptor = fileIo.openSync(destination, fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE).fd; }
       catch (_) { throw new NasFailure(NasErrorKind.Protocol, '无法创建下载临时文件。'); }
@@ -140,7 +143,7 @@ export class RcpTransferTransport implements NasTransferTransport {
         if (callbackFailure !== undefined) { return; }
         try {
           this.check(control);
-          if (bytes + chunk.byteLength > target.maximumBytes) {
+          if (bytes + chunk.byteLength > (target.expectedBytes ?? target.maximumBytes)) {
             throw new NasFailure(NasErrorKind.Protocol, '下载文件超过大小限制。');
           }
           if (prefix.length < NAS_TRANSFER_PREFIX_BYTES) {
@@ -157,6 +160,7 @@ export class RcpTransferTransport implements NasTransferTransport {
             offset += written;
           }
           bytes += chunk.byteLength;
+          localSpaceBudget.advance(destination, (target.expectedBytes ?? target.maximumBytes) - bytes);
           if (control.onProgress !== undefined) {
             control.onProgress({ direction: 'download', processed: bytes, total: target.expectedBytes });
           }
@@ -198,6 +202,7 @@ export class RcpTransferTransport implements NasTransferTransport {
       }
     } finally {
       unsubscribe();
+      localSpaceBudget.release(destination);
       if (descriptor >= 0) {
         try { fileIo.closeSync(descriptor); }
         catch (_) {

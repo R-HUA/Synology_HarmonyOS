@@ -14,7 +14,8 @@ function load(relative, mocks = {}) {
   assert.equal((output.diagnostics || []).filter(d => d.category === ts.DiagnosticCategory.Error).length, 0);
   const module = { exports: {} };
   vm.runInNewContext(output.outputText, { module, exports: module.exports, Error, Uint8Array, ArrayBuffer,
-    require: id => { assert.ok(Object.hasOwn(mocks, id), 'unexpected dependency ' + id); return mocks[id]; } });
+    require: id => {
+      if (id === '../../platform/LocalSpaceBudget') { return mocks[id] || require('../helpers/load-space-budget.cjs')(mocks['../domain/DsmProtocol'] || mocks['../../core/domain/DsmProtocol']); } assert.ok(Object.hasOwn(mocks, id), 'unexpected dependency ' + id); return mocks[id]; } });
   return module.exports;
 }
 

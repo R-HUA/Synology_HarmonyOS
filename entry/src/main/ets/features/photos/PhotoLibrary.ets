@@ -7,6 +7,17 @@ import { NasConnector } from '../../core/network/NasConnector';
 import { PhotoMediaStore } from './PhotoMediaStore';
 
 export type PhotoLibrarySection = 'timeline' | 'albums';
+interface PhotoTabContext {
+  space: PhotosSpace;
+  section: PhotoLibrarySection;
+  items: NasPhotoItem[];
+  albums: NasPhotoAlbum[];
+  selectedAlbum?: NasPhotoAlbum;
+  selectedAccess?: NasPhotoMediaAccess;
+  passphrases: Map<string, string>;
+  offset: number;
+  hasMore: boolean;
+}
 
 /** 一个稳定照片身份对应一个可观察对象，媒体完成仅通知自己的单元格。 */
 @ObservedV2
@@ -59,6 +70,9 @@ export class PhotoLibrary {
   private prefetch: NasPhotoItem[] = [];
   private visibleStateKeys: Set<string> = new Set();
   private nearEnd: boolean = false;
+  private tabContexts: Map<string, PhotoTabContext> = new Map();
+  private activeTab: string = '';
+  private loaded: boolean = false;
   private viewportCount: number = -1;
   private demandTimer: number = -1;
   private foregroundChanged = (foreground: boolean): void => { this.setForeground(foreground); };
@@ -77,6 +91,7 @@ export class PhotoLibrary {
   }
 
   reset(): void {
+    this.tabContexts.clear(); this.activeTab = ''; this.loaded = false;
     this.generation++;
     this.requestGeneration++;
     this.context?.eventHub?.off('nas-foreground-change', this.foregroundChanged);
@@ -109,6 +124,7 @@ export class PhotoLibrary {
       this.errorText = '照片空间或视图不正确。'; return;
     }
     this.requestGeneration++;
+    this.loaded = false;
     this.closeDetail();
     this.clearDemand();
     this.media.setAccess();
@@ -127,8 +143,34 @@ export class PhotoLibrary {
     await this.readPage(true);
   }
 
+  /** 相册和照片页各自保留浏览进度，授权只在当前账号内存中保存。 */
+  async activateTab(key: string, space: PhotosSpace, section: PhotoLibrarySection): Promise<void> {
+    if (key === this.activeTab && space === this.space && (this.loaded || this.busy)) { return; }
+    if (this.loaded && this.activeTab.length > 0) {
+      this.tabContexts.set(this.activeTab, { space: this.space, section: this.section, items: this.items.slice(),
+        albums: this.albums.slice(), selectedAlbum: this.selectedAlbum, selectedAccess: this.selectedAccess,
+        passphrases: new Map(this.albumPassphrases), offset: this.offset, hasMore: this.hasMore });
+    }
+    this.activeTab = key;
+    this.requestGeneration++;
+    this.busy = false; this.appending = false;
+    this.closeDetail(); this.clearDemand(); this.clearItems();
+    const saved = this.tabContexts.get(key);
+    if (saved === undefined || saved.space !== space) { await this.open(space, section); return; }
+    this.space = saved.space; this.section = saved.section;
+    this.items = saved.items.slice(); this.albums = saved.albums.slice();
+    this.selectedAlbum = saved.selectedAlbum; this.selectedAccess = saved.selectedAccess;
+    this.albumPassphrases = new Map(saved.passphrases);
+    this.offset = saved.offset; this.hasMore = saved.hasMore;
+    this.loaded = true; this.errorText = ''; this.thumbnailErrorText = '';
+    this.media.setAccess(this.selectedAccess);
+    for (const item of this.items) { this.itemByKey.set(this.itemKey(item), item); }
+    this.dataGeneration++;
+  }
+
   async refresh(): Promise<void> {
     if (this.busy) { return; }
+    this.loaded = false;
     this.requestGeneration++;
     this.closeDetail();
     this.clearDemand();
@@ -155,6 +197,7 @@ export class PhotoLibrary {
     this.closeDetail();
     this.clearDemand();
     const passphrase = this.albumPassphrases.get(this.albumKey(trusted));
+    this.loaded = false;
     this.selectedAlbum = { id: trusted.id, name: trusted.name, itemCount: trusted.itemCount, space: trusted.space, passphrase: passphrase };
     this.selectedAccess = { albumId: trusted.id, scope: util.generateRandomUUID(), passphrase: passphrase };
     this.media.setAccess(this.selectedAccess);
@@ -447,6 +490,7 @@ export class PhotoLibrary {
         this.offset = offset + page.items.length;
         this.hasMore = page.items.length > 0 && page.hasMore;
       }
+      this.loaded = true;
     } catch (error) {
       if (this.currentPage(ticket, requestTicket)) {
         if (replace) { this.errorText = this.message(error as Error, '照片读取失败，请重试。'); }

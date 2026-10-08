@@ -28,6 +28,7 @@ function loadStore(mocks) {
   vm.runInNewContext(output.outputText, {
     module, exports: module.exports, Error, Uint8Array, ArrayBuffer,
     require: id => {
+      if (id === '../../platform/SdkFileIO') { return require('../helpers/load-sdk-file-io.cjs')(mocks['@kit.CoreFileKit'].fileIo, protocol); }
       if (id === '../../platform/SdkDigest') {
         return require('../helpers/load-sdk-digest.cjs')(mocks['@kit.CryptoArchitectureKit'].cryptoFramework, protocol);
       }
@@ -65,7 +66,7 @@ function storeFixture() {
     async open(file, mode) {
       event('open', { file, mode });
       fail('open');
-      assert.equal(file, bookPath + '.tmp');
+      assert.ok([bookPath + '.tmp', bookPath + '.v1.backup.tmp'].includes(file));
       assert.equal(mode, io.OpenMode.READ_WRITE | io.OpenMode.CREATE | io.OpenMode.TRUNC);
       const fd = nextFd++;
       handles.set(fd, { file, offset: 0 });
@@ -99,16 +100,17 @@ function storeFixture() {
     async rename(oldPath, newPath) {
       event('rename', { oldPath, newPath });
       fail('rename');
-      assert.equal(oldPath, bookPath + '.tmp');
-      assert.equal(newPath, bookPath);
+      assert.ok(oldPath === newPath + '.tmp' || oldPath === bookPath && newPath === bookPath + '.corrupt-synthetic');
       assert.equal(handles.size, 0);
       files.set(newPath, Buffer.from(files.get(oldPath)));
       files.delete(oldPath);
     },
+    async unlink(file) { event('unlink', { file }); files.delete(file); },
   };
   const exports = loadStore({
     '@kit.AbilityKit': {}, '@kit.BasicServicesKit': {}, '@kit.CoreFileKit': { fileIo: io },
-    '@kit.ArkTS': { util: { TextEncoder: class { encodeInto(text) { return new TextEncoder().encode(text); } } } },
+    '@kit.ArkTS': { util: { generateRandomUUID: () => 'synthetic',
+      TextEncoder: class { encodeInto(text) { return new TextEncoder().encode(text); } } } },
     '@kit.CryptoArchitectureKit': { cryptoFramework: { createMd(algorithm) {
       assert.equal(algorithm, 'SHA256');
       fail('cryptoCreate');
@@ -134,7 +136,7 @@ test('synthetic actual store requires a successful load and only first-stat ENOE
   assert.deepEqual(fixture.events.map(event => event.operation), ['stat']);
   assert.equal(fixture.files.size, 0);
   await store.save([]);
-  assert.deepEqual(JSON.parse(fixture.files.get(bookPath)), { version: 1, addresses: [] });
+  assert.deepEqual(JSON.parse(fixture.files.get(bookPath)), { version: 2, addresses: [] });
   assert.deepEqual([...fixture.files.keys()], [bookPath]);
 });
 
@@ -164,8 +166,52 @@ test('actual store round-trips UTF8 metadata through partial writes before fsync
   assert.doesNotMatch(fixture.files.get(bookPath).toString('utf8'), /stale-synthetic-secret|password|sid|token|otp|serial/i);
 });
 
+test('version one migration preserves the original snapshot before replacement and stops if its backup fails', async () => {
+  for (const backupFails of [false, true]) {
+    const fixture = storeFixture();
+    const original = JSON.stringify({ version: 1, addresses: [address] });
+    fixture.files.set(bookPath, Buffer.from(original));
+    const store = new fixture.NasAddressBookStore();
+    await store.load(context);
+    if (backupFails) {
+      fixture.faults.rename = failure(13900005);
+      await assert.rejects(store.save([]), isKind(protocol.NasErrorKind.Protocol));
+      assert.equal(fixture.files.get(bookPath).toString('utf8'), original);
+      assert.equal(fixture.events.some(event => event.operation === 'open' && event.file === bookPath + '.tmp'), false);
+    } else {
+      await store.save([]);
+      assert.equal(fixture.files.get(bookPath + '.v1.backup').toString('utf8'), original);
+      assert.equal(JSON.parse(fixture.files.get(bookPath)).version, 2);
+      assert.deepEqual(fixture.events.filter(event => event.operation === 'rename').map(event => event.newPath),
+        [bookPath + '.v1.backup', bookPath]);
+    }
+  }
+});
+
+test('rebuilding quarantines only confirmed corruption and preserves the damaged file on rename failure', async () => {
+  const fixture = storeFixture();
+  const store = new fixture.NasAddressBookStore();
+  fixture.files.set(bookPath, Buffer.from('{broken'));
+  fixture.faults.readText = failure(13900012);
+  await assert.rejects(store.load(context));
+  assert.equal(store.corrupt, false);
+  await assert.rejects(store.quarantine(context), isKind(protocol.NasErrorKind.InvalidInput));
+  delete fixture.faults.readText;
+  await assert.rejects(store.load(context));
+  assert.equal(store.corrupt, true);
+  fixture.faults.rename = failure(13900005);
+  await assert.rejects(store.quarantine(context), isKind(protocol.NasErrorKind.Protocol));
+  assert.equal(fixture.files.get(bookPath).toString('utf8'), '{broken');
+  delete fixture.faults.rename;
+  await store.quarantine(context);
+  assert.equal(fixture.files.get(bookPath + '.corrupt-synthetic').toString('utf8'), '{broken');
+  assert.deepEqual(plain(await store.load(context)), []);
+  await store.save([]);
+  assert.equal(fixture.files.get(bookPath + '.corrupt-synthetic').toString('utf8'), '{broken');
+});
+
 test('corrupt or secret-bearing existing books cannot be overwritten, including after a prior successful load', async () => {
-  for (const corrupt of ['{broken', JSON.stringify({ version: 2, addresses: [] }),
+  for (const corrupt of ['{broken', JSON.stringify({ version: 3, addresses: [] }),
     JSON.stringify({ version: 1, addresses: [address, address] }),
     JSON.stringify({ version: 1, addresses: [{ ...address, password: 'synthetic-secret' }] })]) {
     const fixture = storeFixture();

@@ -27,10 +27,11 @@ test('Drive promotions are deduplicated filtered and capped at two with a five-t
   assert.deepEqual(Array.from(n.driveMoreViews(() => true, pinned)), [V.SharedWithMe, V.SharedWithOthers, V.Trash]);
   assert.deepEqual(ids(n.driveTabs(v => v !== V.Recent, pinned)), ['mydrive', 'teamFolders', 'starred', 'trash', 'more']);
 });
-test('Photos hides sharing without capabilities and keeps backup available without photo service', () => {
+test('Photos backup requires both photo service and file upload capabilities', () => {
   assert.deepEqual(ids(n.photoTabs(() => false, true, [])), []);
   assert.deepEqual(ids(n.photoTabs(api => api === 'SYNO.Foto.Browse.Item', true, [])), ['photos', 'albums', 'more']);
-  assert.deepEqual(ids(n.photoTabs(api => api === 'SYNO.FileStation.Upload', true, ['backup'])), ['backup', 'more']);
+  assert.deepEqual(ids(n.photoTabs(api => api === 'SYNO.FileStation.Upload', true, ['backup'])), []);
+  assert.deepEqual(ids(n.photoTabs(api => ['SYNO.FileStation.Upload', 'SYNO.Foto.Browse.Item'].includes(api), true, ['backup'])), ['photos', 'albums', 'backup', 'more']);
 });
 test('Photos sharing can move to more and promotions respect the five-tab maximum', () => {
   assert.deepEqual(ids(n.photoTabs(() => true, true, ['backup', 'transfers'])), ['photos', 'albums', 'shared', 'backup', 'more']);

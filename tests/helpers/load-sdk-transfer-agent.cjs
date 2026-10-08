@@ -13,6 +13,7 @@ module.exports = function loadSdkTransferAgent(agent, protocol, supports = () =>
   assert.equal((output.diagnostics || []).filter(diagnostic => diagnostic.category === ts.DiagnosticCategory.Error).length, 0);
   const module = { exports: {} };
   const mocks = { '@kit.BasicServicesKit': { request: { agent } },
+    './LocalSpaceBudget': require('./load-space-budget.cjs')(protocol),
     '@kit.PerformanceAnalysisKit': { hilog: { error: log } }, '../core/domain/DsmProtocol': protocol };
   vm.runInNewContext(output.outputText, {
     module, exports: module.exports, Error, canIUse: supports,

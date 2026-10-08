@@ -3,6 +3,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { decodeUtf8Complete, decodeResponsePrefix } from '../../platform/Utf8Codec';
+import { localSpaceBudget } from '../../platform/LocalSpaceBudget';
 import { encodeNasForm, NasErrorKind, NasFailure } from '../domain/DsmProtocol';
 import type { NasFormField, NasLoginSession } from '../domain/DsmProtocol';
 import { PHOTO_ORIGINAL_MAX_BYTES, PHOTO_THUMBNAIL_MAX_BYTES, validatePhotoMediaResponse } from '../domain/PhotosProtocol';
@@ -17,7 +18,7 @@ export class RcpNasTransport implements NasTransport {
   readonly transfers: NasTransferTransport;
 
   /**
-   * insecureTls 只在用户显式选择“忽略 SSL 验证”时为 true；此时跳过服务器证书校验，
+   * insecureTls 只在保存地址时确认跳过证书校验后为 true；此时跳过服务器证书校验，
    * 用于自签名证书的内网 NAS。默认仍使用系统 CA。
    */
   constructor(insecureTls: boolean = false) {
@@ -79,7 +80,7 @@ export class RcpNasTransport implements NasTransport {
       if (callbackFailure !== undefined) { return; }
       try {
         if (!current() || this.closed) { throw new NasFailure(NasErrorKind.Cancelled, '照片读取已取消。'); }
-        if (bytes + chunk.byteLength > maximum) { throw new NasFailure(NasErrorKind.Protocol, '照片媒体超过读取大小限制。'); }
+        if (bytes + chunk.byteLength > (expectedBytes ?? maximum)) { throw new NasFailure(NasErrorKind.Protocol, '照片媒体超过读取大小限制。'); }
         if (prefix.length < 65536) {
           const size = Math.min(65536 - prefix.length, chunk.byteLength);
           const next = new Uint8Array(prefix.length + size);
@@ -96,6 +97,7 @@ export class RcpNasTransport implements NasTransport {
           offset += written;
         }
         bytes += chunk.byteLength;
+        localSpaceBudget.advance(destination, (expectedBytes ?? maximum) - bytes);
       } catch (error) {
         callbackFailure = error instanceof NasFailure ? error : new NasFailure(NasErrorKind.Protocol, '照片文件写入失败。');
         this.session.cancel(request);
@@ -103,6 +105,8 @@ export class RcpNasTransport implements NasTransport {
     };
     let failure: NasFailure | undefined = undefined;
     try {
+      await localSpaceBudget.reserve(destination.slice(0, destination.lastIndexOf('/')), destination, expectedBytes ?? maximum);
+      if (!current() || this.closed) { throw new NasFailure(NasErrorKind.Cancelled, '照片读取已取消。'); }
       const reply = await this.session.fetch(request);
       if (callbackFailure !== undefined) { throw callbackFailure as Error; }
       if (!current() || this.closed) { throw new NasFailure(NasErrorKind.Cancelled, '照片读取已取消。'); }
@@ -121,6 +125,7 @@ export class RcpNasTransport implements NasTransport {
       else if (!current() || this.closed) { failure = new NasFailure(NasErrorKind.Cancelled, '照片读取已取消。'); }
       else { failure = this.failure(error as Error); }
     } finally {
+      localSpaceBudget.release(destination);
       try { fileIo.closeSync(output); }
       catch (error) {
         const code = (error as BusinessError).code;
@@ -173,7 +178,7 @@ export class RcpNasTransport implements NasTransport {
     if (error instanceof NasFailure) { return error; }
     const code = (error as BusinessError).code;
     if ([1007900035, 1007900058, 1007900059, 1007900060, 1007900077, 1007900090].includes(code)) {
-      return new NasFailure(NasErrorKind.Tls, '服务器证书校验未通过。请检查域名与证书有效期；内网自签名证书可在登录页开启“忽略 SSL 验证”；也可改用 http 地址。', code);
+      return new NasFailure(NasErrorKind.Tls, '服务器证书校验未通过。请检查域名、系统时间与证书链；兼容连接方式须在连接地址中另行确认。', code);
     }
     return new NasFailure(NasErrorKind.Network, '连接 NAS 失败，请检查网络与服务器地址。', code);
   }

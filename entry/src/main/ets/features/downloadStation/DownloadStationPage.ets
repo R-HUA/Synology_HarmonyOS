@@ -10,6 +10,7 @@ export struct DownloadStationPage {
   @Param scroller: Scroller = new Scroller();
   @Param visible: boolean = true;
   @Event onChooseDirectory: () => void = (): void => {};
+  @Event onAuthenticate: () => void = (): void => {};
   @Local private filter: string = 'all';
   @Local private creating: boolean = false;
   @Local private showingDetail: boolean = false;
@@ -20,11 +21,14 @@ export struct DownloadStationPage {
   }
   @Monitor('visible')
   private restoreDownloadForm(): void {
+    if (!this.visible) { this.model.cancelDownloadAuthentication(); }
     if (this.visible && this.model.downloadFormRequested) {
       this.creating = true;
       this.model.downloadFormRequested = false;
     }
   }
+
+  aboutToDisappear(): void { this.model.cancelDownloadAuthentication(); }
 
   private tasks(): DownloadTask[] {
     return this.model.downloads.filter((task: DownloadTask): boolean => this.filter === 'all' ||
@@ -138,6 +142,7 @@ export struct DownloadStationPage {
         Button('浏览并选择 NAS 目录').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: 48 }).enabled(!this.model.busy)
           .onClick((): void => { this.creating = false; this.onChooseDirectory(); })
         ExtensionStatusPanel({ model: this.model, feature: 'nasDownloads' })
+        if (this.model.downloadAuthenticationRequired) { this.authenticationForm() }
         if (!this.model.canCreateDownload) {
           WorkbenchNotice({ text: '当前无法在此 NAS 创建下载任务，可查看和管理已有任务。', warning: true })
         }
@@ -145,6 +150,27 @@ export struct DownloadStationPage {
           .enabled(this.model.canCreateDownload && this.model.canWrite('nasDownloads') && this.model.downloadUri.trim().length > 0 &&
             this.model.downloadDestination.length > 0).onClick((): void => { this.confirmCreate(); })
       }.width('100%').padding(16).alignItems(HorizontalAlign.Start)
+    }.width('100%')
+  }
+
+  @Builder
+  authenticationForm() {
+    Column({ space: 12 }) {
+      TextInput({ text: this.model.downloadPassword, placeholder: $r('app.string.download_password') })
+        .type(InputType.Password).enabled(!this.model.busy)
+        .onChange((value: string): void => { this.model.downloadPassword = value; })
+        .accessibilityText($r('app.string.download_password'))
+      if (this.model.downloadNeedsOtp) {
+        TextInput({ text: this.model.downloadOtp, placeholder: $r('app.string.download_otp') })
+          .type(InputType.Number).enabled(!this.model.busy)
+          .onChange((value: string): void => { this.model.downloadOtp = value; })
+          .accessibilityText($r('app.string.download_otp'))
+      }
+      Button($r('app.string.download_authenticate')).constraintSize({ minHeight: 48 })
+        .enabled(!this.model.busy && this.model.downloadPassword.length > 0)
+        .onClick((): void => { this.onAuthenticate(); })
+      Button($r('app.string.action_cancel')).buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: 48 })
+        .onClick((): void => { this.model.cancelDownloadAuthentication(); })
     }.width('100%')
   }
 
@@ -186,6 +212,7 @@ export struct DownloadStationPage {
           }, (filter: string): string => filter)
         }.width('100%')
         ExtensionStatusPanel({ model: this.model, feature: 'nasDownloads' })
+        if (this.model.downloadAuthenticationRequired) { this.authenticationForm() }
         if (this.model.downloadsLoaded && this.model.downloadError.length === 0 && this.tasks().length === 0) {
           Text('当前页此分类暂无下载任务。').fontSize(14).fontColor($r('sys.color.font_secondary'))
         }

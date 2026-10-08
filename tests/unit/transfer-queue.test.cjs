@@ -23,6 +23,7 @@ function loadEts(relative, mocks) {
   const module = { exports: {} };
   vm.runInNewContext(output.outputText, {
     module, exports: module.exports, require: id => {
+      if (id === '../../platform/LocalSpaceBudget') { return mocks[id] || require('../helpers/load-space-budget.cjs')(mocks['../domain/DsmProtocol'] || mocks['../../core/domain/DsmProtocol']); }
       if (id === '../../platform/SdkTransferAgent') {
         return require('../helpers/load-sdk-transfer-agent.cjs')(mocks['@kit.BasicServicesKit'].request.agent, protocol);
       }
@@ -159,7 +160,7 @@ function fixture() {
     },
     async saveTransferRecords(directory, scope, records) {
       if (failIdSave && records.some(r => r.taskId && !r.startAttempted)) throw new Error('disk full');
-      snapshots.set(scope, JSON.stringify({ version: 1, scope, records }));
+      snapshots.set(scope, JSON.stringify({ version: 2, scope, records }));
       calls.push(`save:${records.map(r => r.taskId).join(',')}`);
     },
     async copyTransferFile(source, destination, bytes, current) { current(); files.set(destination, bytes); },
@@ -628,8 +629,7 @@ test('unknown upload closes only after explicit action, unblocks the path and ne
   await f.queue.cancel(id);
   assert.equal(f.queue.items[0].canClose, true);
   await assert.rejects(() => f.queue.removeRecord(id));
-  const blocked = await f.queue.uploadSources('/share', [{ uri: 'selected', name: 'file.txt', bytes: 37 }]);
-  assert.equal(blocked.acceptedIndices.length, 0);
+  await assert.rejects(() => f.queue.uploadSources('/share', [{ uri: 'selected', name: 'file.txt', bytes: 37 }]), /仍有写入/);
   await f.queue.closeUnknownUpload(id);
   assert.equal(f.queue.items[0].state, 'closed');
   assert.equal(f.queue.items[0].canRetry, false);
@@ -640,6 +640,28 @@ test('unknown upload closes only after explicit action, unblocks the path and ne
   f.queue.detach();
 });
 
+test('photo backup sources survive recovery and batches wait behind an uncertain upload', async () => {
+  const f = fixture(); await f.attach('alice');
+  const result = await f.queue.uploadSources('/share', [{ uri: 'selected', name: 'a.jpg', bytes: 37 },
+    { uri: 'selected', name: 'b.jpg', bytes: 37 }], 'photoBackup');
+  assert.deepEqual(Array.from(result.acceptedIndices), [0, 1]);
+  assert.equal(f.calls.filter(c => c.startsWith('create:')).length, 1);
+  assert.deepEqual(Array.from(f.queue.items, x => x.source), ['photoBackup', 'photoBackup']);
+  await f.queue.cancel(f.queue.items[0].id); await f.queue.reconcile();
+  assert.equal(f.calls.filter(c => c.startsWith('create:')).length, 1);
+  await f.queue.closeUnknownUpload(f.queue.items[0].id); await f.queue.reconcile();
+  assert.equal(f.calls.filter(c => c.startsWith('create:')).length, 2);
+  f.queue.detach(); await f.attach('alice');
+  assert.deepEqual(Array.from(f.queue.items, x => x.source), ['photoBackup', 'photoBackup']);
+  f.queue.detach();
+});
+
+test('legacy sources are explicit and are never inferred from photo extensions', () => {
+  const rows = state.decodeTransferQueue(JSON.stringify({ version: 1, scope: 'legacy', records: [record({ name: 'old.jpg' })] }), 'legacy');
+  assert.equal(rows[0].source, 'legacy');
+  assert.throws(() => state.decodeTransferQueue(JSON.stringify({ version: 2, scope: 'legacy', records: [record({ source: 'photoGuess' })] }), 'legacy'));
+});
+
 test('system stop failure prevents closing an unknown upload or unblocking the remote path', async () => {
   const f = fixture(); await f.attach('alice');
   await f.queue.uploadSources('/share', [{ uri: 'selected', name: 'file.txt', bytes: 37 }]);
@@ -648,8 +670,7 @@ test('system stop failure prevents closing an unknown upload or unblocking the r
   f.setStopFailure();
   await assert.rejects(() => f.queue.closeUnknownUpload(f.queue.items[0].id));
   assert.equal(f.queue.items[0].state, 'unknown');
-  const blocked = await f.queue.uploadSources('/share', [{ uri: 'selected', name: 'file.txt', bytes: 37 }]);
-  assert.equal(blocked.acceptedIndices.length, 0);
+  await assert.rejects(() => f.queue.uploadSources('/share', [{ uri: 'selected', name: 'file.txt', bytes: 37 }]), /仍有写入/);
   assert.equal(f.tasks.size, 1);
   f.queue.detach();
 });
@@ -830,8 +851,7 @@ test('checksum stop errors other than confirmed absence remain visible and keep 
     await assert.rejects(() => f.queue.closeUnknownUpload(f.queue.items[0].id), error);
     assert.equal(f.queue.items[0].state, 'unknown');
     assert.equal(JSON.parse([...f.snapshots.values()][0]).records[0].checksumTaskId, 'checksum-1');
-    const blocked = await f.queue.uploadSources('/share', [{ uri: 'selected', name: 'file.txt', bytes: 37 }]);
-    assert.equal(blocked.acceptedIndices.length, 0);
+    await assert.rejects(() => f.queue.uploadSources('/share', [{ uri: 'selected', name: 'file.txt', bytes: 37 }]), /仍有写入/);
   }
   f.queue.detach();
 });

@@ -207,6 +207,10 @@ export class DriveTransferModel {
     if (draft === undefined) { return; }
     await this.run(async (session: DriveTransferSession): Promise<void> => {
       this.requireAvailable();
+      if (session.records.some((record: DriveTransferRecord): boolean => record.direction === 'upload' &&
+        !['completed', 'failed', 'cancelled', 'closed'].includes(record.state))) {
+        throw new NasFailure(NasErrorKind.InvalidInput, '仍有上传进行中或结果待核对，请先处理任务。');
+      }
       this.checkDuplicate(session, draft.parent.fileId, draft.name);
       const record = this.newRecord(session, 'upload', draft.parent, draft.name, draft.bytes);
       if (record.executor === 'agent' || conflict === 'version' && session.adapter.sliceAvailable()) {
@@ -228,7 +232,7 @@ export class DriveTransferModel {
 
   async download(entry: DriveEntry): Promise<void> {
     await this.run(async (session: DriveTransferSession): Promise<void> => {
-      this.requireAvailable();
+      this.requireAvailable(false);
       if (entry.kind !== DriveEntryKind.File || !entry.capabilities.canRead || !entry.capabilities.canDownload) {
         throw new NasFailure(NasErrorKind.Permission, '无法下载此文件。');
       }
@@ -366,6 +370,10 @@ export class DriveTransferModel {
       const record = this.find(session, id);
       if (record.direction === 'download') {
         throw new NasFailure(NasErrorKind.InvalidInput, '暂不支持下载续传，请取消旧任务后重新下载。');
+      }
+      if (session.records.some((item: DriveTransferRecord): boolean => item.id !== id && item.direction === 'upload' &&
+        !['completed', 'failed', 'cancelled', 'closed'].includes(item.state))) {
+        throw new NasFailure(NasErrorKind.InvalidInput, '仍有其他上传进行中或结果待核对，请先处理任务。');
       }
       if (record.state === 'paused' && record.background?.startAttempted === false && record.background.taskId.length > 0) {
         await session.background?.startUnstarted(record); return;
@@ -605,9 +613,9 @@ export class DriveTransferModel {
     }
   }
 
-  private requireAvailable(): void {
+  private requireAvailable(write: boolean = true): void {
     if (!this.available) { throw new NasFailure(NasErrorKind.Unsupported, '此 NAS 无法使用 Drive 上传下载，请检查套件和账号权限。'); }
-    if (this.session !== undefined && !this.session.canStart()) {
+    if (write && this.session !== undefined && !this.session.canStart()) {
       throw new NasFailure(NasErrorKind.InvalidInput, '请先在任务页处理未结束的 Drive 文件操作。');
     }
   }

@@ -1,6 +1,7 @@
 import { fileIo } from '@kit.CoreFileKit';
 import { NasErrorKind, NasFailure } from '../../core/domain/DsmProtocol';
 import { closeFile } from '../../platform/SdkFileIO';
+import { localSpaceBudget } from '../../platform/LocalSpaceBudget';
 
 /** RCP 没有上传范围字段，前台只生成一次有界读取的剩余文件，不以 JS 循环发送分片。 */
 export async function copyDriveUploadRemainder(source: string, destination: string, total: number, offset: number,
@@ -13,6 +14,7 @@ export async function copyDriveUploadRemainder(source: string, destination: stri
   try {
     const stat = await fileIo.stat(input.fd);
     if (!stat.isFile() || stat.size !== total) { throw new NasFailure(NasErrorKind.InvalidInput, '本机上传副本已变化，无法继续原上传。'); }
+    await localSpaceBudget.reserve(destination.slice(0, destination.lastIndexOf('/')), destination, total - offset);
     const output = await fileIo.open(destination, fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
     let outputFailed = false;
     try {
@@ -29,6 +31,7 @@ export async function copyDriveUploadRemainder(source: string, destination: stri
           written += size;
         }
         copied += count;
+        localSpaceBudget.advance(destination, total - offset - copied);
       }
       current();
       if ((await fileIo.stat(output.fd)).size !== total - offset || (await fileIo.stat(input.fd)).size !== total) {
@@ -38,5 +41,5 @@ export async function copyDriveUploadRemainder(source: string, destination: stri
     } catch (error) { outputFailed = true; throw error as Error; }
     finally { await closeFile(output, outputFailed); }
   } catch (error) { inputFailed = true; throw error as Error; }
-  finally { await closeFile(input, inputFailed); }
+  finally { localSpaceBudget.release(destination); await closeFile(input, inputFailed); }
 }

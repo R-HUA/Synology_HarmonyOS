@@ -19,6 +19,7 @@ function loadSource(relative, mocks = {}) {
   vm.runInNewContext(output.outputText, {
     module, exports: module.exports, Error, Date, Uint8Array, ArrayBuffer,
     require: id => {
+      if (id === '../../platform/SdkFileIO') { return require('../helpers/load-sdk-file-io.cjs')(mocks['@kit.CoreFileKit'].fileIo, protocol); }
       if (id === '../../platform/SdkDigest') {
         return require('../helpers/load-sdk-digest.cjs')(mocks['@kit.CryptoArchitectureKit'].cryptoFramework, protocol);
       }

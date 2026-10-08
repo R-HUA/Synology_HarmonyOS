@@ -10,6 +10,8 @@ export interface NasConnectionAddress {
   kind: NasConnectionRouteKind;
   /** 仅 https 地址有效：用户显式选择跳过服务器证书校验。 */
   insecureTls?: boolean;
+  /** 风险确认只适用于本记录的完整地址与证书策略。 */
+  riskConfirmedAt?: number;
   device?: NasConnectionDeviceBinding;
 }
 
@@ -68,7 +70,7 @@ function addressInsecureTls(input: Object | undefined, origin: string): boolean 
 
 export function validateConnectionAddress(input: Object): NasConnectionAddress {
   const row = addressRecord(input);
-  validateFields(row, ['origin', 'name', 'kind', 'insecureTls', 'device']);
+  validateFields(row, ['origin', 'name', 'kind', 'insecureTls', 'riskConfirmedAt', 'device']);
   if (typeof row['origin'] !== 'string') {
     throw new NasFailure(NasErrorKind.InvalidInput, '请输入连接地址。');
   }
@@ -83,6 +85,13 @@ export function validateConnectionAddress(input: Object): NasConnectionAddress {
     kind: kind as NasConnectionRouteKind
   };
   if (addressInsecureTls(row['insecureTls'], origin)) { address.insecureTls = true; }
+  if (row['riskConfirmedAt'] !== undefined) {
+    const confirmedAt = row['riskConfirmedAt'];
+    if (typeof confirmedAt !== 'number' || !Number.isSafeInteger(confirmedAt) || confirmedAt <= 0) {
+      throw new NasFailure(NasErrorKind.InvalidInput, '连接风险确认时间不正确。');
+    }
+    address.riskConfirmedAt = confirmedAt;
+  }
   if (row['device'] !== undefined) { address.device = validateDeviceBinding(row['device']); }
   return address;
 }
@@ -109,7 +118,7 @@ export function decodeConnectionAddressBook(text: string): NasConnectionAddress[
     if (typeof text !== 'string') { throw new NasFailure(NasErrorKind.Protocol, '连接地址记录格式不正确。'); }
     const root = addressRecord(JSON.parse(text) as Object);
     validateFields(root, ['version', 'addresses']);
-    if (root['version'] !== 1) { throw new NasFailure(NasErrorKind.Protocol, '连接地址记录版本不受支持。'); }
+    if (root['version'] !== 1 && root['version'] !== 2) { throw new NasFailure(NasErrorKind.Protocol, '连接地址记录版本不受支持。'); }
     return validateAddresses(root['addresses']);
   } catch {
     throw new NasFailure(NasErrorKind.Protocol, '连接地址记录损坏或版本不受支持，请保留记录并重试读取。');
@@ -117,7 +126,7 @@ export function decodeConnectionAddressBook(text: string): NasConnectionAddress[
 }
 
 export function encodeConnectionAddressBook(addresses: NasConnectionAddress[]): string {
-  const snapshot: ConnectionAddressBookSnapshot = { version: 1, addresses: validateAddresses(addresses) };
+  const snapshot: ConnectionAddressBookSnapshot = { version: 2, addresses: validateAddresses(addresses) };
   return JSON.stringify(snapshot);
 }
 

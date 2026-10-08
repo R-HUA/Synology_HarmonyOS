@@ -171,6 +171,25 @@ const { PhotoLibrary } = load('features/photos/PhotoLibrary.ets', { '@kit.ArkTS'
   '../../core/domain/DsmProtocol': dsm, '../../core/domain/PhotosProtocol': photos, './PhotoMediaStore': { PhotoMediaStore: MockMedia } });
 function library(connector, expired = async () => {}) { const model = new PhotoLibrary(); model.attach(connector, undefined, expired); return model; }
 
+test('photo tabs retain pagination and selected albums without mixing a late response into another tab', async () => {
+  const late = deferred(); let delayed = false;
+  const model = library({
+    async photos(space, offset) { return { items: [item(offset + 1, space)], offset, hasMore: offset === 0 }; },
+    async photoAlbums(space, offset) { return delayed ? late.promise : { items: [{ id: 7, name: '相册', itemCount: 1, space }], offset, hasMore: false }; },
+    async albumPhotos(album, offset) { return { items: [item(99, album.space)], offset, hasMore: false }; }
+  });
+  await model.activateTab('photos', S.Personal, 'timeline'); await model.loadMore();
+  await model.activateTab('albums', S.Personal, 'albums'); await model.openAlbum(model.albums[0]);
+  await model.activateTab('photos', S.Personal, 'timeline'); assert.equal(model.items.length, 2);
+  await model.activateTab('albums', S.Personal, 'albums'); assert.equal(model.selectedAlbum.id, 7); assert.equal(model.items[0].id, 99);
+  delayed = true;
+  const pending = model.activateTab('shared', S.Shared, 'albums');
+  await model.activateTab('photos', S.Personal, 'timeline');
+  late.resolve({ items: [], offset: 0, hasMore: false }); await pending;
+  assert.equal(model.space, S.Personal); assert.equal(model.items.length, 2);
+  model.reset(); assert.equal(model.tabContexts.size, 0);
+});
+
 test('timeline pagination appends and deduplicates while advancing by wire row count', async () => {
   const calls = [];
   const model = library({ async photos(space, offset) {

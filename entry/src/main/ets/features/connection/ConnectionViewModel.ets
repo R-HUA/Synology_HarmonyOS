@@ -6,7 +6,7 @@ import { NasSessionStore, NasSessionStoreFailure } from './NasSessionStore';
 import { common } from '@kit.AbilityKit';
 import { NasPhotoAlbum, NasPhotoItem, NasSharedAlbum, PhotosSpace } from '../../core/domain/PhotosProtocol';
 import { TransferQueue, TransferUploadSource } from '../transfers/TransferQueue';
-import { FileEditResult, FileTaskItem, FileTaskState, NasFileSortBy, NasFileSortDirection, NasFileTask } from '../../core/domain/FileOperations';
+import { FileEditResult, FileTaskItem, FileTaskState, FileMutationKind, NasFileSortBy, NasFileSortDirection, NasFileTask } from '../../core/domain/FileOperations';
 import { SharedUploadFile, SharedUploadInbox, sharedUploadInbox } from '../sharing/SharedUploadInbox';
 import { FileTaskStore } from './FileTaskStore';
 import { util } from '@kit.ArkTS';
@@ -34,6 +34,8 @@ export class ConnectionViewModel {
   @Trace otp: string = '';
   @Trace needsOtp: boolean = false;
   @Trace busy: boolean = false;
+  @Trace mutationInFlight: boolean = false;
+  @Trace sessionTransition: boolean = false;
   @Trace connected: boolean = false;
   @Trace authenticated: boolean = false;
   @Trace savedSession: boolean = false;
@@ -113,18 +115,25 @@ export class ConnectionViewModel {
       this.account = saved.account;
       this.useHttps = nasOriginScheme(saved.origin) === 'https';
       this.insecureTls = saved.insecureTls === true && this.useHttps;
+      this.requireConnectionTrust(saved.origin);
       this.connector?.close();
-      const connector = new NasConnector(new RcpNasTransport(saved.insecureTls));
+      const connector = new NasConnector(new RcpNasTransport(this.insecureTls));
       this.connector = connector;
       const capabilities = await connector.discover(saved.origin);
       if (ticket !== this.generation) { return; }
       this.capabilities = capabilities;
       this.connected = true;
       this.connectedOrigin = saved.origin;
-      this.connectedInsecure = saved.insecureTls;
+      this.connectedInsecure = this.insecureTls;
       connector.restoreSession(saved.sessions);
       await this.verifyDevice(connector, saved.origin, saved.account);
       if (ticket !== this.generation) { return; }
+      if (!this.supports('SYNO.FileStation.List')) {
+        throw new NasFailure(NasErrorKind.Unsupported, '当前账号没有可用于验证保存会话的文件读取接口，请重新登录。');
+      }
+      const verifiedPage = await connector.list('', 0);
+      if (ticket !== this.generation) { return; }
+      this.applyPage('', verifiedPage);
       this.authenticated = true;
       await this.attachQueue(connector);
       if (ticket !== this.generation) { return; }
@@ -139,9 +148,7 @@ export class ConnectionViewModel {
         await this.showFailure(error as Error, 'restore');
       }
     } finally { if (ticket === this.generation) { this.busy = false; } }
-    // 初始目录加载与登录路径一致放在 busy 结束后：目录加载自身会置 busy，恢复期间调用会被忙检查吞掉。
     if (restored && ticket === this.generation) {
-      await this.loadInitialDirectory();
       hilog.info(0x0000, 'NasConnection', 'operation=restore result=success');
     }
   }
@@ -150,10 +157,19 @@ export class ConnectionViewModel {
   setAddress(text: string): void {
     if (this.busy || this.authenticated) { return; }
     this.address = text;
+    this.insecureTls = false;
     const match = /^(https?):\/\//i.exec(text.trim());
     if (match === null) { return; }
     this.useHttps = match[1].toLowerCase() !== 'http';
-    if (!this.useHttps) { this.insecureTls = false; }
+    if (this.useHttps) {
+      try {
+        const origin = normalizeNasOrigin(text.trim());
+        this.insecureTls = this.addressBook.addresses.some((address: NasConnectionAddress): boolean =>
+          address.origin === origin && address.insecureTls === true && address.riskConfirmedAt !== undefined);
+      } catch (error) {
+        if (!(error instanceof NasFailure)) { throw error as Error; }
+      }
+    }
   }
 
   /** 切换协议时同步改写已写明的协议前缀，避免开关与输入框不一致。 */
@@ -177,6 +193,16 @@ export class ConnectionViewModel {
   private resolveOrigin(): string {
     const raw = this.address.trim();
     return normalizeNasOrigin(/^https?:\/\//i.test(raw) ? raw : (this.useHttps ? 'https://' : 'http://') + raw);
+  }
+
+  /** 危险模式只接受地址管理中确认过的同一服务器策略。 */
+  private requireConnectionTrust(origin: string): void {
+    const saved = this.addressBook.addresses.find((address: NasConnectionAddress): boolean => address.origin === origin);
+    if (nasOriginScheme(origin) === 'https' && !this.insecureTls) { return; }
+    if (saved?.riskConfirmedAt === undefined || (saved.insecureTls === true) !== this.insecureTls) {
+      this.insecureTls = false;
+      throw new NasFailure(NasErrorKind.InvalidInput, '请在连接地址中为此服务器设置并确认连接方式。');
+    }
   }
 
   /** 当前连接是否仍对应当前地址与证书策略；地址或开关改动后需要重建连接。 */
@@ -224,6 +250,7 @@ export class ConnectionViewModel {
     this.errorText = '';
     try {
       const origin = this.resolveOrigin();
+      this.requireConnectionTrust(origin);
       this.address = origin;
       this.connector?.close();
       const connector = new NasConnector(new RcpNasTransport(this.insecureTls));
@@ -322,7 +349,16 @@ export class ConnectionViewModel {
   }
 
   async reloadAddressBook(): Promise<void> {
-    if (this.context !== undefined && !this.busy) { await this.addressBook.load(this.context); }
+    if (this.context !== undefined && !this.busy) {
+      if (await this.addressBook.load(this.context)) { this.errorText = ''; }
+    }
+  }
+
+  async rebuildAddressBook(): Promise<void> {
+    if (this.context !== undefined && !this.busy) {
+      await this.addressBook.rebuild(this.context);
+      if (this.addressBook.ready) { this.errorText = ''; }
+    }
   }
 
   async useSavedAddress(origin: string): Promise<boolean> {
@@ -364,6 +400,25 @@ export class ConnectionViewModel {
     finally { if (ticket === this.generation) { this.busy = false; } }
   }
 
+  /** 套件验证只更新其会话；保存失败会明确提示，不能重放原下载操作。 */
+  async authenticateDownloads(): Promise<void> {
+    const connector = this.connector;
+    if (connector === undefined || !this.authenticated || this.busy) { return; }
+    const ticket = this.generation;
+    if (!await this.extensions.authenticateDownloads() || ticket !== this.generation) { return; }
+    try {
+      await this.store.save({ origin: this.address, account: this.account.trim(),
+        sessions: connector.sessionSnapshot(), insecureTls: this.insecureTls });
+      if (ticket === this.generation) { this.savedSession = true; }
+    } catch (error) {
+      if (ticket === this.generation) {
+        this.extensions.downloadError = '下载套件已验证，但保存登录信息失败；下次启动需重新验证。';
+        hilog.error(0x0000, 'NasConnection', 'operation=save-download-session result=failed code=%{public}d',
+          error instanceof NasFailure ? error.code : 0);
+      }
+    }
+  }
+
   private async verifyDevice(connector: NasConnector, origin: string, account: string): Promise<void> {
     const ticket = this.generation;
     const model = await this.addressBook.verifyExpectedDevice(connector, origin, account);
@@ -381,10 +436,13 @@ export class ConnectionViewModel {
       if (ticket !== this.generation) { return; }
       this.deviceModel = identity.model;
       this.deviceName = identity.serverName;
-    } catch {
+    } catch (error) {
+      if (!(error instanceof NasFailure) || [NasErrorKind.SessionExpired, NasErrorKind.Cancelled].includes(error.kind)) { throw error as Error; }
       if (ticket !== this.generation) { return; }
       this.deviceModel = '';
       this.deviceName = '';
+      hilog.warn(0x0000, 'NasConnection', 'operation=device-metadata result=unavailable kind=%{public}d',
+        error.kind);
     }
   }
 
@@ -404,7 +462,7 @@ export class ConnectionViewModel {
         this.driveTransfers.busy || this.driveTransfers.items.some((item): boolean =>
         !['completed', 'failed', 'cancelled', 'closed'].includes(item.state)) || this.queue.busy || this.queue.items.some((item): boolean =>
         !['completed', 'cancelled', 'failed', 'closed'].includes(item.state)) ||
-        this.fileTasks.some((item: FileTaskItem): boolean => !['completed', 'failed'].includes(item.state))) {
+        this.fileTasks.some((item: FileTaskItem): boolean => !['completed', 'failed', 'closed'].includes(item.state))) {
         throw new NasFailure(NasErrorKind.InvalidInput, '仍有进行中或结果待核对的传输、文件操作，请先处理任务；不会为系统控制自动停止或重试它们。');
       }
     });
@@ -415,8 +473,9 @@ export class ConnectionViewModel {
     if (this.busy || !this.authenticated) { return; }
     const ticket = this.generation;
     this.busy = true;
+    this.sessionTransition = true;
     try { await this.systemControl.submit(); }
-    finally { if (ticket === this.generation) { this.busy = false; } }
+    finally { if (ticket === this.generation) { this.busy = false; this.sessionTransition = false; } }
   }
   async goBack(): Promise<void> {
     if (this.busy || this.history.length === 0) { return; }
@@ -459,35 +518,39 @@ export class ConnectionViewModel {
   async createFolder(name: string): Promise<FileEditResult> {
     const connector = this.connector;
     const directory = this.directory;
-    if (connector === undefined || directory.length === 0) { return 'failed'; }
-    return this.editFiles(async (): Promise<FileEditResult> => { await connector.createFolder(directory, name); return 'completed'; }, '文件夹已创建');
+    if (connector === undefined || directory.length === 0 || !this.canStartFileTask()) { return 'failed'; }
+    return this.editFiles((): Promise<FileEditResult> => this.startFileTask(connector,
+      async (): Promise<undefined> => { await connector.createFolder(directory, name); return undefined; },
+      '新建文件夹 ' + name, 'createFolder', [directory], directory + '/' + name), '文件夹已创建');
   }
 
   async renameEntry(entry: NasFileEntry, name: string): Promise<FileEditResult> {
     const connector = this.connector;
-    if (connector === undefined || this.directory.length === 0) { return 'failed'; }
-    return this.editFiles(async (): Promise<FileEditResult> => { await connector.renameFile(entry.path, name); return 'completed'; }, '名称已更新');
+    if (connector === undefined || this.directory.length === 0 || !this.canStartFileTask()) { return 'failed'; }
+    return this.editFiles((): Promise<FileEditResult> => this.startFileTask(connector,
+      async (): Promise<undefined> => { await connector.renameFile(entry.path, name); return undefined; },
+      '重命名 ' + entry.name, 'rename', [entry.path], entry.path.slice(0, entry.path.lastIndexOf('/') + 1) + name), '名称已更新');
   }
 
   async deleteEntry(entry: NasFileEntry): Promise<FileEditResult> {
     const connector = this.connector;
     if (connector === undefined || this.directory.length === 0 || !this.canStartFileTask()) { return 'failed'; }
     return this.editFiles(async (): Promise<FileEditResult> =>
-      this.startFileTask(connector, (): Promise<NasFileTask> => connector.deleteFiles([entry.path]), '删除 ' + entry.name), '删除已完成');
+      this.startFileTask(connector, (): Promise<NasFileTask> => connector.deleteFiles([entry.path]), '删除 ' + entry.name, 'delete', [entry.path]), '删除已完成');
   }
 
   async copyEntry(entry: NasFileEntry, directory: string): Promise<FileEditResult> {
     const connector = this.connector;
     if (connector === undefined || !this.canStartFileTask()) { return 'failed'; }
     return this.editFiles(async (): Promise<FileEditResult> =>
-      this.startFileTask(connector, (): Promise<NasFileTask> => connector.copyFiles([entry.path], directory), '复制 ' + entry.name), '复制已完成');
+      this.startFileTask(connector, (): Promise<NasFileTask> => connector.copyFiles([entry.path], directory), '复制 ' + entry.name, 'copy', [entry.path], directory), '复制已完成');
   }
 
   async moveEntry(entry: NasFileEntry, directory: string): Promise<FileEditResult> {
     const connector = this.connector;
     if (connector === undefined || !this.canStartFileTask()) { return 'failed'; }
     return this.editFiles(async (): Promise<FileEditResult> =>
-      this.startFileTask(connector, (): Promise<NasFileTask> => connector.moveFiles([entry.path], directory), '移动 ' + entry.name), '移动已完成');
+      this.startFileTask(connector, (): Promise<NasFileTask> => connector.moveFiles([entry.path], directory), '移动 ' + entry.name, 'move', [entry.path], directory), '移动已完成');
   }
 
   private canStartFileTask(): boolean {
@@ -496,28 +559,63 @@ export class ConnectionViewModel {
       this.errorText = this.fileTasksErrorText || '尚未读取文件操作记录，请在任务页重试读取后再操作。';
       return false;
     }
+    if (!this.canWriteAccount('fileStation')) {
+      this.errorText = '请先处理进行中或结果待核对的写入，并成功读取全部任务记录。';
+      return false;
+    }
+    if (this.fileTasks.some((item: FileTaskItem): boolean => !['completed', 'failed', 'closed'].includes(item.state))) {
+      this.errorText = '仍有文件操作进行中或结果待核对，请先处理已有任务。';
+      return false;
+    }
     if (this.fileTasks.length >= 1000 && !this.fileTasks.some((item: FileTaskItem): boolean =>
-      item.state === 'completed' || item.state === 'failed')) {
+      ['completed', 'failed', 'closed'].includes(item.state))) {
       this.errorText = '待核对的文件操作任务已达保存上限，请先查询已有任务。';
       return false;
     }
     return true;
   }
 
-  private async startFileTask(connector: NasConnector, start: () => Promise<NasFileTask>, label: string): Promise<FileEditResult> {
+  private async startFileTask(connector: NasConnector, start: () => Promise<NasFileTask | undefined>, label: string,
+    operation: FileMutationKind, sources: string[], target?: string): Promise<FileEditResult> {
     const ticket = this.generation;
     const store = this.fileTaskStore;
     const expired = this.fileTasks.length < 1000 ? -1 : this.fileTasks.findIndex((item: FileTaskItem): boolean =>
-      item.state === 'completed' || item.state === 'failed');
+      ['completed', 'failed', 'closed'].includes(item.state));
     const previous = this.fileTasks.filter((_item: FileTaskItem, index: number): boolean => index !== expired);
-    const task = await start();
-    const item: FileTaskItem = { id: util.generateRandomUUID(true), task: task, label: label, state: 'pending', errorText: '' };
-    // start 已被 NAS 接受，立即保留标识；后续查询、存储错误均不得重发 start。
+    const item: FileTaskItem = { id: util.generateRandomUUID(true), operation: operation, sources: sources, target: target,
+      createdAt: Date.now(), label: label, state: 'unknown', errorText: '请求结果待确认，请勿重复提交。' };
+    // 意图在任何可能发送前落盘，崩溃后只核对，不猜测请求是否送达。
     const records = previous.concat([item]);
     if (ticket === this.generation) { this.fileTasks = records; }
-    await this.saveFileTasks(store, records, ticket);
+    if (!await this.saveFileTasks(store, records, ticket)) {
+      if (ticket === this.generation) { this.fileTasks = previous; }
+      return 'failed';
+    }
     if (ticket !== this.generation) { return 'failed'; }
-    return this.waitFileTask(connector, item, store, ticket);
+    let task: NasFileTask | undefined;
+    try { task = await start(); }
+    catch (error) {
+      if (ticket !== this.generation) { return 'pending'; }
+      const rejected = error instanceof NasFailure && [NasErrorKind.InvalidInput, NasErrorKind.Permission, NasErrorKind.Unsupported].includes(error.kind);
+      await this.updateFileTask(item.id, rejected ? 'failed' : 'unknown',
+        (error instanceof NasFailure ? error.message : '请求未完成。') + (rejected ? '' : ' 服务器可能已执行，请先核对。'), store, ticket);
+      if (error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) { await this.showFailure(error as Error, 'file-operation'); }
+      return rejected ? 'failed' : 'pending';
+    }
+    if (ticket !== this.generation) {
+      const recovered: FileTaskItem = { id: item.id, label: item.label, task: task, operation: item.operation,
+        sources: item.sources, target: item.target, createdAt: item.createdAt,
+        state: task === undefined ? 'completed' : 'unknown', errorText: task === undefined ? '' : item.errorText };
+      try { await store.save(previous.concat([recovered])); }
+      catch (error) { hilog.error(0x0000, 'NasConnection', 'operation=save-detached-file-task result=failed'); }
+      return 'pending';
+    }
+    if (task === undefined) { return await this.updateFileTask(item.id, 'completed', '', store, ticket) ? 'completed' : 'pending'; }
+    const accepted: FileTaskItem = { id: item.id, label: item.label, task: task, operation: item.operation,
+      sources: item.sources, target: item.target, createdAt: item.createdAt, state: item.state, errorText: item.errorText };
+    this.fileTasks = previous.concat([accepted]);
+    if (!await this.updateFileTask(item.id, 'pending', '', store, ticket)) { return 'pending'; }
+    return this.waitFileTask(connector, accepted, store, ticket);
   }
 
   private async waitFileTask(connector: NasConnector, item: FileTaskItem, store: FileTaskStore, ticket: number): Promise<FileEditResult> {
@@ -540,7 +638,7 @@ export class ConnectionViewModel {
     const connector = this.connector;
     const item = this.fileTasks.find((task: FileTaskItem): boolean => task.id === id);
     if (this.busy || !this.authenticated || connector === undefined || item === undefined ||
-      item.state === 'completed' || item.state === 'failed') { return; }
+      ['completed', 'failed', 'closed'].includes(item.state)) { return; }
     const ticket = this.generation;
     this.busy = true;
     let result: FileEditResult = 'failed';
@@ -554,6 +652,7 @@ export class ConnectionViewModel {
 
   private async queryFileTask(connector: NasConnector, item: FileTaskItem, store: FileTaskStore, ticket: number): Promise<FileEditResult> {
     if (ticket !== this.generation) { return 'failed'; }
+    if (item.task === undefined) { this.actionNotice = '缺少服务端任务标识，请核对源和目标后关闭待确认记录。'; return 'pending'; }
     try {
       const status = await connector.fileTaskStatus(item.task);
       if (ticket !== this.generation) { return 'failed'; }
@@ -564,8 +663,8 @@ export class ConnectionViewModel {
         }
         return 'pending';
       }
-      await this.updateFileTask(item.id, 'completed', '', store, ticket);
-      return ticket === this.generation ? 'completed' : 'failed';
+      const saved = await this.updateFileTask(item.id, 'completed', '', store, ticket);
+      return ticket === this.generation && saved ? 'completed' : 'pending';
     } catch (error) {
       if (ticket !== this.generation) { return 'failed'; }
       const failure = error as Error;
@@ -577,34 +676,64 @@ export class ConnectionViewModel {
       const stateUnknown = unknown || rejectedQuery;
       const text = (error instanceof NasFailure ? error.message : '查询文件操作任务失败。') +
         (stateUnknown ? ' 结果尚未确认，可在任务页继续查询，请勿重复提交操作。' : ' 请先核对目录中的实际结果。');
-      await this.updateFileTask(item.id, stateUnknown ? 'unknown' : 'failed', text, store, ticket);
+      const saved = await this.updateFileTask(item.id, stateUnknown ? 'unknown' : 'failed', text, store, ticket);
       if (error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) {
         await this.showFailure(failure, 'file-task');
         return 'failed';
       }
       if (!unknown) { await this.showFailure(failure, 'file-task'); }
-      return stateUnknown ? 'pending' : 'failed';
+      return stateUnknown || !saved ? 'pending' : 'failed';
     }
   }
 
-  private async updateFileTask(id: string, state: FileTaskState, errorText: string, store: FileTaskStore, ticket: number): Promise<void> {
-    if (ticket !== this.generation) { return; }
-    this.fileTasks = this.fileTasks.map((item: FileTaskItem): FileTaskItem => item.id === id ?
-      { id: item.id, task: item.task, label: item.label, state: state, errorText: errorText } : item);
-    await this.saveFileTasks(store, this.fileTasks, ticket);
+  private async updateFileTask(id: string, state: FileTaskState, errorText: string, store: FileTaskStore, ticket: number): Promise<boolean> {
+    if (ticket !== this.generation) { return false; }
+    const records = this.fileTasks.map((item: FileTaskItem): FileTaskItem => item.id === id ?
+      { id: item.id, label: item.label, task: item.task, operation: item.operation, sources: item.sources,
+        target: item.target, createdAt: item.createdAt, state: state, errorText: errorText } : item);
+    const saved = await this.saveFileTasks(store, records, ticket);
+    if (saved && ticket === this.generation) { this.fileTasks = records; }
+    return saved;
   }
 
-  private async saveFileTasks(store: FileTaskStore, tasks: FileTaskItem[], ticket: number): Promise<void> {
+  private async saveFileTasks(store: FileTaskStore, tasks: FileTaskItem[], ticket: number): Promise<boolean> {
     try {
       await store.save(tasks);
       if (ticket === this.generation) { this.fileTasksReady = true; this.fileTasksErrorText = ''; }
+      return true;
     } catch {
       if (ticket === this.generation) {
         this.fileTasksReady = false;
-        this.fileTasksErrorText = '文件操作记录保存失败，已启动的任务仍可查询；请重试保存后再启动新任务，退出应用可能丢失未保存的记录。';
+        this.fileTasksErrorText = '文件操作记录保存失败，新的写入已暂停；请在任务页重试保存并核对已有操作。';
         this.errorText = this.fileTasksErrorText;
       }
+      return false;
     }
+  }
+
+  /** 人工关闭只记录已核对，不表示服务器撤销或执行成功。 */
+  async closeFileTask(id: string): Promise<void> {
+    if (this.busy || !this.authenticated || !this.fileTasksReady ||
+      !this.fileTasks.some((item: FileTaskItem): boolean => item.id === id && item.state === 'unknown')) { return; }
+    const ticket = this.generation;
+    this.busy = true;
+    try { await this.updateFileTask(id, 'closed', '已核对关闭，不代表远端操作成功或撤销。', this.fileTaskStore, ticket); }
+    finally { if (ticket === this.generation) { this.busy = false; } }
+  }
+
+  /** 各模型在首次异步等待前置 busy；同一事件循环内检查与占用登记不会交错。 */
+  private canWriteAccount(owner: string): boolean {
+    if (!this.authenticated || this.sessionTransition || !this.fileTasksReady || !this.queue.ready || !this.driveActions.ready ||
+      !this.driveSharing.ready || !this.driveTransfers.ready || !this.extensions.recordsReady) { return false; }
+    if (owner !== 'fileStation' && (this.mutationInFlight || this.fileTasks.some((item: FileTaskItem): boolean =>
+      !['completed', 'failed', 'closed'].includes(item.state)))) { return false; }
+    if (owner !== 'driveAction' && (this.driveActions.busy || this.driveActions.hasPending)) { return false; }
+    if (owner !== 'driveSharing' && (this.driveSharing.busy || this.driveSharing.hasPending)) { return false; }
+    if (owner !== 'driveTransfer' && (this.driveTransfers.busy || this.driveTransfers.items.some((item): boolean =>
+      item.direction === 'upload' && !['completed', 'failed', 'cancelled', 'closed'].includes(item.state)))) { return false; }
+    if (owner !== 'transferQueue' && (this.queue.busy || this.queue.items.some((item): boolean =>
+      item.direction === 'upload' && !['completed', 'failed', 'cancelled', 'closed'].includes(item.state)))) { return false; }
+    return owner === 'extensions' || !this.extensions.busy && this.extensions.pending.length === 0;
   }
 
   async reloadFileTasks(): Promise<void> {
@@ -639,7 +768,7 @@ export class ConnectionViewModel {
     try {
       if (files.length > 0) {
         const result = await this.queue.uploadSources(this.directory, files.map((file: SharedUploadFile): TransferUploadSource =>
-          ({ uri: file.uri, name: file.fileName, bytes: file.size })));
+          ({ uri: file.uri, name: file.fileName, bytes: file.size })), 'shareUpload');
         for (const index of result.acceptedIndices) { this.submittedShares.push(files[index].id); }
         if (ticket !== this.generation) { return; }
         if (result.acceptedIndices.length > 0) { this.actionNotice = '已将 ' + result.acceptedIndices.length.toString() + ' 个文件加入传输队列'; }
@@ -672,7 +801,7 @@ export class ConnectionViewModel {
     });
     await this.extensions.attach(connector, this.context, this.address, this.account.trim(), async (error: NasFailure): Promise<void> => {
       if (extensionTicket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'extensions'); }
-    });
+    }, (): boolean => extensionTicket === this.generation && connector === this.connector && this.canWriteAccount('extensions'));
     if (extensionTicket !== this.generation) { return; }
     const telemetryTicket = this.generation;
     this.telemetry.attach(connector, async (error: NasFailure): Promise<void> => {
@@ -693,26 +822,22 @@ export class ConnectionViewModel {
     await this.driveSharing.attach(this.context, connector, this.address, this.account.trim(), async (error: NasFailure): Promise<void> => {
       if (ticket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'drive-sharing'); }
     }, (): boolean => !this.busy && this.authenticated && ticket === this.generation && connector === this.connector &&
-      this.driveActions.ready && !this.driveActions.busy && !this.driveActions.hasPending &&
-      this.driveTransfers.ready && !this.driveTransfers.busy &&
-      !this.driveTransfers.items.some((item): boolean => !['completed', 'failed', 'cancelled', 'closed'].includes(item.state)));
+      this.canWriteAccount('driveSharing'));
     if (ticket !== this.generation) { return; }
     await this.driveTransfers.attach(this.context, connector, this.address, this.account.trim(), async (error: NasFailure): Promise<void> => {
       if (ticket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'drive-transfer'); }
     }, (): boolean => !this.busy && this.authenticated && ticket === this.generation && connector === this.connector &&
-      this.driveActions.ready && !this.driveActions.busy && !this.driveActions.hasPending &&
-      this.driveSharing.ready && !this.driveSharing.busy && !this.driveSharing.hasPending, this.insecureTls);
+      this.canWriteAccount('driveTransfer'), this.insecureTls);
     if (ticket !== this.generation) { return; }
     await this.driveActions.attach(this.context, connector, this.address, this.account.trim(), async (error: NasFailure): Promise<void> => {
       if (ticket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'drive-action'); }
     }, (): boolean => !this.busy && this.authenticated && ticket === this.generation && connector === this.connector &&
-      this.driveTransfers.ready && !this.driveTransfers.busy &&
-      !this.driveTransfers.items.some((item): boolean => !['completed', 'failed', 'cancelled', 'closed'].includes(item.state)) &&
-      this.driveSharing.ready && !this.driveSharing.busy && !this.driveSharing.hasPending);
+      this.canWriteAccount('driveAction'));
     if (ticket !== this.generation) { return; }
     await this.attachFileTasks();
     if (ticket !== this.generation) { return; }
-    try { await this.queue.attach(this.context, connector, this.address, this.account.trim()); }
+    try { await this.queue.attach(this.context, connector, this.address, this.account.trim(),
+      (): boolean => ticket === this.generation && connector === this.connector && this.canWriteAccount('transferQueue')); }
     catch (error) {
       this.errorText = error instanceof NasFailure ? error.message : '无法读取传输记录，请在任务页重试。';
     }
@@ -745,6 +870,7 @@ export class ConnectionViewModel {
     if (this.busy || !this.authenticated) { return 'failed'; }
     const ticket = this.generation;
     this.busy = true;
+    this.mutationInFlight = true;
     this.errorText = '';
     this.actionNotice = '';
     let result: FileEditResult = 'failed';
@@ -761,7 +887,7 @@ export class ConnectionViewModel {
           this.errorText += ' 操作结果尚未确认，请先刷新目录核对，再决定是否重新操作。';
         }
       }
-    } finally { if (ticket === this.generation) { this.busy = false; } }
+    } finally { if (ticket === this.generation) { this.busy = false; this.mutationInFlight = false; } }
     if (result === 'completed' && ticket === this.generation) { await this.refreshAfterFileEdit(); }
     return ticket === this.generation ? result : 'failed';
   }
@@ -778,10 +904,12 @@ export class ConnectionViewModel {
   async disconnect(): Promise<void> {
     if (this.busy || this.queue.busy) { return; }
     this.busy = true;
+    this.sessionTransition = true;
     try { await this.driveSharing.stopAll(); await this.driveActions.stopAll(); await this.driveTransfers.stopAll(); await this.queue.stopAll(); }
     catch (error) {
       this.errorText = error instanceof NasFailure ? error.message : '停止传输失败，请在任务页重试后再退出账号。';
       this.busy = false;
+      this.sessionTransition = false;
       return;
     }
     this.queue.detach();
@@ -815,7 +943,7 @@ export class ConnectionViewModel {
         this.errorText += this.savedSession ? ' 服务器登出也未确认，请重试。' :
           '本机会话已清除，服务器登出未确认；会话将在 DSM 到期。';
       }
-    } finally { if (ticket === this.generation) { this.busy = false; } }
+    } finally { if (ticket === this.generation) { this.busy = false; this.sessionTransition = false; } }
   }
   async openPhotos(space: PhotosSpace = PhotosSpace.Personal, offset: number = 0): Promise<void> {
     if (this.busy || !this.authenticated || this.connector === undefined) { return; }
@@ -903,6 +1031,7 @@ export class ConnectionViewModel {
   }
   /** 只清理账号相关的会话状态；地址与证书策略由连接流程单独管理。 */
   private resetSessionState(): void {
+    this.mutationInFlight = false;
     this.extensions.reset();
     this.systemControl.deactivate();
     this.deviceCheckText = '尚未登记设备身份';
@@ -952,6 +1081,7 @@ export class ConnectionViewModel {
     if (error instanceof NasFailure) {
       if (error.kind === NasErrorKind.OtpRequired || error.kind === NasErrorKind.OtpInvalid) { this.needsOtp = true; }
       if (error.kind === NasErrorKind.SessionExpired) {
+        this.sessionTransition = true;
         try {
           await this.driveSharing.stopAll(); await this.driveActions.stopAll(); await this.driveTransfers.stopAll(); await this.queue.stopAll();
         } catch (stopError) {
@@ -975,6 +1105,7 @@ export class ConnectionViewModel {
             this.errorText += storageError instanceof NasSessionStoreFailure ? ' ' + storageError.message : ' 清除保存的登录信息失败，请重试。';
           }
         }
+        if (ticket === this.generation) { this.sessionTransition = false; }
       }
     }
   }

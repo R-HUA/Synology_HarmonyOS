@@ -19,6 +19,7 @@ function loadSource(relative, mocks = {}) {
   vm.runInNewContext(output.outputText, {
     module, exports: module.exports, Error, Date, Uint8Array, ArrayBuffer,
     require: id => {
+      if (id === '../../platform/SdkFileIO') { return require('../helpers/load-sdk-file-io.cjs')(mocks['@kit.CoreFileKit'].fileIo, protocol); }
       if (id === '../../platform/SdkDigest') {
         return require('../helpers/load-sdk-digest.cjs')(mocks['@kit.CryptoArchitectureKit'].cryptoFramework, protocol);
       }
@@ -60,6 +61,25 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 const flush = async () => { for (let turn = 0; turn < 32; turn++) { await Promise.resolve(); } };
+
+test('editing the server origin cannot inherit an approved certificate exception', async () => {
+  const { model, count } = await fixture();
+  model.addressBook.addresses[0].insecureTls = true; model.addressBook.addresses[0].riskConfirmedAt = 1;
+  model.setAddress(oldOrigin); assert.equal(model.insecureTls, true);
+  model.setAddress(nextOrigin); assert.equal(model.insecureTls, false);
+  model.insecureTls = true;
+  assert.equal(await model.connect(), false); assert.equal(count('discover'), 0);
+});
+
+test('saved sessions require a successful protected read before authentication and task attachment', async () => {
+  for (const kind of [K.SessionExpired, K.Network]) {
+    const { model, state, count } = await fixture({ bound: false });
+    state.listError = failure(kind);
+    await model.restore(context);
+    assert.equal(model.authenticated, false); assert.equal(count('queue.attach'), 0);
+    assert.equal(model.savedSession, kind === K.Network);
+  }
+});
 class SessionStoreFailure extends Error {}
 
 async function fixture(options = {}) {
@@ -122,6 +142,7 @@ async function fixture(options = {}) {
       if (state.identityError) { throw state.identityError; }
       return state.observedIdentity;
     }
+    async deviceIdentity() { return { model: identity.model, serverName: '测试设备' }; }
     async list(...args) {
       this.event('list', args);
       if (state.listError) { throw state.listError; }
@@ -135,6 +156,7 @@ async function fixture(options = {}) {
     close() { this.event('close'); this.closed = true; this.session = undefined; }
   }
   class MockQueue {
+    ready = true;
     busy = false;
     items = [];
     async attach(_context, connector, origin, account) {
@@ -175,7 +197,7 @@ async function fixture(options = {}) {
     '../../core/domain/DsmProtocol': protocol,
     '../../core/network/NasConnector': { NasConnector: MockConnector },
     '../../core/network/RcpNasTransport': { RcpNasTransport: class {} },
-    '@kit.PerformanceAnalysisKit': { hilog: { info() {}, error() {} } },
+    '@kit.PerformanceAnalysisKit': { hilog: { info() {}, warn() {}, error() {} } },
     './NasSessionStore': { NasSessionStore: MockSessionStore, NasSessionStoreFailure: SessionStoreFailure },
     '../../core/domain/PhotosProtocol': photos,
     '../transfers/TransferQueue': { TransferQueue: MockQueue },
@@ -187,7 +209,7 @@ async function fixture(options = {}) {
     '../telemetry/TelemetryMonitor': { TelemetryMonitor: MockTelemetry },
     './ConnectionAddressBook': { ConnectionAddressBook },
     '../control/SystemControlModel': { SystemControlModel: class { deactivate() {} } },
-    '../extensions/NasExtensionsModel': { NasExtensionsModel: class { async attach() {} reset() {} } },
+    '../extensions/NasExtensionsModel': { NasExtensionsModel: class { recordsReady = true; busy = false; pending = []; async attach() {} reset() {} } },
     '../drive/DriveBrowserModel': { DriveBrowserModel: class { attach() {} detach() {} reset() {} } },
     '../drive/DriveThumbnailStore': { DriveThumbnailStore: class { attach() {} detach() {} } },
     '../drive/DriveOriginalModel': { DriveOriginalModel: class { attach() {} detach() {} async close() {} } },
@@ -327,13 +349,14 @@ test('login without File Station still saves the session, attaches tasks and exp
   assert.match(model.directoryErrorText, /File Station/);
 });
 
-test('restore without File Station completes the account entry without listing files', async () => {
+test('restore without a protected verification interface requires fresh login', async () => {
   const { model, count } = await fixture({ fileStation: false });
   await model.restore(context);
-  assert.equal(model.authenticated, true);
+  assert.equal(model.authenticated, false);
   assert.equal(model.savedSession, true);
   assert.equal(count('list'), 0);
-  assert.match(model.directoryErrorText, /File Station/);
+  assert.equal(count('queue.attach'), 0);
+  assert.match(model.errorText, /重新登录/);
 });
 
 test('a file permission failure after login does not block session persistence or queue attachment', async () => {
@@ -472,6 +495,7 @@ test('manual switching waits for both queue shutdown and session clear before an
 test('disconnect blocks Drive writes throughout queue shutdown and restores permission only when shutdown fails', async () => {
   for (const stopFails of [false, true]) {
     const { model, state, count } = await fixture();
+    state.taskRecords.clear(); state.transferRecords.clear();
     await model.restore(context);
     const canWrite = model.driveActions.canWrite, canStart = model.driveTransfers.canStart;
     assert.equal(canWrite(), true); assert.equal(canStart(), true);
@@ -580,6 +604,7 @@ test('the certificate policy follows the address scheme and round-trips through 
   model.address = 'nas.example.test:5001';
   model.setInsecureTls(true);
   state.session = undefined;
+  model.addressBook.addresses.push({ origin: 'https://nas.example.test:5001', name: '证书例外地址', kind: 'remote', insecureTls: true, riskConfirmedAt: 1 });
   await model.submitLogin();
   assert.equal(model.authenticated, true);
   assert.equal(model.address, 'https://nas.example.test:5001');
@@ -590,6 +615,7 @@ test('the certificate policy follows the address scheme and round-trips through 
 test('a submitted login keeps a self-signed https policy but never keeps it for a plain http origin', async () => {
   const insecure = await fixture();
   insecure.state.session = { ...plain(savedSession), origin: 'https://self-signed.example.test:5001', insecureTls: true };
+  insecure.model.addressBook.addresses.push({ origin: insecure.state.session.origin, name: '证书例外地址', kind: 'remote', insecureTls: true, riskConfirmedAt: 1 });
   await insecure.model.restore(context);
   assert.equal(insecure.model.authenticated, true);
   assert.equal(insecure.model.useHttps, true);
@@ -597,6 +623,7 @@ test('a submitted login keeps a self-signed https policy but never keeps it for 
 
   const downgraded = await fixture();
   downgraded.state.session = { ...plain(savedSession), origin: 'http://lan.example.test:5000', insecureTls: true };
+  downgraded.model.addressBook.addresses.push({ origin: downgraded.state.session.origin, name: '未加密地址', kind: 'lan', riskConfirmedAt: 1 });
   await downgraded.model.restore(context);
   assert.equal(downgraded.model.authenticated, true);
   assert.equal(downgraded.model.useHttps, false);
@@ -642,6 +669,7 @@ test('failed new-origin discovery is not successful switching and cannot restore
 
 test('Drive background mode receives the active TLS policy when the connection attaches', async () => {
   const { model } = await fixture(); model.insecureTls = true;
+  model.addressBook.addresses[0].insecureTls = true; model.addressBook.addresses[0].riskConfirmedAt = 1;
   await model.connect(); await model.login();
   assert.equal(model.driveTransfers.insecureTls, true);
 });

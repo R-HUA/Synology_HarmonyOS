@@ -44,10 +44,18 @@ export function supportsPhotoSharing(supports: (api: string) => boolean): boolea
   return supports('SYNO.FotoTeam.Browse.Item') || supports('SYNO.Foto.Sharing.Misc');
 }
 
+export function supportsPhotos(supports: (api: string) => boolean): boolean {
+  return supports('SYNO.Foto.Browse.Item') || supportsPhotoSharing(supports);
+}
+
+export function supportsPhotoBackup(supports: (api: string) => boolean): boolean {
+  return supportsPhotos(supports) && supports('SYNO.FileStation.Upload');
+}
+
 export function photoTabs(supports: (api: string) => boolean, showShared: boolean, pinned: string[]): ModuleTab[] {
-  const browse = supports('SYNO.Foto.Browse.Item') || supportsPhotoSharing(supports);
-  const backup = supports('SYNO.FileStation.Upload');
-  if (!browse && !backup) { return []; }
+  const browse = supportsPhotos(supports);
+  const backup = supportsPhotoBackup(supports);
+  if (!browse) { return []; }
   const tabs: ModuleTab[] = [];
   if (browse) { tabs.push({ id: 'photos', label: '照片' }, { id: 'albums', label: '相册' }); }
   if (showShared && supportsPhotoSharing(supports)) { tabs.push({ id: 'shared', label: '共享' }); }

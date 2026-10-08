@@ -66,8 +66,29 @@ test('a missing Download Station session is rejected before any request is sent'
   const { connector, calls } = await fixture(3, 20, false);
   const before = calls.length;
   await assert.rejects(connector.extensionRequest('nasDownloads', 'list', []),
-    error => error.kind === K.SessionExpired && /套件会话未建立/.test(error.message));
+    error => error.kind === K.SessionExpired && /下载套件需要重新验证/.test(error.message));
   assert.equal(calls.length, before);
+});
+
+test('Download Station OTP recovery replaces only its session and does not replay a write', async () => {
+  const { connector, calls, responses } = await fixture(3, 20, false);
+  responses.push({ status: 200, text: '{"success":false,"error":{"code":403}}' });
+  await assert.rejects(connector.authenticateDownloadStation('alice', 'password', ''), error => error.kind === K.OtpRequired);
+  assert.deepEqual(connector.sessionSnapshot().map(x => x.name), ['FileStation']);
+  responses.push(ok({ sid: 'new-download-sid', synotoken: 'new-download-token' }));
+  await connector.authenticateDownloadStation('alice', 'password', '123456');
+  assert.equal(connector.sessionSnapshot()[0].sid, 'private-sid');
+  assert.equal(connector.sessionSnapshot()[1].sid, 'new-download-sid');
+  const fields = new URLSearchParams(calls.at(-1)[1]);
+  assert.equal(fields.get('session'), 'DownloadStation'); assert.equal(fields.get('otp_code'), '123456');
+  assert.equal(calls.filter(([, body]) => new URLSearchParams(body).get('method') === 'create').length, 0);
+});
+
+test('suite authentication failure cannot invalidate the main session', async () => {
+  const { connector, responses } = await fixture();
+  responses.push({ status: 200, text: '{"success":false,"error":{"code":119}}' });
+  await assert.rejects(connector.authenticateDownloadStation('alice', 'password', ''));
+  assert.equal(connector.sessionSnapshot()[0].sid, 'private-sid');
 });
 
 test('login establishes the Download Station suite session only when its API is discovered', async () => {

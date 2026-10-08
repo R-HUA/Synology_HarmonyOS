@@ -8,7 +8,7 @@ import { DriveTransferAdapter } from '../../core/network/DriveTransferAdapter';
 import { sdkTransferAgent } from '../../platform/SdkTransferAgent';
 import { hashTransferFile, readTransferPrefix } from '../transfers/TransferQueueFiles';
 
-interface DriveTaskMarker { driveTransfer: string; driveScope: string; driveAttempt: string; }
+interface DriveTaskMarker { driveTransfer: string; driveScope: string; driveAttempt: string; spaceBytes: string; }
 interface DriveTaskBinding { id: string; dispose: () => void; }
 function missing(error: Error): boolean { return (error as BusinessError).code === 21900006; }
 function uncertain(): NasFailure { return new NasFailure(NasErrorKind.Protocol, '上传结果未能确认，请在 NAS 核对目标文件。'); }
@@ -76,7 +76,8 @@ export class DriveBackgroundTransfer {
     if (plan.headers !== undefined) {
       for (const key of Object.keys(plan.headers)) { headers[key] = plan.headers[key]; }
     }
-    const marker: DriveTaskMarker = { driveTransfer: record.id, driveScope: this.scope, driveAttempt: data.attempt.toString() };
+    const marker: DriveTaskMarker = { driveTransfer: record.id, driveScope: this.scope, driveAttempt: data.attempt.toString(),
+      spaceBytes: (record.bytes ?? 512 * 1024 * 1024).toString() };
     const config: request.agent.Config = { action: record.direction === 'upload' ? request.agent.Action.UPLOAD : request.agent.Action.DOWNLOAD,
       url: plan.address, method: plan.method, mode: request.agent.Mode.BACKGROUND,
       title: record.direction === 'upload' ? 'Drive 上传' : 'Drive 下载', headers, retry: false, redirect: false,
@@ -127,6 +128,11 @@ export class DriveBackgroundTransfer {
       if (!this.matches(record, info)) { throw uncertain(); }
       if (['completed', 'closed', 'cancelled'].includes(record.state)) { await this.stop(record); return; }
       if (record.state === 'verifying') { return; }
+      if (record.direction === 'download' && [request.agent.State.RUNNING, request.agent.State.WAITING, request.agent.State.PAUSED].includes(info.progress.state)) {
+        await sdkTransferAgent.restoreDownloadSpace(this.context, data.taskId, this.path(record, 'content'),
+          record.bytes ?? 512 * 1024 * 1024, info.progress.processed);
+        this.current();
+      }
       await this.accept(record, info.progress);
       if ([request.agent.State.RUNNING, request.agent.State.WAITING, request.agent.State.PAUSED].includes(info.progress.state)) {
         this.bind(record, await sdkTransferAgent.getTask(this.context, data.taskId));

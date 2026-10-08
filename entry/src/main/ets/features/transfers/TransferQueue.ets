@@ -8,7 +8,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { NasConnector, NasTransferPlan } from '../../core/network/NasConnector';
 import { encodeNasForm, NasErrorKind, NasFailure, NasFileEntry, normalizeNasOrigin,
   validateLogicalPath } from '../../core/domain/DsmProtocol';
-import { acceptTransferUpload, checkTransferDownload, TransferChecksumStatus, TransferDirection, TransferQueueItem, TransferQueueRecord,
+import { acceptTransferUpload, checkTransferDownload, TransferChecksumStatus, TransferDirection, TransferSource, TransferQueueItem, TransferQueueRecord,
   transferAttachmentName, transferCanRemove, transferCanRetry, transferItem, transferRemotePath, validateTransferName } from '../../core/domain/TransferQueueState';
 import { copyTransferFile, ensureTransferDirectory, hashTransferFile, readTransferPrefix, readTransferRecords, removeTransferArtifacts, removeTransferFile,
   saveTransferRecords, transferQueueDirectory } from './TransferQueueFiles';
@@ -24,8 +24,9 @@ interface QueueSession {
   directory: string;
   records: TransferQueueRecord[];
   loaded: boolean;
+  canUpload: () => boolean;
 }
-interface QueueMarker { transferQueue: string; transferScope: string; transferAttempt: string; }
+interface QueueMarker { transferQueue: string; transferScope: string; transferAttempt: string; spaceBytes: string; }
 interface TransferHeaders { Cookie: string; 'Cache-Control': string; 'X-SYNO-TOKEN'?: string; 'Content-Type'?: string; }
 interface TaskBinding { taskId: string; dispose: () => void; }
 
@@ -53,7 +54,8 @@ export class TransferQueue {
   private timer: number = -1;
   private polling: boolean = false;
 
-  async attach(context: common.UIAbilityContext, connector: NasConnector, origin: string, account: string): Promise<void> {
+  async attach(context: common.UIAbilityContext, connector: NasConnector, origin: string, account: string,
+    canUpload: () => boolean = (): boolean => true): Promise<void> {
     this.detach();
     sdkTransferAgent.requireCapability();
     const generation = this.generation;
@@ -63,7 +65,7 @@ export class TransferQueue {
     await this.tail;
     if (this.generation !== generation) { throw new NasFailure(NasErrorKind.Cancelled, '连接已变化。'); }
     const session: QueueSession = { context: context, connector: connector, origin: normalized, scope: scope,
-      directory: transferQueueDirectory(context, scope), records: [], loaded: false };
+      directory: transferQueueDirectory(context, scope), records: [], loaded: false, canUpload: canUpload };
     this.session = session;
     try {
       await this.loadSession(session);
@@ -109,6 +111,7 @@ export class TransferQueue {
   async pickAndUpload(directory: string): Promise<void> {
     const session = this.requireSession();
     await this.operation(session, async (): Promise<void> => {
+      this.requireUploadAdmission(session);
       validateLogicalPath(directory);
       const options = new picker.DocumentSelectOptions();
       options.maxSelectNumber = 20;
@@ -119,16 +122,19 @@ export class TransferQueue {
   }
 
   /** acceptedIndices 对应已持久保存私有副本的来源，可清理分享 inbox；issues 包含准备或启动失败。 */
-  async uploadSources(directory: string, sources: TransferUploadSource[]): Promise<TransferUploadBatchResult> {
+  async uploadSources(directory: string, sources: TransferUploadSource[], source: TransferSource = 'fileUpload'): Promise<TransferUploadBatchResult> {
     const session = this.requireSession();
     let result: TransferUploadBatchResult = { acceptedIndices: [], issues: [] };
-    await this.operation(session, async (): Promise<void> => { result = await this.enqueueUploads(session, directory, sources); });
+    await this.operation(session, async (): Promise<void> => {
+      this.requireUploadAdmission(session);
+      result = await this.enqueueUploads(session, directory, sources, source);
+    });
     return result;
   }
 
   async uploadUris(directory: string, uris: string[]): Promise<void> {
     const session = this.requireSession();
-    await this.operation(session, async (): Promise<void> => { await this.uploadSelected(session, directory, uris); });
+    await this.operation(session, async (): Promise<void> => { this.requireUploadAdmission(session); await this.uploadSelected(session, directory, uris); });
   }
 
   async download(entry: NasFileEntry): Promise<void> {
@@ -219,6 +225,7 @@ export class TransferQueue {
     await this.operation(session, async (): Promise<void> => {
       const record = this.find(session, id);
       if (!transferCanRetry(record)) { throw queueFailure('上传结果尚未确认，请先核对 NAS；不会重复上传。'); }
+      if (record.direction === 'upload') { this.requireUploadAdmission(session); }
       if (record.taskId.length > 0) { await this.removeTask(record.taskId); this.unbind(record.taskId); }
       await this.stopChecksum(session, record);
       const oldPath = this.localPath(session, record);
@@ -284,7 +291,7 @@ export class TransferQueue {
     if (result.issues.length > 0) { throw queueFailure(result.issues[0].errorText); }
   }
 
-  private async enqueueUploads(session: QueueSession, directory: string, sources: TransferUploadSource[]): Promise<TransferUploadBatchResult> {
+  private async enqueueUploads(session: QueueSession, directory: string, sources: TransferUploadSource[], origin: TransferSource = 'fileUpload'): Promise<TransferUploadBatchResult> {
     validateLogicalPath(directory);
     if (sources.length > 20) { throw queueFailure('每次最多选择 20 个文件。'); }
     const result: TransferUploadBatchResult = { acceptedIndices: [], issues: [] };
@@ -304,6 +311,7 @@ export class TransferQueue {
           throw queueFailure('这个文件已有上传任务，请先处理已有任务。');
         }
         const record = this.newRecord('upload', source.name, path, bytes);
+        record.source = origin;
         this.addRecord(session, record);
         await this.save(session);
         try {
@@ -322,10 +330,11 @@ export class TransferQueue {
           throw error as Error;
         }
         result.acceptedIndices.push(index);
-        await this.createTask(session, record);
+        if (this.canStartQueuedUpload(session, record)) { await this.createTask(session, record); }
       } catch (error) {
         this.ensureCurrent(session);
         result.issues.push({ index: index, errorText: transferError(error as Error) });
+        if (session.records.some((record: TransferQueueRecord): boolean => record.direction === 'upload' && ['unknown', 'creating'].includes(record.state))) { break; }
         this.report(session, error as Error);
       }
     }
@@ -335,7 +344,7 @@ export class TransferQueue {
   private newRecord(direction: TransferDirection, name: string, remotePath: string, bytes: number): TransferQueueRecord {
     const id = util.generateRandomUUID();
     const now = Date.now();
-    return { id: id, direction: direction, name: name, remotePath: remotePath, bytes: bytes,
+    return { id: id, direction: direction, source: direction === 'upload' ? 'fileUpload' : 'download', name: name, remotePath: remotePath, bytes: bytes,
       localName: id + '-1.bin', localReady: false, state: 'preparing', taskId: '', attempts: 1,
       startAttempted: false, uploadAccepted: false, httpStatus: 0, contentType: '', attachmentName: '', processed: 0,
       createdAt: now, updatedAt: now, errorText: '', contentVerified: false, localMd5: '', checksumTaskId: '', systemCompleted: false };
@@ -359,7 +368,7 @@ export class TransferQueue {
     record.state = 'creating';
     await this.save(session);
     this.ensureCurrent(session);
-    const marker: QueueMarker = { transferQueue: record.id, transferScope: session.scope, transferAttempt: record.attempts.toString() };
+    const marker: QueueMarker = { transferQueue: record.id, transferScope: session.scope, transferAttempt: record.attempts.toString(), spaceBytes: record.bytes.toString() };
     // 系统后台传输代理没有跳过证书校验的开关：http 地址不受影响，
     // 自签名证书的 https 地址只能在前台（rcp）路径使用，后台传输会因证书错误失败。
     const config: request.agent.Config = { action: record.direction === 'upload' ? request.agent.Action.UPLOAD : request.agent.Action.DOWNLOAD,
@@ -425,6 +434,10 @@ export class TransferQueue {
           await this.save(session); continue;
         }
         if (record.taskId.length === 0) {
+          if (record.state === 'queued' && !record.startAttempted && record.localReady) {
+            if (record.direction === 'download' || this.canStartQueuedUpload(session, record)) { await this.createTask(session, record); }
+            continue;
+          }
           if (record.state === 'creating') { await this.adoptCreatedTask(session, record); }
           if (record.taskId.length === 0) {
             record.state = 'failed'; record.errorText = '任务尚未启动，请点击重试。';
@@ -433,8 +446,13 @@ export class TransferQueue {
         }
         const info = await sdkTransferAgent.show(record.taskId);
         this.ensureCurrent(session);
+        if (record.direction === 'download' && [request.agent.State.INITIALIZED, request.agent.State.RUNNING, request.agent.State.WAITING, request.agent.State.RETRYING].includes(info.progress.state)) {
+          await sdkTransferAgent.restoreDownloadSpace(session.context, record.taskId, this.localPath(session, record), record.bytes, info.progress.processed);
+          this.ensureCurrent(session);
+        }
         await this.acceptProgress(session, record, info.progress);
         if (info.progress.state === request.agent.State.INITIALIZED) {
+          if (record.direction === 'upload' && !this.canStartQueuedUpload(session, record)) { continue; }
           // INITIALIZED 是尚未开始执行的系统任务；恢复同一个 ID，不建立新上传。
           const task = await sdkTransferAgent.getTask(session.context, record.taskId);
           await this.startTask(session, record, task);
@@ -759,6 +777,19 @@ export class TransferQueue {
     if (this.session === undefined) { throw queueFailure('请先连接 NAS 再处理传输。'); }
     if (!this.session.loaded) { throw queueFailure('传输记录读取失败，已暂停传输，请在任务页重新加载。'); }
     return this.session;
+  }
+  /** 整批只准入一次；已有未知写入不能通过重新选择另一个文件绕过。 */
+  private requireUploadAdmission(session: QueueSession): void {
+    if (!session.canUpload() || session.records.some((record: TransferQueueRecord): boolean => record.direction === 'upload' &&
+      !['completed', 'failed', 'cancelled', 'closed', 'clearing'].includes(record.state))) {
+      throw new NasFailure(NasErrorKind.InvalidInput, '仍有写入进行中、结果待核对或记录未读取，请先处理任务。');
+    }
+  }
+
+  /** 已接管的批次串行发送；未知写入阻止后续项目，无需重新提交整批。 */
+  private canStartQueuedUpload(session: QueueSession, record: TransferQueueRecord): boolean {
+    return session.canUpload() && !session.records.some((item: TransferQueueRecord): boolean => item.id !== record.id &&
+      item.direction === 'upload' && !['preparing', 'queued', 'completed', 'failed', 'cancelled', 'closed', 'clearing'].includes(item.state));
   }
   private ensureCurrent(session: QueueSession): void {
     if (this.session !== session) { throw new NasFailure(NasErrorKind.Cancelled, '连接已变化，操作已结束。'); }

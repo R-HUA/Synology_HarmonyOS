@@ -17,6 +17,7 @@ export interface NasAddressProbeResult {
 export class ConnectionAddressBook {
   @Trace addresses: NasConnectionAddress[] = [];
   @Trace ready: boolean = false;
+  @Trace corrupt: boolean = false;
   @Trace busy: boolean = false;
   @Trace probing: boolean = false;
   @Trace errorText: string = '';
@@ -42,10 +43,14 @@ export class ConnectionAddressBook {
       const addresses = await this.store.load(context);
       if (ticket !== this.generation) { return false; }
       this.addresses = addresses;
+      this.corrupt = false;
       this.ready = true;
       return true;
     } catch (error) {
-      if (ticket === this.generation) { this.errorText = this.failureText(error as Error, '读取连接地址失败，请重试。'); }
+      if (ticket === this.generation) {
+        this.corrupt = this.store.corrupt === true;
+        this.errorText = this.failureText(error as Error, '读取连接地址失败，请重试。');
+      }
       return false;
     } finally { if (ticket === this.generation) { this.busy = false; } }
   }
@@ -110,8 +115,18 @@ export class ConnectionAddressBook {
     this.probing = false;
   }
 
-  async saveDraft(): Promise<boolean> {
-    return this.saveAddress(this.draftOrigin, this.draftName, this.draftKind, this.draftInsecureTls);
+  async saveDraft(riskAccepted: boolean = false): Promise<boolean> {
+    return this.saveAddress(this.draftOrigin, this.draftName, this.draftKind, this.draftInsecureTls, riskAccepted);
+  }
+
+  /** 损坏记录先隔离，原始文件和任务资料都保留。 */
+  async rebuild(context: common.UIAbilityContext): Promise<void> {
+    if (this.busy || !this.corrupt) { return; }
+    this.busy = true;
+    try { await this.store.quarantine(context); }
+    catch (error) { this.errorText = this.failureText(error as Error, '无法隔离损坏的连接配置，请重试。'); return; }
+    finally { this.busy = false; }
+    await this.load(context);
   }
 
   async saveCurrent(connector: NasConnector, origin: string, account: string, insecureTls: boolean): Promise<boolean> {
@@ -141,7 +156,7 @@ export class ConnectionAddressBook {
       }
       if (ticket !== this.generation) { return false; }
       const address: NasConnectionAddress = { origin: normalized, name: this.draftName, kind: this.draftKind,
-        insecureTls: insecureTls, device: device };
+        insecureTls: insecureTls, riskConfirmedAt: existing?.riskConfirmedAt, device: device };
       const saved = await this.commit(address, ticket);
       if (saved) {
         this.notice = verified ? '地址与当前账号的设备身份已登记，后续登录会重新核验。' :
@@ -178,7 +193,8 @@ export class ConnectionAddressBook {
     return device.model;
   }
 
-  private async saveAddress(origin: string, name: string, kind: NasConnectionRouteKind, insecureTls: boolean): Promise<boolean> {
+  private async saveAddress(origin: string, name: string, kind: NasConnectionRouteKind, insecureTls: boolean,
+    riskAccepted: boolean): Promise<boolean> {
     if (!this.ready || this.busy || this.probing) { return false; }
     const ticket = this.generation;
     this.busy = true;
@@ -187,7 +203,12 @@ export class ConnectionAddressBook {
     try {
       const normalized = normalizeNasOrigin(origin);
       const previous = this.addresses.find((address: NasConnectionAddress): boolean => address.origin === normalized);
+      const risky = nasOriginScheme(normalized) === 'http' || insecureTls;
+      if (risky && !riskAccepted) {
+        throw new NasFailure(NasErrorKind.InvalidInput, '请确认此服务器的连接风险后再保存地址。');
+      }
       const saved = await this.commit({ origin: normalized, name: name, kind: kind, insecureTls: insecureTls,
+        riskConfirmedAt: risky ? Date.now() : undefined,
         device: previous?.device }, ticket);
       if (saved) {
         this.notice = insecureTls && nasOriginScheme(normalized) === 'https' ?

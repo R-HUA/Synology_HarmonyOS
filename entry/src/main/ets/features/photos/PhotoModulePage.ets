@@ -8,6 +8,7 @@ import { PhotoAlbumRow, PhotoTimelineRow, photoAlbumColumns, photoAlbumRows, pho
   photoTimelineRows, workbenchBytes } from '../workbench/WorkbenchPresentation';
 import { WorkbenchActionRow, WorkbenchChoice, WorkbenchIconTile, WorkbenchMetrics, WorkbenchNotice,
   WorkbenchSectionTitle } from '../workbench/WorkbenchUi';
+import { supportsPhotoBackup } from '../workbench/ModuleNavigation';
 
 @ComponentV2
 export struct PhotoModulePage {
@@ -187,7 +188,7 @@ export struct PhotoModulePage {
 
   @Builder
   backupCard() {
-    if (this.model.supports('SYNO.FileStation.Upload')) {
+    if (supportsPhotoBackup((api: string): boolean => this.model.supports(api))) {
       if (this.backup.sources.length === 0) {
         Column() {
           WorkbenchActionRow({ icon: $r('sys.symbol.arrow_up_circle'), label: '备份照片与视频',

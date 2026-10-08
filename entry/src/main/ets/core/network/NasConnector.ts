@@ -71,6 +71,7 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
   private disposed: boolean = false;
   private loggingOut: boolean = false;
   private authenticating: boolean = false;
+  private downloadAuthenticating: boolean = false;
   private rpc: DsmRpcClient;
   private featureRegistry: CapabilityRegistry = new CapabilityRegistry([
     { feature: 'fileBrowse', api: 'SYNO.FileStation.List', verifiedVersions: [2] },
@@ -150,15 +151,30 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     const ticket = this.generation;
     const revision = this.sessions.revision(this.sessionName);
     try {
-      const authorization = decodeNasSession(await this.call('SYNO.API.Auth', 6, 'login',
-        this.loginFields('DownloadStation', account, password, otp)));
+      await this.authenticateDownloadStation(account, password, otp);
       this.ensureSessionCurrent(ticket, this.sessionName, revision);
-      this.sessions.register('DownloadStation', authorization);
     } catch (error) {
       this.ensureOpen();
-      if (error instanceof NasFailure && error.kind === NasErrorKind.Cancelled) { throw error; }
+      if (!(error instanceof NasFailure) || error.kind === NasErrorKind.Cancelled) { throw error; }
       // 独立套件登录失败时主会话仍可使用；连接取消不能被降级为登录成功。
     }
+  }
+
+  /** 只替换下载套件会话，主会话及已提交任务保持原有归属。 */
+  async authenticateDownloadStation(account: string, password: string, otp: string): Promise<void> {
+    this.requireSession('FileStation');
+    if (this.downloadAuthenticating || account.trim().length === 0 || password.length === 0 || otp.length > 0 && !/^[0-9]{6}$/.test(otp)) {
+      throw new NasFailure(NasErrorKind.InvalidInput, '请输入账号密码和有效的六位动态码，且不要重复提交认证。');
+    }
+    selectNasApi(this.capabilities, 'SYNO.DownloadStation.Task', [1, 3]);
+    const ticket = this.generation;
+    const revision = this.sessions.revision('FileStation');
+    this.downloadAuthenticating = true;
+    try {
+      const authorization = decodeNasSession(await this.call('SYNO.API.Auth', 6, 'login', this.loginFields('DownloadStation', account, password, otp), false));
+      this.ensureSessionCurrent(ticket, 'FileStation', revision);
+      this.sessions.register('DownloadStation', authorization);
+    } finally { this.downloadAuthenticating = false; }
   }
 
   async list(path: string, offset: number = 0, sortBy: NasFileSortBy = NasFileSortBy.Name,
@@ -359,12 +375,17 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     try {
       const info = await this.call('SYNO.Core.System', 1, 'info', []);
       model = this.identityText(info['model'], 128);
-    } catch { model = ''; }
+    } catch (error) { this.assertDeviceMetadataFailure(error); }
     try {
       const network = await this.call('SYNO.Core.Network', 1, 'get', []);
       serverName = this.identityText(network['server_name'], 64);
-    } catch { serverName = ''; }
+    } catch (error) { this.assertDeviceMetadataFailure(error); }
     return { model: model, serverName: serverName };
+  }
+
+  /** 装饰字段可以缺省，明确的身份失效和连接取消必须继续上抛。 */
+  private assertDeviceMetadataFailure(error: unknown): void {
+    if (!(error instanceof NasFailure) || [NasErrorKind.SessionExpired, NasErrorKind.Cancelled].includes(error.kind)) { throw error; }
   }
 
   private identityText(value: Object | undefined, limit: number): string {
@@ -963,7 +984,7 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     const session = this.sessions.get(name);
     if (session === undefined) {
       throw new NasFailure(NasErrorKind.SessionExpired,
-        name === this.sessionName ? '请先登录 NAS。' : '该功能的套件会话未建立，请退出后重新登录。');
+        name === this.sessionName ? '请先登录 NAS。' : '下载套件需要重新验证，请在下载页面完成认证。');
     }
     return session;
   }

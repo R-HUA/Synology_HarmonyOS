@@ -50,7 +50,7 @@ test('duplicate origins are detected after normalization in both encoding and de
 
 test('the version-one book accepts zero through eight addresses and refuses over-capacity lists', () => {
   assert.equal(routes.MAX_NAS_CONNECTION_ADDRESSES, 8);
-  assert.deepEqual(JSON.parse(routes.encodeConnectionAddressBook([])), { version: 1, addresses: [] });
+  assert.deepEqual(JSON.parse(routes.encodeConnectionAddressBook([])), { version: 2, addresses: [] });
   const entries = Array.from({ length: 8 }, (unused, index) => ({ ...address, origin: `https://nas-${index}.example.test` }));
   assert.deepEqual(routes.decodeConnectionAddressBook(routes.encodeConnectionAddressBook(entries)), entries);
   const overCapacity = [...entries, { ...address, origin: 'https://ninth.example.test' }];
@@ -124,7 +124,7 @@ test('addresses never imply a shared NAS identity from IP, account or name', () 
 
 test('corrupt JSON and unsupported or malformed envelopes produce formal protocol failures', () => {
   for (const text of ['', '{broken', 'null', '[]', 'true', JSON.stringify({ addresses: [] }),
-    JSON.stringify({ version: 2, addresses: [] }), JSON.stringify({ version: '1', addresses: [] }),
+    JSON.stringify({ version: 3, addresses: [] }), JSON.stringify({ version: '1', addresses: [] }),
     JSON.stringify({ version: 1 }), JSON.stringify({ version: 1, addresses: {} }),
     JSON.stringify({ version: 1, addresses: [null] }), null, undefined]) {
     assert.throws(() => routes.decodeConnectionAddressBook(text), error => isKind(kinds.Protocol)(error) &&
