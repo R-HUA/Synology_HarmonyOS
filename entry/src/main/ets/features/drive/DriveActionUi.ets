@@ -78,15 +78,13 @@ export struct DriveActionPage {
         ForEach(this.model.destinations.entries, (entry: DriveEntry): void => {
           if (entry.kind === DriveEntryKind.Folder) {
             ListItem() {
-              Row() {
-                WorkbenchEntryRow({ title: entry.name, subtitle: entry.capabilities.canWrite ? '可选为目标文件夹' : '只读文件夹',
+              WorkbenchEntryRow({ title: entry.name, subtitle: entry.capabilities.canWrite ? '可选为目标文件夹' : '只读文件夹',
                   icon: $r('sys.symbol.folder'), iconColor: $r('sys.color.icon_emphasize'),
                   available: entry.capabilities.canRead && !this.model.busy && !this.model.destinations.busy,
-                  onOpen: (): void => { this.model.destinations.openFolder(entry); } }).layoutWeight(1)
-                Button('选择').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
-                  .enabled(entry.capabilities.canRead && entry.capabilities.canWrite && !this.model.busy && !this.model.destinations.busy)
-                  .onClick((): void => { this.model.selectDestination(entry); }).accessibilityText('选择“' + entry.name + '”')
-              }.width('100%')
+                  actionLabel: '选择', actionAvailable: entry.capabilities.canRead && entry.capabilities.canWrite &&
+                    !this.model.busy && !this.model.destinations.busy,
+                  onOpen: (): void => { this.model.destinations.openFolder(entry); },
+                  onAction: (): void => { this.model.selectDestination(entry); } })
             }
           }
         }, (entry: DriveEntry): string => driveEntryRenderKey(entry))

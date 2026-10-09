@@ -4,6 +4,7 @@ import { DriveEntry, DriveEntryKind, DriveView, driveViewLabel, driveEntryRender
 import { driveActionAllowed } from '../../core/domain/DriveActionProtocol';
 import type { DriveAction } from '../../core/domain/DriveActionProtocol';
 import { canPreviewDriveOriginal } from '../../core/domain/DriveOriginalProtocol';
+import { telemetryTimestamp } from '../../core/domain/TelemetryProtocol';
 import { driveFileLinkAllowed } from '../../core/domain/DriveCollaborationProtocol';
 import { ConnectionViewModel } from '../connection/ConnectionViewModel';
 import { WorkbenchMetrics, WorkbenchNotice, WorkbenchSectionTitle, WorkbenchActionRow,
@@ -170,8 +171,7 @@ export struct DriveModulePage {
         }
         ForEach(this.model.drive.entries, (entry: DriveEntry): void => {
           ListItem() {
-            Row() {
-              WorkbenchEntryRow({ title: entry.name, subtitle: this.driveRowSubtitle(entry),
+            WorkbenchEntryRow({ title: entry.name, subtitle: this.driveRowSubtitle(entry),
                 thumbnail: this.model.driveThumbnails.path(entry).length > 0 ?
                   fileUri.getUriFromPath(this.model.driveThumbnails.path(entry)) : '',
                 icon: entry.kind === DriveEntryKind.Folder ? $r('sys.symbol.folder') : $r('sys.symbol.doc'),
@@ -180,19 +180,8 @@ export struct DriveModulePage {
                   this.model.drive.view !== DriveView.Trash &&
                   (entry.kind === DriveEntryKind.Folder || entry.capabilities.canDownload &&
                     this.model.driveTransfers.ready && !this.model.driveTransfers.busy),
-                onOpen: (): void => { this.openDriveEntry(entry); } }).layoutWeight(1)
-              if (this.driveEntryMenu(entry).length > 0) {
-                Button() {
-                  SymbolGlyph($r('sys.symbol.ellipsis_circle')).fontSize(32)
-                    .renderingStrategy(SymbolRenderingStrategy.MULTIPLE_COLOR)
-                    .fontColor([$r('sys.color.icon_primary'), Color.Transparent])
-                    .accessibilityLevel('no')
-                }.width(48).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).type(ButtonType.Normal).padding(0)
-                  .backgroundColor(Color.Transparent)
-                  .enabled(!this.model.busy && !this.model.drive.busy)
-                  .bindMenu(this.driveEntryMenu(entry)).accessibilityText(entry.name + '，操作菜单')
-              }
-            }.width('100%')
+                menu: this.driveEntryMenu(entry), menuAvailable: !this.model.busy && !this.model.drive.busy,
+                onOpen: (): void => { this.openDriveEntry(entry); } })
           }
           .onVisibleAreaChange([0], (visible: boolean, ratio: number): void => {
             this.model.driveThumbnails.setVisible(entry, visible && ratio > 0 && this.canRenderEntries() &&
@@ -359,15 +348,30 @@ export struct DriveModulePage {
     Scroll() {
       Column({ space: 12 }) {
         if (this.detailEntry !== undefined) {
-          Text(this.detailEntry.name).fontSize(18).fontWeight(FontWeight.Medium)
-            .fontColor($r('sys.color.font_primary')).width('100%')
-          WorkbenchInfoRow({ label: '类型', value: this.detailEntry.kind === DriveEntryKind.Folder ? '文件夹' : '文件' })
-          if (this.detailEntry.displayPath !== undefined && this.detailEntry.displayPath.length > 0) {
-            WorkbenchInfoRow({ label: '位置', value: this.detailEntry.displayPath })
+          WorkbenchInfoRow({ label: $r('app.string.file_info_title'), value: this.detailEntry.name,
+            labelWidth: 64, valueAlign: TextAlign.Start })
+          WorkbenchInfoRow({ label: $r('app.string.file_info_type'),
+            value: this.detailEntry.kind === DriveEntryKind.Folder ? $r('app.string.file_info_folder') :
+              this.detailEntry.name.lastIndexOf('.') > 0 && this.detailEntry.name.lastIndexOf('.') < this.detailEntry.name.length - 1 ?
+                this.detailEntry.name.slice(this.detailEntry.name.lastIndexOf('.') + 1).toLowerCase() : $r('app.string.file_info_file'),
+            labelWidth: 64, valueAlign: TextAlign.Start })
+          WorkbenchInfoRow({ label: $r('app.string.file_info_created'), value: this.detailEntry.createdAt === undefined ?
+            $r('app.string.file_info_unavailable') : telemetryTimestamp(Math.trunc(this.detailEntry.createdAt * 1000)),
+            labelWidth: 64, valueAlign: TextAlign.Start })
+          WorkbenchInfoRow({ label: $r('app.string.file_info_modified'), value: this.detailEntry.modifiedAt === undefined ?
+            $r('app.string.file_info_unavailable') : telemetryTimestamp(Math.trunc(this.detailEntry.modifiedAt * 1000)),
+            labelWidth: 64, valueAlign: TextAlign.Start })
+          WorkbenchInfoRow({ label: $r('app.string.file_info_owner'),
+            value: this.detailEntry.owner?.name ?? this.detailEntry.owner?.displayName ?? this.detailEntry.owner?.nickname ??
+              $r('app.string.file_info_unavailable'), labelWidth: 64, valueAlign: TextAlign.Start })
+          if (this.detailEntry.kind !== DriveEntryKind.Folder) {
+            WorkbenchInfoRow({ label: $r('app.string.file_info_size'), value: this.detailEntry.sizeBytes === undefined ?
+              $r('app.string.file_info_unavailable') : workbenchBytes(this.detailEntry.sizeBytes),
+              labelWidth: 64, valueAlign: TextAlign.Start })
           }
-          if (this.detailEntry.kind !== DriveEntryKind.Folder && this.detailEntry.sizeBytes !== undefined) {
-            WorkbenchInfoRow({ label: '大小', value: workbenchBytes(this.detailEntry.sizeBytes) })
-          }
+          WorkbenchInfoRow({ label: $r('app.string.file_info_location'),
+            value: this.detailEntry.displayPath ?? $r('app.string.file_info_unavailable'),
+            labelWidth: 64, valueAlign: TextAlign.Start })
         }
       }.width('100%').padding(16).alignItems(HorizontalAlign.Start)
     }.width('100%').height('100%').scrollBar(BarState.Auto).align(Alignment.TopStart)

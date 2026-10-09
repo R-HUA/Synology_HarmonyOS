@@ -37,6 +37,16 @@
     { "name": "action_confirm", "value": "确认" },
     { "name": "download_authenticate", "value": "重新验证下载套件" },
     { "name": "download_password", "value": "当前账号密码" },
-    { "name": "download_otp", "value": "新的六位动态码" }
+    { "name": "download_otp", "value": "新的六位动态码" },
+    { "name": "file_info_title", "value": "标题" },
+    { "name": "file_info_type", "value": "类型" },
+    { "name": "file_info_created", "value": "已创建" },
+    { "name": "file_info_modified", "value": "已修改" },
+    { "name": "file_info_owner", "value": "所有者" },
+    { "name": "file_info_size", "value": "大小" },
+    { "name": "file_info_location", "value": "所在位置" },
+    { "name": "file_info_unavailable", "value": "未提供" },
+    { "name": "file_info_folder", "value": "文件夹" },
+    { "name": "file_info_file", "value": "文件" }
   ]
 }

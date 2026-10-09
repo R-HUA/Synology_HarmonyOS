@@ -1,7 +1,7 @@
 import { NasFileEntry } from '../../core/domain/DsmProtocol';
 import { ConnectionViewModel } from '../connection/ConnectionViewModel';
 import { WorkbenchBreadcrumb, workbenchBreadcrumbs, workbenchBytes } from '../workbench/WorkbenchPresentation';
-import { WorkbenchMetrics, WorkbenchIconTile, WorkbenchNotice } from '../workbench/WorkbenchUi';
+import { WorkbenchMetrics, WorkbenchEntryRow, WorkbenchNotice } from '../workbench/WorkbenchUi';
 
 /** File Station 列表复用于文件页和独立的目录选择页，页面级工具由宿主标题栏承载。 */
 @ComponentV2
@@ -151,41 +151,15 @@ export struct FileStationPage {
         }
         ForEach(this.visibleEntries(), (entry: NasFileEntry): void => {
           ListItem() {
-            Column() {
-              Row({ space: 4 }) {
-                Button() {
-                  Row({ space: 12 }) {
-                    WorkbenchIconTile({ icon: entry.isDirectory ? $r('sys.symbol.folder') : $r('sys.symbol.doc'),
-                      iconSize: 22, tileSize: 40, tileRadius: 12,
-                      iconColor: entry.isDirectory ? $r('sys.color.icon_emphasize') : $r('sys.color.font_secondary'),
-                      tileColor: $r('app.color.workbench_subtle') })
-                    Column({ space: 2 }) {
-                      Text(entry.name).fontSize(16).fontWeight(FontWeight.Medium).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-                        .fontColor($r('sys.color.font_primary')).width('100%')
-                      Text(entry.isDirectory ? '文件夹' : workbenchBytes(entry.bytes))
-                        .fontSize(14).fontColor($r('sys.color.font_secondary'))
-                    }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-                  }.width('100%').padding({ top: 8, bottom: 8, right: 8 })
-                }.layoutWeight(1).type(ButtonType.Normal).padding(0).constraintSize({ minHeight: 64 })
-                  .backgroundColor(Color.Transparent).enabled(!this.model.busy)
-                  .onClick((): void => {
-                    if (entry.isDirectory) { this.model.openDirectory(entry); }
-                    else { this.onOpenForm('detail', entry); }
-                  }).accessibilityText((entry.isDirectory ? '文件夹，' : '文件，') + entry.name)
-                if (this.pickerMode.length === 0) {
-                  Button() {
-                    SymbolGlyph($r('sys.symbol.ellipsis_circle')).fontSize(32)
-                      .renderingStrategy(SymbolRenderingStrategy.MULTIPLE_COLOR)
-                      .fontColor([$r('sys.color.font_secondary'), Color.Transparent])
-                      .accessibilityLevel('no')
-                  }
-                    .width(48).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).type(ButtonType.Normal).padding(0).backgroundColor(Color.Transparent)
-                    .enabled(!this.model.busy).bindMenu(this.entryMenu(entry))
-                    .accessibilityText(entry.name + '，更多操作')
-                }
-              }.width('100%').constraintSize({ minHeight: 64 }).padding({ left: 16, right: 8 })
-              Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
-            }.width('100%').backgroundColor($r('app.color.workbench_surface'))
+            WorkbenchEntryRow({ title: entry.name, subtitle: entry.isDirectory ? '文件夹' : workbenchBytes(entry.bytes),
+              icon: entry.isDirectory ? $r('sys.symbol.folder') : $r('sys.symbol.doc'),
+              iconColor: entry.isDirectory ? $r('sys.color.icon_emphasize') : $r('sys.color.font_secondary'),
+              available: !this.model.busy, menuAvailable: !this.model.busy,
+              menu: this.pickerMode.length === 0 ? this.entryMenu(entry) : [],
+              onOpen: (): void => {
+                if (entry.isDirectory) { this.model.openDirectory(entry); }
+                else { this.onOpenForm('detail', entry); }
+              } })
           }
         }, (entry: NasFileEntry): string => this.model.address + ':' + this.model.account + ':' + entry.path)
         if (this.model.entries.length > 0) {

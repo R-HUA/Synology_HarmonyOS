@@ -14,7 +14,7 @@ const item = (id, versionId = '1') => ({ fileId: String(id), name: 'a.jpg', kind
   capabilities: { canRead: true, canPreview: true } });
 
 function fixture(options = {}) {
-  const calls = [], removed = [], failures = [], releases = [], directories = new Set();
+  const calls = [], iconCalls = [], removed = [], failures = [], releases = [], directories = new Set();
   let counter = 0;
   const source = fs.readFileSync(path.join(__dirname, '../../entry/src/main/ets/features/drive/DriveThumbnailStore.ets'), 'utf8')
     .replace(/^@ObservedV2\s*$/gm, '').replace(/@Trace\s+/g, '');
@@ -32,6 +32,7 @@ function fixture(options = {}) {
     }) } },
     '../../core/domain/DsmProtocol': dsm,
     '../../core/domain/DriveThumbnailProtocol': protocol,
+    '../../core/domain/DriveProtocol': require('../../work/core-build/domain/DriveProtocol.js'),
     '../../core/network/NasTransferTransport': transport
   };
   const mod = { exports: {} };
@@ -41,18 +42,24 @@ function fixture(options = {}) {
     calls.push({ input, directory, control }); directories.add(directory);
     if (options.download) await options.download(input, control);
     return { path: directory + '/content', bytes: options.bytes || 100 };
+  }, async fileTypeIconDrive(filename, directory, control) {
+    iconCalls.push({ filename, directory, control }); directories.add(directory);
+    if (options.iconDownload) await options.iconDownload(filename, control);
+    return { path: directory + '/content', bytes: options.bytes || 100 };
   } };
   const store = new mod.exports.DriveThumbnailStore();
   const attach = () => store.attach({ cacheDir: '/private/cache' }, kernel, async e => failures.push(e));
   attach();
-  return { store, calls, removed, failures, releases, attach, directories };
+  return { store, calls, iconCalls, removed, failures, releases, attach, directories };
 }
 
-test('only visible permitted media loads; duplicate observations share one request and cached image', async () => {
+test('only visible permitted files load; duplicate media observations share one request and cached image', async () => {
   const f = fixture();
-  f.store.setVisible({ ...item(1), name: 'a.txt' }, true);
+  f.store.setVisible({ ...item(1), kind: 'folder' }, true);
+  f.store.setVisible({ ...item(1), capabilities: { canRead: false } }, true);
   f.store.setVisible(item(1), false);
   assert.equal(f.calls.length, 0);
+  assert.equal(f.iconCalls.length, 0);
   f.store.setVisible(item(1), true); f.store.setVisible(item(1), true);
   await flush();
   assert.equal(f.calls.length, 1);
@@ -114,13 +121,37 @@ test('malformed or oversized images are released, removed and retried only on ex
     const f = fixture(options);
     f.store.setVisible(item(1), true); await flush();
     assert.equal(f.store.path(item(1)), '');
-    assert.match(f.store.errorText, /缩略图/);
+    assert.match(f.store.errorText, /图片/);
     assert.deepEqual(f.releases, ['source']);
     assert.equal(f.removed.length, 1);
     f.store.setVisible(item(1), false); f.store.setVisible(item(1), true); await flush();
     assert.equal(f.calls.length, 1);
     f.store.retryVisible(); await flush(); assert.equal(f.calls.length, 2);
   }
+});
+
+test('files without thumbnails share type icons and hiding one row keeps other visible rows loading', async () => {
+  const pending = gate(); const f = fixture({ iconDownload: () => pending.promise });
+  const first = { ...item(1), name: 'a.txt' }, second = { ...item(2), name: 'b.TXT' };
+  f.store.setVisible(first, true); f.store.setVisible(second, true);
+  assert.equal(f.iconCalls.length, 1); assert.equal(f.calls.length, 0);
+  f.store.setVisible(first, false);
+  assert.equal(f.iconCalls[0].control.cancellation.cancelled, false);
+  pending.resolve(); await flush();
+  assert.ok(f.store.path(second).endsWith('/content'));
+  assert.equal(f.store.path(first), f.store.path(second));
+  f.store.setVisible({ ...item(3), name: 'c.txt' }, true);
+  assert.equal(f.iconCalls.length, 1);
+});
+
+test('missing media thumbnail uses its file type icon but authentication failures remain explicit', async () => {
+  const f = fixture({ download: () => { throw new dsm.NasFailure(dsm.NasErrorKind.Http, 'not found', 404); } });
+  f.store.setVisible(item(1), true); await flush();
+  assert.equal(f.calls.length, 1); assert.equal(f.iconCalls.length, 1);
+  assert.ok(f.store.path(item(1)).endsWith('/content')); assert.equal(f.store.errorText, '');
+  const expired = fixture({ download: () => { throw new dsm.NasFailure(dsm.NasErrorKind.SessionExpired, 'expired'); } });
+  expired.store.setVisible(item(1), true); await flush();
+  assert.equal(expired.iconCalls.length, 0); assert.equal(expired.failures.length, 1);
 });
 
 test('session expiration is reported once without retrying or exposing credentials', async () => {

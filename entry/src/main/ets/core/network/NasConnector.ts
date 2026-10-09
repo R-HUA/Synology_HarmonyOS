@@ -31,7 +31,7 @@ import type { DriveTransferKernelPort } from './DriveTransferAdapter';
 import { decodeDriveUpload, decodeDriveSliceProbe, driveSliceHeaders, DRIVE_TRANSFER_VERSION, driveUploadFields, driveDownloadFields,
   validateDriveDownload } from '../domain/DriveTransferProtocol';
 import type { DriveUploadRequest, DriveDownloadRequest, DriveSliceProbe, DriveUploadResult } from '../domain/DriveTransferProtocol';
-import { DRIVE_THUMBNAIL_MAX_BYTES, driveThumbnailFields, validateDriveThumbnail } from '../domain/DriveThumbnailProtocol';
+import { DRIVE_THUMBNAIL_MAX_BYTES, driveThumbnailFields, driveFileTypeIconPath, validateDriveThumbnail } from '../domain/DriveThumbnailProtocol';
 import type { DriveThumbnailRequest } from '../domain/DriveThumbnailProtocol';
 import { NasTransferCancellation, validateNasDownloadTarget, validateNasUploadSource } from './NasTransferTransport';
 import type { NasBinaryReply, NasDownloadReceipt, NasDownloadResult, NasDownloadTarget, NasTransferControl,
@@ -885,6 +885,25 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     validateNasDownloadTarget(target);
     const request = this.driveTransferRequest('get_thumbnail', driveThumbnailFields(input));
     return this.downloadDriveBinary(request, target, control, validateDriveThumbnail);
+  }
+
+  /** 静态类型图标复用当前连接的证书策略与取消流程，仅资源不存在时改取通用图标。 */
+  async fileTypeIconDrive(filename: string, directory: string,
+    control: NasTransferControl): Promise<NasDownloadResult> {
+    this.requireSession('FileStation');
+    const target: NasDownloadTarget = { directory, maximumBytes: DRIVE_THUMBNAIL_MAX_BYTES };
+    validateNasDownloadTarget(target);
+    const path = driveFileTypeIconPath(filename);
+    const fallback = driveFileTypeIconPath('');
+    const request: NasTransferRequest = { address: this.origin + path, method: 'GET', fields: [],
+      session: { sid: '', synoToken: '' } };
+    try { return await this.downloadDriveBinary(request, target, control, validateDriveThumbnail); }
+    catch (error) {
+      if (!(error instanceof NasFailure) || error.kind !== NasErrorKind.Http || error.code !== 404 || path === fallback) {
+        throw error;
+      }
+      return this.downloadDriveBinary({ ...request, address: this.origin + fallback }, target, control, validateDriveThumbnail);
+    }
   }
 
   /** 下载与缩略图共用取消、代际检查和收据清理，仅响应校验按业务区分。 */

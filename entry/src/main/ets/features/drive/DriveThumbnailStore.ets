@@ -4,10 +4,12 @@ import { image } from '@kit.ImageKit';
 import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { NasErrorKind, NasFailure } from '../../core/domain/DsmProtocol';
+import { DriveEntryKind } from '../../core/domain/DriveProtocol';
 import type { DriveEntry } from '../../core/domain/DriveProtocol';
-import { canLoadDriveThumbnail } from '../../core/domain/DriveThumbnailProtocol';
+import { canLoadDriveThumbnail, driveFileTypeIconPath } from '../../core/domain/DriveThumbnailProtocol';
 import { NasConnector } from '../../core/network/NasConnector';
 import { NasTransferCancellation } from '../../core/network/NasTransferTransport';
+import type { NasDownloadResult } from '../../core/network/NasTransferTransport';
 
 interface DriveThumbnailCache { key: string; directory: string; path: string; bytes: number; }
 interface DriveThumbnailTask {
@@ -61,14 +63,16 @@ export class DriveThumbnailStore {
 
   setVisible(entry: DriveEntry, visible: boolean): void {
     const key = this.key(entry);
+    const visibleKey = JSON.stringify(entry);
     if (!visible) {
-      this.visible.delete(key);
+      this.visible.delete(visibleKey);
+      if (this.isVisible(key)) { return; }
       this.pending = this.pending.filter((task: DriveThumbnailTask): boolean => task.key !== key);
       this.active.get(key)?.cancellation.cancel();
       return;
     }
-    if (!canLoadDriveThumbnail(entry)) { return; }
-    this.visible.set(key, entry);
+    if (entry.kind !== DriveEntryKind.File || !entry.capabilities.canRead) { return; }
+    this.visible.set(visibleKey, entry);
     const index = this.cache.findIndex((row: DriveThumbnailCache): boolean => row.key === key);
     if (index >= 0) { this.cache.push(this.cache.splice(index, 1)[0]); return; }
     this.enqueue(entry);
@@ -119,7 +123,7 @@ export class DriveThumbnailStore {
         if (task.ticket !== this.generation) { return; }
         this.active.delete(task.key);
         // 取消期间重新显示的行应能够重新读取；失败则等用户刷新。
-        if (task.cancellation.cancelled && this.visible.has(task.key)) { this.enqueue(task.entry); }
+        if (task.cancellation.cancelled && this.isVisible(task.key)) { this.enqueue(task.entry); }
         this.drain();
       });
     }
@@ -131,8 +135,19 @@ export class DriveThumbnailStore {
     try {
       if (connector === undefined) { return; }
       directory = this.privateDirectory();
-      const result = await connector.thumbnailDrive({ fileId: task.entry.fileId, versionId: task.entry.versionId },
-        directory, { cancellation: task.cancellation });
+      let result: NasDownloadResult;
+      if (canLoadDriveThumbnail(task.entry)) {
+        try {
+          result = await connector.thumbnailDrive({ fileId: task.entry.fileId, versionId: task.entry.versionId },
+            directory, { cancellation: task.cancellation });
+        } catch (error) {
+          if (!(error instanceof NasFailure) || !(error.kind === NasErrorKind.Http && error.code === 404 ||
+            error.kind === NasErrorKind.Unsupported)) { throw error as Error; }
+          result = await connector.fileTypeIconDrive(task.entry.name, directory, { cancellation: task.cancellation });
+        }
+      } else {
+        result = await connector.fileTypeIconDrive(task.entry.name, directory, { cancellation: task.cancellation });
+      }
       this.check(task);
       await this.validateImage(result.path);
       this.check(task);
@@ -143,7 +158,7 @@ export class DriveThumbnailStore {
     } catch (error) {
       if (task.ticket !== this.generation || task.cancellation.cancelled) { return; }
       this.failed.add(task.key);
-      this.errorText = '部分文件的缩略图未能读取，可刷新后重试。';
+      this.errorText = '部分文件图片加载失败，请刷新重试。';
       hilog.error(0x0000, 'NasDrive', 'operation=thumbnail kind=%{public}d', error instanceof NasFailure ? error.kind : -1);
       if (error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) {
         const onSessionFailure = this.onSessionFailure;
@@ -186,7 +201,7 @@ export class DriveThumbnailStore {
   private evict(): void {
     let bytes = this.cache.reduce((sum: number, row: DriveThumbnailCache): number => sum + row.bytes, 0);
     while (this.cache.length > 60 || bytes > 24 * 1024 * 1024) {
-      const unpinned = this.cache.findIndex((row: DriveThumbnailCache): boolean => !this.visible.has(row.key));
+      const unpinned = this.cache.findIndex((row: DriveThumbnailCache): boolean => !this.isVisible(row.key));
       const row = this.cache.splice(unpinned >= 0 ? unpinned : 0, 1)[0];
       if (row === undefined) { return; }
       bytes -= row.bytes;
@@ -201,7 +216,15 @@ export class DriveThumbnailStore {
   }
 
   private key(entry: DriveEntry): string {
+    if (entry.kind === DriveEntryKind.File && !canLoadDriveThumbnail(entry)) {
+      return driveFileTypeIconPath(entry.name);
+    }
     return JSON.stringify([entry.fileId, entry.versionId, entry.modifiedAt, entry.sizeBytes]);
+  }
+
+  /** 同类型图标由多行共用，某一行离屏不能取消其他可见行的请求。 */
+  private isVisible(key: string): boolean {
+    return Array.from(this.visible.values()).some((entry: DriveEntry): boolean => this.key(entry) === key);
   }
 
   private remove(directory: string): void {

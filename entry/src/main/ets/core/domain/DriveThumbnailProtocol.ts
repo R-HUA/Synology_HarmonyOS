@@ -8,6 +8,14 @@ import type { NasBinaryReply } from '../network/NasTransferTransport';
 export const DRIVE_THUMBNAIL_MAX_BYTES = 4 * 1024 * 1024;
 export interface DriveThumbnailRequest { fileId: string; versionId?: string; }
 
+/** 文件类型资源沿用已核对的 Drive 静态路径；扩展名只允许单个安全路径段。 */
+export function driveFileTypeIconPath(filename: string): string {
+  const dot = filename.lastIndexOf('.');
+  const extension = dot > 0 ? filename.slice(dot + 1).toLowerCase() : '';
+  const type = /^[a-z0-9]{1,16}$/.test(extension) ? extension : 'xxx';
+  return '/webman/3rdparty/SynologyDrive-Drive/images/_Asset/FileType/128/' + type + '.png';
+}
+
 /** 目标 Drive 网页列表使用 small；版本缺失时与网页一样省略，不填猜测值。 */
 export function driveThumbnailFields(input: DriveThumbnailRequest): NasFormField[] {
   const fields: NasFormField[] = [

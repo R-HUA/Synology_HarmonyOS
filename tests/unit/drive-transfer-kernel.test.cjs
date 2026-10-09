@@ -39,7 +39,7 @@ async function fixture(options = {}) {
         return ok({ tmp_newly_created: true, uploaded_size: uploadSource.bytes });
       },
       async download(request, target, downloadControl, validate) {
-        const reply = options.binary || { status: 200, contentType: 'application/octet-stream',
+        const reply = (typeof options.binary === 'function' ? options.binary(request) : options.binary) || { status: 200, contentType: 'application/octet-stream',
           contentLength: String(bytes), contentDisposition: '', bytes, prefix: new Uint8Array(0), prefixText: '' };
         const context = { request, target, control: downloadControl, validate, reply, connector };
         calls.push(context);
@@ -92,6 +92,40 @@ test('thumbnail discards a result when the connection closes after validation', 
     onDownload: ({ connector }) => connector.close() });
   await assert.rejects(f.connector.thumbnailDrive({ fileId: '1' }, '/cache/thumbnail-2', control()), isKind(K.Cancelled));
   assert.equal(f.calls[0].discarded, true);
+});
+
+test('type icon uses the connected origin without credentials and falls back only for a missing type asset', async () => {
+  const prefix = new Uint8Array([137,80,78,71,13,10,26,10,0]);
+  const f = await fixture({ binary: request => ({ status: request.address.endsWith('/txt.png') ? 404 : 200,
+    contentType: 'image/png', contentLength: '9', contentDisposition: '', bytes: 9, prefix, prefixText: '' }) });
+  await f.connector.fileTypeIconDrive('报告.TXT', '/cache/icon-1', control());
+  assert.deepEqual(f.calls.map(c => c.request.address), [
+    'https://nas.example.test:5001/webman/3rdparty/SynologyDrive-Drive/images/_Asset/FileType/128/txt.png',
+    'https://nas.example.test:5001/webman/3rdparty/SynologyDrive-Drive/images/_Asset/FileType/128/xxx.png'
+  ]);
+  for (const call of f.calls) {
+    assert.deepEqual(call.request.session, { sid: '', synoToken: '' });
+    assert.deepEqual(call.request.fields, []);
+    assert.equal(call.request.method, 'GET');
+  }
+});
+
+test('icon server failures and missing default assets propagate without repeated fallback requests', async () => {
+  for (const [name, status] of [['report.txt', 503], ['README', 404]]) {
+    const f = await fixture({ binary: { status, contentType: 'text/html', contentLength: '',
+      contentDisposition: '', bytes: 0, prefix: new Uint8Array(0), prefixText: '' } });
+    await assert.rejects(f.connector.fileTypeIconDrive(name, '/cache/icon-2', control()), e =>
+      e instanceof NasFailure && e.kind === K.Http && e.code === status);
+    assert.equal(f.calls.length, 1);
+  }
+});
+
+test('icon download discards a late result after switching the connection', async () => {
+  const prefix = new Uint8Array([137,80,78,71,13,10,26,10,0]);
+  const f = await fixture({ binary: { status: 200, contentType: 'image/png', contentLength: '9',
+    contentDisposition: '', bytes: 9, prefix, prefixText: '' }, onDownload: ({ connector }) => connector.close() });
+  await assert.rejects(f.connector.fileTypeIconDrive('report.txt', '/cache/icon-3', control()), isKind(K.Cancelled));
+  assert.equal(f.calls[0].discarded, true); assert.equal(f.calls.length, 1);
 });
 
 test('Drive upload is an authenticated POST the kernel builds, and the caller never holds a credential', async () => {

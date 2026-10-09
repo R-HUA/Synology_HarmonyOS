@@ -57,8 +57,10 @@ export struct WorkbenchSectionTitle {
 
 @ComponentV2
 export struct WorkbenchInfoRow {
-  @Param label: string = '';
-  @Param value: string = '';
+  @Param label: ResourceStr = '';
+  @Param value: ResourceStr = '';
+  @Param labelWidth: number | undefined = undefined;
+  @Param valueAlign: TextAlign = TextAlign.End;
   @Param minHeight: number = WorkbenchMetrics.infoRowHeight;
   /** 取值默认可长按复制；放进「整卡可点」的卡片时要关掉，否则这份文本会吞掉点击、卡片点不开。 */
   @Param copyable: boolean = true;
@@ -68,8 +70,9 @@ export struct WorkbenchInfoRow {
     // 中文看起来“靠上”且行间留白不均；Row 的 VerticalAlign.Center 才能保证文字垂直居中。
     Row() {
       Text(this.label).fontSize(14).fontColor($r('sys.color.font_secondary'))
-        .margin({ right: 16 }).flexShrink(0)
-      Text(this.value).fontSize(16).fontColor($r('sys.color.font_primary')).textAlign(TextAlign.End)
+        .width(this.labelWidth).margin({ right: 16 }).flexShrink(0)
+      Text(this.value).fontSize(16).fontColor($r('sys.color.font_primary')).textAlign(this.valueAlign)
+        .wordBreak(this.labelWidth === undefined ? WordBreak.NORMAL : WordBreak.BREAK_ALL)
         .layoutWeight(1).copyOption(this.copyable ? CopyOptions.InApp : CopyOptions.None)
     }.width('100%').constraintSize({ minHeight: this.minHeight })
       .alignItems(VerticalAlign.Center)
@@ -172,7 +175,13 @@ export struct WorkbenchEntryRow {
   @Param iconColor: ResourceColor = $r('sys.color.font_secondary');
   @Param available: boolean = true;
   @Param thumbnail: string = '';
+  @Param menu: MenuElement[] = [];
+  @Param menuAvailable: boolean = true;
+  @Param actionLabel: string = '';
+  @Param actionAvailable: boolean = true;
   @Event onOpen: () => void = (): void => {};
+  @Event onAction: () => void = (): void => {};
+  @Local private pressed: boolean = false;
 
   build() {
     Column() {
@@ -192,11 +201,28 @@ export struct WorkbenchEntryRow {
               Text(this.subtitle).fontSize(14).fontColor($r('sys.color.font_secondary'))
             }.layoutWeight(1).alignItems(HorizontalAlign.Start)
           }.width('100%').padding({ left: 16, top: 10, bottom: 10, right: 16 })
-        }.width('100%').constraintSize({ minHeight: WorkbenchMetrics.rowMinHeight })
-          .type(ButtonType.Normal).backgroundColor(Color.Transparent).enabled(this.available)
+        }.layoutWeight(1).constraintSize({ minHeight: WorkbenchMetrics.rowMinHeight })
+          .type(ButtonType.Normal).padding(0).backgroundColor(Color.Transparent).stateEffect(false).enabled(this.available)
           .onClick(this.onOpen).accessibilityText(this.title)
-      }.width('100%')
-      Divider().color($r('app.color.workbench_divider')).margin({ left: 72, right: 16 })
+        if (this.menu.length > 0) {
+          Button() {
+            SymbolGlyph($r('sys.symbol.ellipsis_circle')).fontSize(32)
+              .renderingStrategy(SymbolRenderingStrategy.MULTIPLE_COLOR)
+              .fontColor([$r('sys.color.icon_primary'), Color.Transparent]).accessibilityLevel('no')
+          }.width(48).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).type(ButtonType.Normal).padding(0)
+            .margin({ right: 8 }).backgroundColor(Color.Transparent).stateEffect(false).enabled(this.menuAvailable)
+            .bindMenu(this.menu).accessibilityText(this.title + '，操作菜单')
+        }
+        if (this.actionLabel.length > 0) {
+          Button(this.actionLabel).buttonStyle(ButtonStyleMode.TEXTUAL)
+            .constraintSize({ minHeight: WorkbenchMetrics.touchSize }).margin({ right: 8 })
+            .backgroundColor(Color.Transparent).stateEffect(false).enabled(this.actionAvailable)
+            .onClick(this.onAction).accessibilityText(this.actionLabel + '“' + this.title + '”')
+        }
+      }.width('100%').backgroundColor(this.pressed ? $r('app.color.workbench_pressed') : Color.Transparent)
+        // 点击仍由各按钮处理，按压底色由整行共享，避免图标与菜单区域被截断。
+        .onTouch((event: TouchEvent): void => { this.pressed = event.type === TouchType.Down; })
+      Divider().color($r('app.color.workbench_divider')).margin({ left: 16, right: 16 })
     }.width('100%').backgroundColor($r('app.color.workbench_surface'))
   }
 }

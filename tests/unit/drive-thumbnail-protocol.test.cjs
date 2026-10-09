@@ -8,6 +8,15 @@ const reply = over => ({ status: 200, contentType: 'image/png', contentLength: S
   contentDisposition: '', bytes: png.length, prefix: png, prefixText: '', ...over });
 const isKind = kind => e => e instanceof NasFailure && e.kind === kind;
 
+test('file type assets use the observed 128 path and restrict extensions to a single safe segment', () => {
+  const base = '/webman/3rdparty/SynologyDrive-Drive/images/_Asset/FileType/128/';
+  assert.equal(p.driveFileTypeIconPath('报告.TXT'), base + 'txt.png');
+  assert.equal(p.driveFileTypeIconPath('archive.tar.gz'), base + 'gz.png');
+  for (const name of ['README', '.hidden', 'report.', 'a.../secret', 'a.txt?token=1', 'a.汉字']) {
+    assert.equal(p.driveFileTypeIconPath(name), base + 'xxx.png');
+  }
+});
+
 test('thumbnail request matches the target web list, preserves long IDs and omits absent revisions', () => {
   assert.deepEqual(p.driveThumbnailFields({ fileId: '976700457026108129', versionId: '976700457026108130' }), [
     { name: 'path', content: '"id:976700457026108129"' }, { name: 'size', content: '"small"' },

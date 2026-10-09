@@ -1145,7 +1145,7 @@ struct Index {
         }.width('100%').alignItems(VerticalAlign.Center)
       }.layoutWeight(1).alignItems(HorizontalAlign.Start)
       this.deviceArtwork()
-    }.width('100%').padding({ left: 8, top: 0, bottom: 12 }).enabled(!this.model.busy)
+    }.width('100%').padding({ left: 8, top: 4, bottom: 12 }).enabled(!this.model.busy)
       .onClick((): void => { this.showDeviceInfo(); })
       .accessibilityText(this.routeLabel() + '，' + this.model.deviceTitle + '，查看设备信息')
   }

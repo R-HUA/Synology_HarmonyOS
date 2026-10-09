@@ -17,6 +17,10 @@
       "value": "#F6F7F9"
     },
     {
+      "name": "workbench_pressed",
+      "value": "#14000000"
+    },
+    {
       "name": "workbench_accent_surface",
       "value": "#E9F1FF"
     },
