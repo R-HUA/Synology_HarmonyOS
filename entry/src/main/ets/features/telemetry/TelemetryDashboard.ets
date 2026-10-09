@@ -100,8 +100,10 @@ export struct NasTelemetrySummary {
           TelemetrySmallTile({ title: '硬盘', firstLabel: '读',
             firstValue: this.rateText(this.monitor.utilization.data?.diskReadBytesPerSecond), secondLabel: '写',
             secondValue: this.rateText(this.monitor.utilization.data?.diskWriteBytesPerSecond) }).layoutWeight(1)
-          TelemetrySmallTile({ title: '温度', firstLabel: '系统',
-            firstValue: this.temperatureText(), secondLabel: '', secondValue: '' }).layoutWeight(1)
+          if (!this.monitor.system.permissionDenied) {
+            TelemetrySmallTile({ title: '温度', firstLabel: '系统',
+              firstValue: this.temperatureText(), secondLabel: '', secondValue: '' }).layoutWeight(1)
+          }
         }.width('100%').alignItems(VerticalAlign.Top)
         if (this.monitor.utilization.data === undefined) {
           Text(this.monitor.utilization.notice).fontSize(14)
@@ -299,11 +301,13 @@ export struct NasTelemetryDashboard {
   build() {
     Scroll(this.scroller) {
       Column({ space: 8 }) {
-        this.systemCard()
-        this.utilizationCard()
-        this.networkCard()
-        this.diskCard()
-        this.storageCard()
+        if (!this.monitor.system.permissionDenied) { this.systemCard() }
+        if (!this.monitor.utilization.permissionDenied) {
+          this.utilizationCard()
+          this.networkCard()
+          this.diskCard()
+        }
+        if (!this.monitor.storage.permissionDenied) { this.storageCard() }
       }.width('100%').constraintSize({ maxWidth: 840 })
         // 滚动区本身已延伸到屏幕下沿（见下方 ignoreLayoutSafeArea），末行仍需按底部安全区让位，
         // 否则会贴到屏幕圆角弧线上被裁切；+16 与项目「无悬浮页签页面」的底部让位口径一致。

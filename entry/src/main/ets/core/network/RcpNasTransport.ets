@@ -178,7 +178,7 @@ export class RcpNasTransport implements NasTransport {
     if (error instanceof NasFailure) { return error; }
     const code = (error as BusinessError).code;
     if ([1007900035, 1007900058, 1007900059, 1007900060, 1007900077, 1007900090].includes(code)) {
-      return new NasFailure(NasErrorKind.Tls, '服务器证书校验未通过。请检查域名、系统时间与证书链；兼容连接方式须在连接地址中另行确认。', code);
+      return new NasFailure(NasErrorKind.Tls, '服务器证书校验未通过。请检查域名、系统时间与证书链，或在登录页选择忽略证书校验。', code);
     }
     return new NasFailure(NasErrorKind.Network, '连接 NAS 失败，请检查网络与服务器地址。', code);
   }

@@ -33,7 +33,7 @@ export struct FileStationPage {
         ForEach(workbenchBreadcrumbs(this.model.directory), (crumb: WorkbenchBreadcrumb): void => {
           Button(crumb.title).type(ButtonType.Normal).constraintSize({ minHeight: 40 }).fontSize(14)
             .padding({ left: 0, right: 0, top: 8, bottom: 8 }).backgroundColor(Color.Transparent)
-            .fontColor(crumb.path === this.model.directory ? $r('sys.color.font_primary') : $r('sys.color.font_emphasize'))
+            .fontColor(crumb.path === this.model.directory ? $r('sys.color.font_primary') : $r('sys.color.font_secondary'))
             .enabled(!this.model.busy && crumb.path !== this.model.directory)
             .onClick((): void => { this.onNavigateBreadcrumb(crumb.path); })
           if (crumb.path !== this.model.directory) {
@@ -94,9 +94,27 @@ export struct FileStationPage {
     return this.pickerMode.length > 0 ? this.model.entries.filter((entry: NasFileEntry): boolean => entry.isDirectory) : this.model.entries;
   }
 
-  private fileCountText(): string {
-    return this.model.total === 0 ? '0 项' : (this.model.pageOffset + 1).toString() + '–' +
-      (this.model.pageOffset + this.model.entries.length).toString() + ' / ' + this.model.total.toString() + ' 项';
+  private entryMenu(entry: NasFileEntry): MenuElement[] {
+    const menu: MenuElement[] = [{ value: '查看详情', action: (): void => { this.onOpenForm('detail', entry); } }];
+    if (this.model.supports('SYNO.FileStation.Sharing') && this.model.extensions.canWrite('fileSharing')) {
+      menu.push({ value: '创建分享链接', action: (): void => { this.onOpenForm('share', entry); } });
+    }
+    if (!entry.isDirectory && this.model.supports('SYNO.FileStation.Download') && this.model.queue.ready && !this.model.queue.busy) {
+      menu.push({ value: '下载到本机', action: (): void => { this.onOpenForm('download', entry); } });
+    }
+    if (this.model.directory.length > 0) {
+      if (this.model.supports('SYNO.FileStation.CopyMove')) {
+        menu.push({ value: '复制到…', action: (): void => { this.onOpenForm('copy', entry); } });
+        menu.push({ value: '移动到…', action: (): void => { this.onOpenForm('move', entry); } });
+      }
+      if (this.model.supports('SYNO.FileStation.Rename')) {
+        menu.push({ value: '重命名', action: (): void => { this.onOpenForm('rename', entry); } });
+      }
+      if (this.model.supports('SYNO.FileStation.Delete')) {
+        menu.push({ value: '删除', action: (): void => { this.onOpenForm('delete', entry); } });
+      }
+    }
+    return menu;
   }
 
   @Builder
@@ -117,7 +135,7 @@ export struct FileStationPage {
             this.pickerBar()
             WorkbenchNotice({ text: this.errorText, warning: true })
             if (this.errorText.length === 0) { WorkbenchNotice({ text: this.model.actionNotice }) }
-            if (this.model.busy) {
+            if (this.model.busy && this.model.entries.length === 0) {
               Row({ space: 12 }) {
                 LoadingProgress().width(24).height(24)
                 Text('正在处理…').fontSize(14).fontColor($r('sys.color.font_secondary'))
@@ -162,7 +180,7 @@ export struct FileStationPage {
                       .accessibilityLevel('no')
                   }
                     .width(48).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).type(ButtonType.Normal).padding(0).backgroundColor(Color.Transparent)
-                    .enabled(!this.model.busy).onClick((): void => { this.onOpenForm('actions', entry); })
+                    .enabled(!this.model.busy).bindMenu(this.entryMenu(entry))
                     .accessibilityText(entry.name + '，更多操作')
                 }
               }.width('100%').constraintSize({ minHeight: 64 }).padding({ left: 16, right: 8 })
@@ -170,20 +188,19 @@ export struct FileStationPage {
             }.width('100%').backgroundColor($r('app.color.workbench_surface'))
           }
         }, (entry: NasFileEntry): string => this.model.address + ':' + this.model.account + ':' + entry.path)
-        if (this.model.pageOffset > 0 || this.model.pageOffset + this.model.entries.length < this.model.total) {
+        if (this.model.entries.length > 0) {
           ListItem() {
             Row({ space: 8 }) {
-              Button('上一页').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
-                .enabled(!this.model.busy && this.model.pageOffset > 0).onClick((): void => { this.model.previousPage(); })
-              Text(this.fileCountText()).fontSize(12).fontColor($r('sys.color.font_secondary'))
+              if (this.model.busy) { LoadingProgress().width(24).height(24) }
+              Text(this.model.entries.length.toString() + ' / ' + this.model.total.toString() + ' 项').fontSize(12).fontColor($r('sys.color.font_secondary'))
                 .layoutWeight(1).textAlign(TextAlign.Center)
-              Button('下一页').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
-                .enabled(!this.model.busy && this.model.pageOffset + this.model.entries.length < this.model.total)
-                .onClick((): void => { this.model.nextPage(); })
             }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 12 })
           }
         }
       }.width('100%').height('100%').scrollBar(BarState.Auto).contentEndOffset(this.bottomInset)
+        .onReachEnd((): void => {
+          if (this.model.directoryErrorText.length === 0 && !this.pickerBusy) { this.model.nextPage(); }
+        })
     }.width('100%').height('100%').alignItems(HorizontalAlign.Start)
       .backgroundColor($r('app.color.workbench_surface'))
   }

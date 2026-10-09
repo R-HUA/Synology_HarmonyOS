@@ -74,6 +74,7 @@ function fixture(options = {}) {
     async readTransferPrefix(file) { return { text: files.get(file).bytes.toString(), wholeFile: true }; }
   };
   const mocks = {
+    '@kit.PreviewKit': {},
     '@kit.AbilityKit': {}, '@kit.BasicServicesKit': { request: { agent: { State, Action: { UPLOAD: 1, DOWNLOAD: 0 }, Mode: { BACKGROUND: 0 } } } },
     '@kit.CoreFileKit': { fileIo, fileUri: { FileUri: class { name = '记录.txt'; } }, picker: {
       DocumentSelectOptions: class {}, DocumentSaveOptions: class {}, DocumentViewPicker: class { async select() { return ['file://selected']; } async save() { return ['file://export']; } } } },

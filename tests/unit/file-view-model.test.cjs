@@ -138,6 +138,28 @@ test('Drive write permission requires an idle authenticated connection with the 
   }
 });
 
+test('File Station appends short pages once, preserves a failed page and resets on refresh', async () => {
+  const { model, connector } = await fixture();
+  const offsets = []; let reject = false; let release;
+  connector.list = async (_path, offset) => {
+    offsets.push(offset);
+    if (offset === 1 && release === undefined) await new Promise(resolve => { release = resolve; });
+    if (reject) throw failure(K.Network);
+    return { entries: [{ name: String(offset), path: '/share/' + offset, isDirectory: false }], offset, total: 3 };
+  };
+  await model.refresh();
+  const pending = model.nextPage(); await model.nextPage();
+  assert.deepEqual(offsets, [0, 1]); release(); await pending;
+  assert.deepEqual(Array.from(model.entries, item => item.path), ['/share/0', '/share/1']);
+  reject = true; await model.nextPage();
+  assert.equal(model.entries.length, 2);
+  reject = false; await model.nextPage();
+  assert.deepEqual(offsets, [0, 1, 2, 2]);
+  assert.equal(model.filesMore, false);
+  await model.nextPage(); assert.equal(offsets.length, 4);
+  await model.refresh(); assert.equal(model.entries.length, 1); assert.equal(model.filesMore, true);
+});
+
 test('ambiguous File Station start is persisted before sending and cannot be sent twice', async () => {
   const { model, connector, calls, saved } = await fixture();
   let sent = 0;

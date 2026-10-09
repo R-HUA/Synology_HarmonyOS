@@ -37,6 +37,10 @@ function fixture(options = {}) {
     }
   }
   const mocks = {
+    '@kit.PreviewKit': { filePreview: {
+      async canPreview(_context, uri) { events.push(['can-preview', uri]); return options.previewSupported !== false; },
+      async openPreview(_context, info) { events.push(['preview', clone(info)]); if (options.previewFailure) throw options.previewFailure; }
+    } },
     '@kit.AbilityKit': {}, '@kit.BasicServicesKit': {},
     '@kit.PerformanceAnalysisKit': { hilog: { info() {}, error() {} } },
     '@kit.ArkTS': { util: { generateRandomUUID: () => `11111111-1111-4111-8111-${String(counter++).padStart(12, '0')}` } },
@@ -45,7 +49,7 @@ function fixture(options = {}) {
         async select(option) { events.push(['select', option.maxSelectNumber]); return options.select ? options.select() : ['file://selected']; }
         async save(option) { events.push(['save-picker', option.newFileNames]); return options.saveUris || ['file://export']; }
       } },
-      fileUri: { FileUri: class { name = options.filename || '记录.txt'; } },
+      fileUri: { FileUri: class { name = options.filename || '记录.txt'; }, getUriFromPath: path => 'file://' + path },
       fileIo: { OpenMode: { READ_ONLY: 1 }, async open() { return { fd: 1 }; },
         async stat() { return { isFile: () => true, size: options.bytes ?? 3, mtime: 1720000000 }; },
         async rmdir(dir) { events.push(['rmdir', dir]); } }
@@ -71,6 +75,7 @@ function fixture(options = {}) {
   };
   const mod = { exports: {} };
   vm.runInNewContext(output.outputText, { module: mod, exports: mod.exports,
+    canIUse: () => true,
     require(id) { assert.ok(Object.hasOwn(mocks, id), id); return mocks[id]; } });
   const model = new mod.exports.DriveTransferModel();
   const kernel = {
@@ -101,6 +106,33 @@ test('pending writes block uploads while unrelated downloads remain available', 
   options.canStart = true; await f.model.prepareUpload(folder());
   assert.ok(f.model.draft); options.canStart = false; await f.model.upload();
   assert.equal(f.events.some(e => e[0] === 'upload'), false); assert.equal(f.model.items.length, 1);
+});
+
+test('file preview starts only after completed download and provides a named application URI', async () => {
+  const f = fixture(); await f.attach('alice');
+  assert.equal(f.model.canPreview(file(3)), true);
+  assert.equal(f.model.canPreview({ ...file(3), name: '安装包.apk' }), false);
+  await f.model.download(file(3), true);
+  assert.equal(f.model.items[0].state, 'completed');
+  assert.equal(f.model.items[0].executor, 'foreground');
+  const preview = f.events.find(event => event[0] === 'preview');
+  assert.ok(preview); assert.match(preview[1].uri, /记录\.txt$/);
+  assert.equal(preview[1].title, '记录.txt');
+  const saved = f.events.findIndex(event => event[0] === 'save' && event[1][0]?.state === 'completed');
+  assert.ok(saved < f.events.indexOf(preview));
+});
+
+test('a cancelled file download never launches preview and unsupported local preview reports failure', async () => {
+  const cancelled = fixture({ download: async (_request, _target, control) => { control.cancellation.cancel(); } });
+  await cancelled.attach('alice'); await cancelled.model.download(file(3), true);
+  assert.equal(cancelled.model.items[0].state, 'cancelled');
+  assert.equal(cancelled.events.some(event => event[0] === 'preview'), false);
+  assert.ok(cancelled.model.errorText);
+  const unsupported = fixture({ previewSupported: false });
+  await unsupported.attach('alice'); await unsupported.model.download(file(3), true);
+  assert.equal(unsupported.model.items[0].state, 'completed');
+  assert.match(unsupported.model.errorText, /不支持预览/);
+  assert.equal(unsupported.events.some(event => event[0] === 'preview'), false);
 });
 
 test('choosing a file never uploads; confirmation sends selected conflict policy after private copy and running snapshot', async () => {

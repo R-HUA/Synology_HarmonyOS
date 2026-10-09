@@ -41,7 +41,7 @@ function page() {
   const calls = [], paths = [];
   const state = {
     calls, module: 'drive', activeTab: 0, rootTab: 1, driveTabId: 'mydrive', photoTabId: 'photos',
-    driveMoreView: '', driveSearchVisible: false, photoMoreShared: false, photosInitialized: true,
+    driveMoreView: '', photoMoreShared: false, photosInitialized: true,
     drivePinned: [], photoPinned: [], showPhotoShared: true, pickerMode: '', bootPending: false,
     sheetVisible: false, formSubmitting: false, pendingEntry: undefined, pageActive: true,
     photoSpace: P.Personal, albumSpace: P.Personal, sharedSpace: P.Shared,
@@ -57,6 +57,7 @@ function page() {
         canGoUp() { return this.trail.length > 1 || this.view === V.Search; },
         goUp() { calls.push('drive-up'); this.trail = [{}]; },
         async exitSearch() { calls.push('exit-search'); this.view = V.MyDrive; },
+        beginSearch() { calls.push('begin-search'); },
         selectView(view) { calls.push(['view', view]); this.view = view; this.loaded = true; },
         openFolder() { calls.push('drive-folder'); } },
       photoLibrary: { busy: false, space: P.Personal, section: 'timeline', selectedAlbum: undefined,
@@ -82,8 +83,9 @@ test('Drive back traverses folders, ends search, returns more and restores the e
   const state = page(), back = method(index, 'onBackPress');
   state.model.drive.trail.push({}); back.call(state);
   assert.deepEqual(state.calls, ['drive-up']); state.calls.length = 0;
-  state.model.drive.view = V.Search; state.driveSearchVisible = true; back.call(state); await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(state.calls, ['exit-search']); assert.equal(state.driveSearchVisible, false);
+  state.model.drive.view = V.Search; state.navStack.pushPathByName('drive-search'); state.calls.length = 0;
+  back.call(state); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(state.calls, ['exit-search', 'pop']);
   state.calls.length = 0; state.driveTabId = 'more'; state.driveMoreView = V.Trash;
   back.call(state); assert.equal(state.driveMoreView, ''); assert.equal(state.module, 'drive');
   state.model.drive.trail.push({}); back.call(state);
@@ -124,10 +126,10 @@ test('backup confirmation opens global transfers only after the selected sources
   assert.equal(state.pickerMode, ''); assert.equal(state.module, 'root'); assert.equal(state.activeTab, 2); assert.equal(state.taskSection, 'transfers');
 });
 test('authentication loss resets module, search, picker and root selection', () => {
-  const state = page(); state.model.authenticated = false; state.driveSearchVisible = true; state.pickerMode = 'backup';
+  const state = page(); state.model.authenticated = false; state.navStack.pushPathByName('drive-search'); state.pickerMode = 'backup';
   method(index, 'authenticationChanged').call(state);
   assert.equal(state.module, 'root'); assert.equal(state.activeTab, 0); assert.equal(state.rootTab, 0);
-  assert.equal(state.driveSearchVisible, false); assert.equal(state.pickerMode, '');
+  assert.equal(state.navStack.size(), 0); assert.equal(state.pickerMode, '');
 });
 test('module entry captures the root and only loads a mismatched Drive view', () => {
   const state = page(); state.module = 'root'; state.activeTab = 3; state.enterModule('drive');
@@ -221,17 +223,22 @@ test('unreadable entries cannot enter through either UI or model', async () => {
   assert.match(drivePage, /available: !this\.model\.busy && !this\.model\.drive\.busy && entry\.capabilities\.canRead/);
 });
 
-test('Drive file action downloads only readable permitted live files and opens the Drive task section', () => {
+test('Drive file action prepares supported files for preview without navigating to transfers', () => {
   const state = page();
-  state.model.driveTransfers = { download() { state.calls.push('drive-download'); } };
+  state.model.driveTransfers = { canPreview: () => true, download(_entry, preview) { state.calls.push(['drive-download', preview]); } };
   state.openDriveTransfers = () => state.calls.push('drive-tasks');
   const open = method(drivePage, 'openDriveEntry');
   const file = { name: '记录.txt', kind: 'file', capabilities: { canRead: true, canDownload: true } };
   open.call(state, file);
-  assert.deepEqual(state.calls, ['drive-download', 'drive-tasks']);
+  assert.deepEqual(state.calls, [['drive-download', true]]);
   state.calls.length = 0;
   state.model.drive.view = 'trash';
   open.call(state, file);
+  assert.deepEqual(state.calls, []);
+  state.model.driveTransfers.canPreview = () => false;
+  state.model.drive.view = 'mydrive';
+  open.call(state, { ...file, name: '安装包.apk' });
+  assert.equal(state.detailVisible, true);
   assert.deepEqual(state.calls, []);
   state.model.drive.view = 'mydrive';
   open.call(state, { ...file, capabilities: { canRead: true, canDownload: false } });
@@ -285,7 +292,7 @@ test('failed Drive view switches cannot navigate or search the hidden old folder
   state.module = 'drive'; state.driveTabId = 'more'; state.driveMoreView = V.Trash; state.calls.length = 0;
   method(index, 'onBackPress').call(state); assert.equal(state.driveMoreView, ''); assert.deepEqual(state.calls, []);
   state.driveTabId = 'mydrive'; state.model.drive.view = V.TeamFolders;
-  method(index, 'showDriveSearch').call(state); assert.equal(state.driveSearchVisible, false);
+  method(index, 'showDriveSearch').call(state); assert.equal(state.navStack.size(), 0);
 });
 
 

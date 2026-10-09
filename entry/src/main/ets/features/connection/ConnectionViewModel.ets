@@ -49,6 +49,7 @@ export class ConnectionViewModel {
   @Trace directory: string = '';
   @Trace pageOffset: number = 0;
   @Trace total: number = 0;
+  @Trace filesMore: boolean = false;
   @Trace fileSort: string = 'name';
   @Trace sortDescending: boolean = false;
   @Trace actionNotice: string = '';
@@ -90,8 +91,11 @@ export class ConnectionViewModel {
   private generation: number = 0;
   private connectedOrigin: string = '';
   private connectedInsecure: boolean = false;
+  /** 登录页确认仅绑定当前地址与证书策略，编辑后必须重新确认。 */
+  private confirmedOrigin: string = '';
+  private confirmedInsecure: boolean = false;
   private history: string[] = [];
-  private pageHistory: number[] = [];
+  private nextFileOffset: number = 0;
   private store: NasSessionStore = new NasSessionStore();
   private fileTaskStore: FileTaskStore = new FileTaskStore();
   private context: common.UIAbilityContext | undefined = undefined;
@@ -149,18 +153,20 @@ export class ConnectionViewModel {
       }
     } finally { if (ticket === this.generation) { this.busy = false; } }
     if (restored && ticket === this.generation) {
+      await this.saveLoginHistory(ticket);
       hilog.info(0x0000, 'NasConnection', 'operation=restore result=success');
     }
   }
 
-  /** 登录页地址输入；写明的协议会同步 HTTPS 开关。 */
+  /** 按输入地址识别协议；省略协议时恢复默认的加密连接。 */
   setAddress(text: string): void {
     if (this.busy || this.authenticated) { return; }
     this.address = text;
+    this.confirmedOrigin = '';
     this.insecureTls = false;
     const match = /^(https?):\/\//i.exec(text.trim());
+    this.useHttps = match === null || match[1].toLowerCase() === 'https';
     if (match === null) { return; }
-    this.useHttps = match[1].toLowerCase() !== 'http';
     if (this.useHttps) {
       try {
         const origin = normalizeNasOrigin(text.trim());
@@ -176,6 +182,7 @@ export class ConnectionViewModel {
   setUseHttps(enabled: boolean): void {
     if (this.busy || this.authenticated) { return; }
     this.useHttps = enabled;
+    this.confirmedOrigin = '';
     if (!enabled) { this.insecureTls = false; }
     const raw = this.address.trim();
     if (/^https?:\/\//i.test(raw)) {
@@ -187,21 +194,43 @@ export class ConnectionViewModel {
   setInsecureTls(enabled: boolean): void {
     if (this.busy || this.authenticated || !this.useHttps) { return; }
     this.insecureTls = enabled;
+    this.confirmedOrigin = '';
   }
 
-  /** 输入框可省略协议；已写明的协议优先，否则按 HTTPS 开关补全。 */
+  /** 已写明的协议优先；省略协议时按识别后的连接方式补全。 */
   private resolveOrigin(): string {
     const raw = this.address.trim();
     return normalizeNasOrigin(/^https?:\/\//i.test(raw) ? raw : (this.useHttps ? 'https://' : 'http://') + raw);
   }
 
-  /** 危险模式只接受地址管理中确认过的同一服务器策略。 */
-  private requireConnectionTrust(origin: string): void {
+  /** 登录页确认与已保存策略都不能跨地址或证书方式复用。 */
+  private connectionTrusted(origin: string): boolean {
+    if (nasOriginScheme(origin) === 'https' && !this.insecureTls) { return true; }
+    if (this.confirmedOrigin === origin && this.confirmedInsecure === this.insecureTls) { return true; }
     const saved = this.addressBook.addresses.find((address: NasConnectionAddress): boolean => address.origin === origin);
-    if (nasOriginScheme(origin) === 'https' && !this.insecureTls) { return; }
-    if (saved?.riskConfirmedAt === undefined || (saved.insecureTls === true) !== this.insecureTls) {
+    return saved?.riskConfirmedAt !== undefined && (saved.insecureTls === true) === this.insecureTls;
+  }
+
+  /** 登录前返回需要确认的实际地址，避免省略协议时提示与请求不一致。 */
+  connectionRiskOrigin(): string | undefined {
+    const origin = this.resolveOrigin();
+    return this.connectionTrusted(origin) ? undefined : origin;
+  }
+
+  /** 弹窗确认绑定展示时的地址与策略，拒绝确认期间变更的输入。 */
+  confirmConnectionRisk(origin: string, insecureTls: boolean): void {
+    if (this.busy || this.authenticated || this.resolveOrigin() !== origin || this.insecureTls !== insecureTls) {
+      throw new NasFailure(NasErrorKind.InvalidInput, '连接地址或方式已变化，请重新确认。');
+    }
+    this.confirmedOrigin = origin;
+    this.confirmedInsecure = insecureTls;
+  }
+
+  /** 未经过当前地址确认时不发送危险连接请求。 */
+  private requireConnectionTrust(origin: string): void {
+    if (!this.connectionTrusted(origin)) {
       this.insecureTls = false;
-      throw new NasFailure(NasErrorKind.InvalidInput, '请在连接地址中为此服务器设置并确认连接方式。');
+      throw new NasFailure(NasErrorKind.InvalidInput, '请在登录页确认此服务器的连接方式。');
     }
   }
 
@@ -306,6 +335,9 @@ export class ConnectionViewModel {
     }
     finally { if (ticket === this.generation) { this.busy = false; } }
     if (this.authenticated && ticket === this.generation) {
+      const historySaved = await this.saveLoginHistory(ticket);
+      const historyError = historySaved ? '' : this.errorText;
+      if (ticket !== this.generation) { return; }
       await this.attachQueue(connector);
       if (ticket !== this.generation) { return; }
       const sessions = connector.sessionSnapshot();
@@ -324,7 +356,25 @@ export class ConnectionViewModel {
       finally { if (ticket === this.generation) { this.busy = false; } }
       // 保存失败时保留错误提示：目录加载会重置横幅，保存失败比目录不可用更值得先展示。
       if (sessionSaved && ticket === this.generation) { await this.loadInitialDirectory(); }
+      if (historyError.length > 0 && ticket === this.generation) { this.errorText = historyError; }
     }
+  }
+
+  /** 历史保存失败不撤销已成功的认证，错误保留供用户重试。 */
+  private async saveLoginHistory(ticket: number): Promise<boolean> {
+    this.busy = true;
+    try {
+      await this.addressBook.rememberLogin(this.address, this.insecureTls);
+      if (ticket !== this.generation) { return false; }
+      hilog.info(0x0000, 'NasConnection', 'operation=save-login-history result=success');
+      return true;
+    } catch (error) {
+      if (ticket === this.generation) {
+        await this.showFailure(error as Error, 'save-login-history');
+        if (!(error instanceof NasFailure)) { this.errorText = '保存登录记录失败，请重试。'; }
+      }
+      return false;
+    } finally { if (ticket === this.generation) { this.busy = false; } }
   }
 
   /**
@@ -344,7 +394,6 @@ export class ConnectionViewModel {
     const oldPath = this.directory;
     if (await this.load(entry.path, 0)) {
       this.history.push(oldPath);
-      this.pageHistory = [];
     }
   }
 
@@ -394,7 +443,8 @@ export class ConnectionViewModel {
     const ticket = this.generation;
     this.busy = true;
     try {
-      const saved = await this.addressBook.saveCurrent(connector, this.address, this.account, this.insecureTls);
+      const saved = await this.addressBook.saveCurrent(connector, this.address, this.account, this.insecureTls,
+        this.connectionTrusted(this.address));
       if (saved && ticket === this.generation) { this.deviceCheckText = this.addressBook.notice; }
     } catch (error) { if (ticket === this.generation) { await this.showFailure(error as Error, 'register-device'); } }
     finally { if (ticket === this.generation) { this.busy = false; } }
@@ -482,20 +532,14 @@ export class ConnectionViewModel {
     const parent = this.history[this.history.length - 1];
     if (await this.load(parent, 0)) {
       this.history.pop();
-      this.pageHistory = [];
     }
   }
   async refresh(): Promise<void> {
-    if (await this.load(this.directory, 0)) { this.pageHistory = []; }
+    await this.load(this.directory, 0);
   }
   async nextPage(): Promise<void> {
-    if (this.busy || this.pageOffset + this.entries.length >= this.total) { return; }
-    const previousOffset = this.pageOffset;
-    if (await this.load(this.directory, previousOffset + this.entries.length)) { this.pageHistory.push(previousOffset); }
-  }
-  async previousPage(): Promise<void> {
-    if (this.busy || this.pageHistory.length === 0) { return; }
-    if (await this.load(this.directory, this.pageHistory[this.pageHistory.length - 1])) { this.pageHistory.pop(); }
+    if (this.busy || !this.filesMore || this.entries.length === 0) { return; }
+    await this.load(this.directory, this.nextFileOffset, true);
   }
 
   supports(apiName: string): boolean {
@@ -511,8 +555,7 @@ export class ConnectionViewModel {
     const previousDescending = this.sortDescending;
     this.fileSort = sort;
     this.sortDescending = descending;
-    if (await this.load(this.directory, 0)) { this.pageHistory = []; }
-    else { this.fileSort = previousSort; this.sortDescending = previousDescending; }
+    if (!await this.load(this.directory, 0)) { this.fileSort = previousSort; this.sortDescending = previousDescending; }
   }
 
   async createFolder(name: string): Promise<FileEditResult> {
@@ -898,7 +941,7 @@ export class ConnectionViewModel {
         this.directoryErrorText = '操作已完成，但目录刷新失败：' + this.directoryErrorText;
         this.errorText = this.directoryErrorText;
       }
-    } else { this.pageHistory = []; }
+    }
   }
 
   async disconnect(): Promise<void> {
@@ -998,7 +1041,7 @@ export class ConnectionViewModel {
     this.capabilities = [];
   }
 
-  private async load(path: string, offset: number): Promise<boolean> {
+  private async load(path: string, offset: number, append: boolean = false): Promise<boolean> {
     const connector = this.connector;
     if (this.busy || !this.authenticated || connector === undefined) { return false; }
     const ticket = this.generation;
@@ -1011,7 +1054,7 @@ export class ConnectionViewModel {
         this.sortDescending ? NasFileSortDirection.Descending : NasFileSortDirection.Ascending);
       if (ticket !== this.generation) { return false; }
       this.fileSort = sort;
-      this.applyPage(path, page);
+      this.applyPage(path, page, append);
       hilog.info(0x0000, 'NasConnection', 'operation=list result=success');
       return true;
     } catch (error) {
@@ -1023,11 +1066,14 @@ export class ConnectionViewModel {
     }
     finally { if (ticket === this.generation) { this.busy = false; } }
   }
-  private applyPage(path: string, page: NasFilePage): void {
-    this.entries = page.entries;
+  private applyPage(path: string, page: NasFilePage, append: boolean = false): void {
+    this.entries = append ? this.entries.concat(page.entries.filter((entry: NasFileEntry): boolean =>
+      !this.entries.some((existing: NasFileEntry): boolean => existing.path === entry.path))) : page.entries;
     this.directory = path;
     this.pageOffset = page.offset;
     this.total = page.total;
+    this.nextFileOffset = page.offset + page.entries.length;
+    this.filesMore = page.entries.length > 0 && this.nextFileOffset < page.total;
   }
   /** 只清理账号相关的会话状态；地址与证书策略由连接流程单独管理。 */
   private resetSessionState(): void {
@@ -1063,7 +1109,8 @@ export class ConnectionViewModel {
     this.entries = [];
     this.directory = '';
     this.history = [];
-    this.pageHistory = [];
+    this.nextFileOffset = 0;
+    this.filesMore = false;
     this.pageOffset = 0;
     this.total = 0;
   }

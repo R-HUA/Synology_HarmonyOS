@@ -296,6 +296,7 @@ for (const section of sections) {
       context.monitor.setMode('home');
       await flush();
       assert.equal(context.monitor[section].status, 'unavailable');
+      assert.equal(context.monitor[section].permissionDenied, kind === K.Permission);
       assert.equal(context.monitor[section].data, undefined);
       for (const healthy of sections.filter(name => name !== section)) {
         assert.equal(context.monitor[healthy].status, 'ready');
@@ -309,6 +310,7 @@ for (const section of sections) {
       await context.monitor.refresh(true);
       assert.equal(context.count(section), 2);
       assert.equal(context.monitor[section].status, 'ready');
+      assert.equal(context.monitor[section].permissionDenied, undefined);
       assert.equal(context.sessionFailures.length, 0);
     });
   }

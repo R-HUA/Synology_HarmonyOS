@@ -71,6 +71,100 @@ test('editing the server origin cannot inherit an approved certificate exception
   assert.equal(await model.connect(), false); assert.equal(count('discover'), 0);
 });
 
+test('the login address detects the scheme and returns to HTTPS when the scheme is omitted', async () => {
+  const { model } = await fixture({ bound: false });
+  model.addressBook.addresses = [];
+  model.setAddress('HTTP://NAS.example.test:5000');
+  assert.equal(model.useHttps, false);
+  assert.equal(model.insecureTls, false);
+  assert.equal(model.connectionRiskOrigin(), 'http://nas.example.test:5000');
+  model.setAddress('https://nas.example.test:5001');
+  model.setInsecureTls(true);
+  assert.equal(model.insecureTls, true);
+  model.setAddress('nas.example.test:5001');
+  assert.equal(model.useHttps, true);
+  assert.equal(model.insecureTls, false);
+  assert.equal(model.connectionRiskOrigin(), undefined);
+});
+
+test('login-page confirmation allows HTTP and certificate exceptions without a saved address', async () => {
+  for (const [origin, insecureTls] of [['http://nas.example.test:5000', false], ['https://nas.example.test:5001', true]]) {
+    const { model, state, count } = await fixture({ bound: false });
+    state.session = undefined;
+    model.addressBook.addresses = [];
+    model.setAddress(origin);
+    model.setInsecureTls(insecureTls);
+    assert.equal(model.connectionRiskOrigin(), origin);
+    assert.equal(count('discover'), 0);
+    model.confirmConnectionRisk(origin, insecureTls);
+    assert.equal(model.connectionRiskOrigin(), undefined);
+    await model.submitLogin();
+    assert.equal(model.authenticated, true);
+    assert.equal(count('discover'), 1);
+    assert.equal(count('book.save'), 1);
+    assert.ok(model.addressBook.addresses[0].riskConfirmedAt > 0);
+  }
+});
+
+test('login-page risk confirmation expires when the address or connection policy changes', async () => {
+  const { model, count } = await fixture({ bound: false });
+  model.addressBook.addresses = [];
+  model.setAddress(oldOrigin); model.setInsecureTls(true);
+  model.confirmConnectionRisk(oldOrigin, true);
+  model.setAddress(nextOrigin); model.setInsecureTls(true);
+  assert.equal(model.connectionRiskOrigin(), nextOrigin);
+  assert.throws(() => model.confirmConnectionRisk(oldOrigin, true), error => error.kind === K.InvalidInput);
+  model.confirmConnectionRisk(nextOrigin, true);
+  model.setUseHttps(false);
+  assert.equal(model.connectionRiskOrigin(), nextOrigin.replace('https:', 'http:'));
+  assert.equal(model.insecureTls, false);
+  assert.equal(await model.connect(), false);
+  assert.equal(count('discover'), 0);
+});
+
+test('verified login history survives logout and reload, deduplicates repeats and supports removal', async () => {
+  const { model, state } = await fixture({ bound: false });
+  state.session = undefined; state.addressRecords = []; model.addressBook.addresses = [];
+  model.setAddress(oldOrigin); await model.submitLogin();
+  assert.equal(state.addressRecords.length, 1);
+  assert.equal(state.addressRecords[0].origin, oldOrigin);
+  await model.disconnect(); await model.addressBook.load(context);
+  assert.equal(model.addressBook.addresses[0].origin, oldOrigin);
+  await model.submitLogin();
+  assert.equal(state.addressRecords.length, 1);
+  await model.disconnect();
+  await model.addressBook.remove(oldOrigin);
+  await model.addressBook.load(context);
+  assert.equal(model.addressBook.addresses.length, 0);
+  assert.equal(state.addressRecords.length, 0);
+});
+
+test('failed authentication does not create history and local history write failure preserves authenticated state', async () => {
+  const denied = await fixture({ bound: false });
+  denied.state.loginError = failure(K.Permission);
+  await denied.model.submitLogin();
+  assert.equal(denied.count('book.save'), 0);
+  assert.equal(denied.model.authenticated, false);
+  const local = await fixture({ bound: false });
+  const original = plain(local.state.addressRecords);
+  local.state.addressSaveError = new Error('disk failure');
+  await local.model.submitLogin();
+  assert.equal(local.model.authenticated, true);
+  assert.deepEqual(local.state.addressRecords, original);
+  assert.match(local.model.errorText, /登录记录/);
+});
+
+test('verified restored session updates history without another login or identity request', async () => {
+  const { model, state, count } = await fixture();
+  await model.restore(context);
+  assert.equal(model.authenticated, true);
+  assert.equal(state.addressRecords[0].origin, oldOrigin);
+  assert.equal(count('book.save'), 1);
+  assert.equal(count('login'), 0);
+  assert.equal(count('identity'), 1);
+  assert.ok(state.addressRecords[0].device);
+});
+
 test('saved sessions require a successful protected read before authentication and task attachment', async () => {
   for (const kind of [K.SessionExpired, K.Network]) {
     const { model, state, count } = await fixture({ bound: false });
@@ -86,8 +180,9 @@ async function fixture(options = {}) {
   const binding = { account: 'alice', fingerprint: await nasDeviceFingerprint(identity), model: identity.model };
   const addresses = [{ origin: oldOrigin, name: '局域网 NAS', kind: 'lan', ...(options.bound === false ? {} : { device: binding }) },
     { origin: nextOrigin, name: '远程 NAS', kind: 'remote', device: binding }];
-  const state = { session: plain(savedSession), addressLoadError: undefined, sessionLoadError: undefined,
-    sessionSaveError: undefined, clearError: undefined, stopError: undefined, logoutError: undefined,
+  const state = { session: plain(savedSession), addressRecords: plain(addresses), addressSaveError: undefined,
+    addressLoadError: undefined, sessionLoadError: undefined,
+    sessionSaveError: undefined, loginError: undefined, clearError: undefined, stopError: undefined, logoutError: undefined,
     identityError: undefined, observedIdentity: identity, identityGate: undefined, stopGate: undefined, clearGate: undefined,
     discoverError: undefined, taskRecords: new Map([[JSON.stringify([oldOrigin, 'alice']), [{ id: 'old-file-task', taskId: 'dsm-task' }]]]),
     transferRecords: new Map([[JSON.stringify([oldOrigin, 'alice']), [{ id: 'old-transfer', state: 'unknown' }]]]) };
@@ -98,9 +193,13 @@ async function fixture(options = {}) {
     async load() {
       record('book.load');
       if (state.addressLoadError) { throw state.addressLoadError; }
-      return plain(addresses);
+      return plain(state.addressRecords);
     }
-    async save(input) { record('book.save', { addresses: plain(input) }); }
+    async save(input) {
+      record('book.save', { addresses: plain(input) });
+      if (state.addressSaveError) { throw state.addressSaveError; }
+      state.addressRecords = plain(input);
+    }
   }
   class MockSessionStore {
     async load() {
@@ -135,7 +234,7 @@ async function fixture(options = {}) {
       return apis;
     }
     restoreSession(input) { this.event('restoreSession', [plain(input)]); this.session = plain(input); }
-    async login(...args) { this.event('login', args); this.session = [plain(newSessionRecord)]; }
+    async login(...args) { this.event('login', args); if (state.loginError) { throw state.loginError; } this.session = [plain(newSessionRecord)]; }
     async telemetrySystem(...args) {
       this.event('identity', args);
       if (state.identityGate) { await state.identityGate.promise; }

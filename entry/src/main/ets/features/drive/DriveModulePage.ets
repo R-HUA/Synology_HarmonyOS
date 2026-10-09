@@ -21,7 +21,7 @@ export struct DriveModulePage {
   @Param topInset: number = 0;
   @Param bottomInset: number = 0;
   @Param active: boolean = true;
-  @Param searchVisible: boolean = false;
+  @Param searchPage: boolean = false;
   @Param moreView: string = '';
   @Param moreViews: DriveView[] = [];
   @Event onSelectMore: (view: DriveView) => void = (_view: DriveView): void => {};
@@ -44,8 +44,7 @@ export struct DriveModulePage {
   private driveSearchController: SearchController = new SearchController();
 
   private canRenderEntries(): boolean {
-    return this.active && (this.model.drive.view === this.expectedView ||
-      this.tabId === 'mydrive' && this.searchVisible && this.model.drive.view === DriveView.Search);
+    return this.active && this.model.drive.view === this.expectedView;
   }
 
   private supportedMoreViews(): DriveView[] {
@@ -60,13 +59,8 @@ export struct DriveModulePage {
     this.model.drive.reload();
   }
 
-  private async exitDriveSearch(): Promise<void> {
+  private exitDriveSearch(): void {
     this.driveSearchController.stopEditing();
-    if (this.model.drive.busy) { return; }
-    if (this.model.drive.view === DriveView.Search) {
-      await this.model.drive.exitSearch();
-      if (this.model.drive.view === DriveView.Search) { return; }
-    }
     this.onExitSearch();
   }
 
@@ -76,13 +70,13 @@ export struct DriveModulePage {
       Search({ value: this.model.drive.searchText, placeholder: this.model.drive.searchPlaceholder(),
         controller: this.driveSearchController })
         .searchButton('搜索').maxLength(256).layoutWeight(1).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
-        .enabled(this.canRenderEntries() && !this.model.busy && !this.model.drive.busy && this.model.drive.supportsView(DriveView.Search))
+        .enabled(!this.model.busy && !this.model.drive.busy && this.model.drive.supportsView(DriveView.Search))
         .onChange((value: string): void => { this.model.drive.searchText = value; })
         .onSubmit((value: string): void => {
           this.driveSearchController.stopEditing(); this.model.drive.search(value);
         })
       Button('取消').constraintSize({ minHeight: WorkbenchMetrics.touchSize })
-        .buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy && !this.model.drive.busy)
+        .buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.busy)
         .onClick((): void => { this.exitDriveSearch(); }).accessibilityText('取消搜索')
     }.width('100%')
   }
@@ -97,7 +91,7 @@ export struct DriveModulePage {
             this.model.drive.searchScopeName + ' · “' + this.model.drive.searchKeyword + '”' : item.name)
             .type(ButtonType.Normal).constraintSize({ minHeight: 40 }).fontSize(14)
             .padding({ left: 0, right: 0, top: 8, bottom: 8 }).backgroundColor(Color.Transparent)
-            .fontColor(index === this.model.drive.trail.length - 1 ? $r('sys.color.font_primary') : $r('sys.color.font_emphasize'))
+            .fontColor(index === this.model.drive.trail.length - 1 ? $r('sys.color.font_primary') : $r('sys.color.font_secondary'))
             .enabled(!this.model.busy && !this.model.drive.busy && index < this.model.drive.trail.length - 1)
             .onClick((): void => { this.model.drive.goToTrail(index); })
           if (index < this.model.drive.trail.length - 1) {
@@ -118,6 +112,12 @@ export struct DriveModulePage {
     WorkbenchNotice({ text: this.model.driveTransfers.errorText, warning: true })
     WorkbenchNotice({ text: this.model.driveActions.errorText, warning: true })
     WorkbenchNotice({ text: this.model.driveSharing.errorText, warning: true })
+    if (this.model.driveTransfers.busy) {
+      Row({ space: 8 }) {
+        LoadingProgress().width(24).height(24)
+        Text($r('app.string.drive_file_loading')).fontSize(14).fontColor($r('sys.color.font_secondary'))
+      }.width('100%').padding({ top: 4, bottom: 4 })
+    }
   }
 
   @Builder
@@ -141,12 +141,12 @@ export struct DriveModulePage {
               .padding(0).backgroundColor(Color.Transparent).accessibilityText('返回更多')
               .enabled(!this.model.busy && !this.model.drive.busy).onClick(this.onBackToMore)
           }
-          if (this.tabId === 'mydrive' && this.searchVisible) { this.driveSearch() }
+          if (this.searchPage) { this.driveSearch() }
           if (this.canRenderEntries()) {
             this.driveBreadcrumb()
           }
           this.driveNotices()
-          if (this.model.drive.busy) {
+          if (this.model.drive.busy && this.model.drive.entries.length === 0) {
             Row({ space: 12 }) {
               LoadingProgress().width(24).height(24)
               Text('正在读取 Drive 内容…').fontSize(14).fontColor($r('sys.color.font_secondary'))
@@ -202,17 +202,12 @@ export struct DriveModulePage {
         }, (entry: DriveEntry): string => driveEntryRenderKey(entry))
         ListItem() {
           Row({ space: 8 }) {
-            Button('上一页').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
-              .enabled(!this.model.busy && !this.model.drive.busy && this.model.drive.pageOffset > 0)
-              .onClick((): void => { this.model.drive.previousPage(); })
+            if (this.model.drive.busy) { LoadingProgress().width(24).height(24) }
             Text(this.driveCountText()).fontSize(12).fontColor($r('sys.color.font_secondary'))
               .layoutWeight(1).textAlign(TextAlign.Center)
-            Button('下一页').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
-              .enabled(!this.model.busy && !this.model.drive.busy && this.model.drive.more())
-              .onClick((): void => { this.model.drive.nextPage(); })
           }.width('100%').padding({ top: 4, bottom: 4 })
         }
-      } else if (!this.model.drive.busy) {
+      } else if (!this.model.drive.busy && !this.searchPage) {
         ListItem() {
           Column({ space: 8 }) {
             this.emptyState($r('sys.symbol.folder'), '此入口尚未打开', '请重试读取此入口的内容。')
@@ -224,6 +219,9 @@ export struct DriveModulePage {
         }
       }
     }.width('100%').height('100%').scrollBar(BarState.Auto).contentEndOffset(this.bottomInset)
+      .onReachEnd((): void => {
+        if (this.canRenderEntries() && !this.model.busy && this.model.drive.errorText.length === 0) { this.model.drive.loadMore(); }
+      })
   }
 
   @Builder
@@ -295,9 +293,8 @@ export struct DriveModulePage {
   private driveCountText(): string {
     const total = this.model.drive.total;
     if (this.model.drive.entries.length === 0) { return '0 项'; }
-    const range = (this.model.drive.pageOffset + 1).toString() + '–' +
-      (this.model.drive.pageOffset + this.model.drive.entries.length).toString();
-    return total === undefined ? '第 ' + range + ' 项' : range + ' / ' + total.toString() + ' 项';
+    return total === undefined ? this.model.drive.entries.length.toString() + ' 项' :
+      this.model.drive.entries.length.toString() + ' / ' + total.toString() + ' 项';
   }
 
   private driveEntryMenu(entry: DriveEntry): MenuElement[] {
@@ -312,6 +309,8 @@ export struct DriveModulePage {
     }
     if (canPreviewDriveOriginal(entry)) {
       menu.push({ value: '查看原图', action: (): void => { this.openDriveOriginal(entry); } });
+    }
+    if (entry.kind === DriveEntryKind.File && entry.capabilities.canRead && entry.capabilities.canDownload) {
       menu.push({ value: '下载到本机', action: (): void => { this.model.driveTransfers.download(entry); this.openDriveTransfers(); } });
     }
     if (this.model.driveTransfers.available && entry.kind === DriveEntryKind.Folder &&
@@ -347,8 +346,8 @@ export struct DriveModulePage {
     if (entry.kind === DriveEntryKind.Folder) { this.model.drive.openFolder(entry); return; }
     if (this.model.drive.view === DriveView.Trash || !entry.capabilities.canDownload) { return; }
     if (canPreviewDriveOriginal(entry)) { this.openDriveOriginal(entry); return; }
-    this.model.driveTransfers.download(entry);
-    this.openDriveTransfers();
+    if (this.model.driveTransfers.canPreview(entry)) { this.model.driveTransfers.download(entry, true); }
+    else { this.detailEntry = entry; this.detailVisible = true; }
   }
 
   private openDriveOriginal(entry: DriveEntry): void { this.onOpenOriginal(entry); }

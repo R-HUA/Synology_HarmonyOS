@@ -186,6 +186,38 @@ test('short pages never skip entries and previous-page navigation uses visited o
   assert.equal(f.calls.length, count);
 });
 
+test('scroll loading appends short pages, ignores duplicate end events and keeps content on a failed page', async () => {
+  const pending = gate(); let fail = false;
+  const f = fixture(({ fields }) => {
+    const offset = Number(fields.offset);
+    if (offset === 1) return pending.promise;
+    if (fail) throw new NasFailure(K.Network, '读取失败');
+    return { total: 3, items: [entry(offset + 1)] };
+  });
+  await f.model.open(); const loading = f.model.loadMore();
+  await f.model.loadMore(); assert.equal(f.calls.length, 2);
+  pending.resolve({ total: 3, items: [entry(2)] }); await loading;
+  assert.deepEqual(Array.from(f.model.entries, item => item.fileId), ['1', '2']);
+  fail = true; await f.model.loadMore();
+  assert.deepEqual(Array.from(f.model.entries, item => item.fileId), ['1', '2']);
+  fail = false; await f.model.loadMore();
+  assert.deepEqual(f.calls.map(call => Number(call.fields.offset)), [0, 1, 2, 2]);
+  assert.deepEqual(Array.from(f.model.entries, item => item.fileId), ['1', '2', '3']);
+  await f.model.loadMore(); assert.equal(f.calls.length, 4);
+});
+
+test('leaving search during a pending query preserves the appended browser snapshot and rejects late results', async () => {
+  const pending = gate();
+  const f = fixture(({ method, fields }) => method === 'search' ? pending.promise :
+    { total: 3, items: [entry(Number(fields.offset) + 1)] });
+  await f.model.open(); await f.model.loadMore();
+  f.model.beginSearch(); const searching = f.model.search('资料');
+  await f.model.exitSearch(); pending.resolve({ total: 1, items: [entry(9)] }); await searching;
+  assert.equal(f.model.view, V.MyDrive);
+  assert.deepEqual(Array.from(f.model.entries, item => item.fileId), ['1', '2']);
+  await f.model.loadMore(); assert.equal(f.calls.at(-1).fields.offset, '2');
+});
+
 test('team folders use the endpoint-specific schema and preserve their root view on return', async () => {
   const f = fixture(({ api }) => api.endsWith('.TeamFolders') ?
     { total: 1, items: [{ file_id: '821014439470870977', name: '团队资料', capabilities: { can_read: true } }] } :
@@ -368,7 +400,7 @@ test('reset during ancestor loading prevents a second request and discards old q
   assert.equal(f.model.busy, false);
 });
 
-test('a failed search exit keeps its query and result so the same destination can be retried', async () => {
+test('search exit restores the loaded browsing snapshot without another network request', async () => {
   let unavailable = false;
   const f = fixture(({ method }) => {
     if (unavailable && method === 'list') throw new NasFailure(K.Network, '暂不可用');
@@ -377,12 +409,9 @@ test('a failed search exit keeps its query and result so the same destination ca
   await f.model.open();
   await f.model.search('资料');
   unavailable = true;
+  const requests = f.calls.length;
   await f.model.exitSearch();
-  assert.equal(f.model.view, V.Search);
-  assert.equal(f.model.searchKeyword, '资料');
-  assert.equal(f.model.canGoUp(), true);
-  unavailable = false;
-  await f.model.exitSearch();
+  assert.equal(f.calls.length, requests);
   assert.equal(f.model.view, V.MyDrive);
   assert.equal(f.model.searchKeyword, '');
   assert.equal(f.model.canGoUp(), false);

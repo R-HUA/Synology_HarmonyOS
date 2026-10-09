@@ -1,5 +1,5 @@
 import { common } from '@kit.AbilityKit';
-import { nasOriginScheme, NasErrorKind, NasFailure, normalizeNasOrigin } from '../../core/domain/DsmProtocol';
+import { nasOriginHost, nasOriginScheme, NasErrorKind, NasFailure, normalizeNasOrigin } from '../../core/domain/DsmProtocol';
 import { NasConnectionAddress, NasConnectionDeviceBinding, NasConnectionRouteKind,
   validateConnectionAddress, decodeNasDeviceIdentity } from '../../core/domain/ConnectionRoutes';
 import { NasConnector } from '../../core/network/NasConnector';
@@ -115,6 +115,26 @@ export class ConnectionAddressBook {
     this.probing = false;
   }
 
+  /** 仅在认证及设备核验成功后记录地址；保存成功才发布，退出账号不删除历史。 */
+  async rememberLogin(origin: string, insecureTls: boolean): Promise<void> {
+    if (!this.ready || this.busy || this.probing) {
+      throw new NasFailure(NasErrorKind.Protocol, '暂时无法保存登录记录，请稍后重试。');
+    }
+    const ticket = this.generation;
+    this.busy = true;
+    this.errorText = '';
+    try {
+      const previous = this.addresses.find((address: NasConnectionAddress): boolean => address.origin === origin);
+      const address: NasConnectionAddress = { origin: origin, name: previous?.name ?? nasOriginHost(origin).slice(0, 40),
+        kind: previous?.kind ?? 'lan', insecureTls: insecureTls,
+        riskConfirmedAt: nasOriginScheme(origin) === 'http' || insecureTls ? Date.now() : undefined,
+        device: previous?.device };
+      const addresses = [address, ...this.addresses.filter((item: NasConnectionAddress): boolean => item.origin !== origin)];
+      await this.store.save(addresses);
+      if (ticket === this.generation) { this.addresses = addresses; }
+    } finally { if (ticket === this.generation) { this.busy = false; } }
+  }
+
   async saveDraft(riskAccepted: boolean = false): Promise<boolean> {
     return this.saveAddress(this.draftOrigin, this.draftName, this.draftKind, this.draftInsecureTls, riskAccepted);
   }
@@ -129,7 +149,8 @@ export class ConnectionAddressBook {
     await this.load(context);
   }
 
-  async saveCurrent(connector: NasConnector, origin: string, account: string, insecureTls: boolean): Promise<boolean> {
+  async saveCurrent(connector: NasConnector, origin: string, account: string, insecureTls: boolean,
+    riskAccepted: boolean = false): Promise<boolean> {
     if (!this.ready || this.busy || this.probing) { return false; }
     const ticket = this.generation;
     this.busy = true;
@@ -138,6 +159,8 @@ export class ConnectionAddressBook {
     try {
       const normalized = normalizeNasOrigin(origin);
       const existing = this.addresses.find((address: NasConnectionAddress): boolean => address.origin === normalized);
+      const risky = nasOriginScheme(normalized) === 'http' || insecureTls;
+      if (risky && !riskAccepted) { throw new NasFailure(NasErrorKind.InvalidInput, '请先确认当前连接方式的风险。'); }
       validateConnectionAddress({ origin: normalized, name: this.draftName, kind: this.draftKind,
         insecureTls: insecureTls, device: existing?.device });
       let device = existing?.device;
@@ -156,7 +179,7 @@ export class ConnectionAddressBook {
       }
       if (ticket !== this.generation) { return false; }
       const address: NasConnectionAddress = { origin: normalized, name: this.draftName, kind: this.draftKind,
-        insecureTls: insecureTls, riskConfirmedAt: existing?.riskConfirmedAt, device: device };
+        insecureTls: insecureTls, riskConfirmedAt: risky ? Date.now() : undefined, device: device };
       const saved = await this.commit(address, ticket);
       if (saved) {
         this.notice = verified ? '地址与当前账号的设备身份已登记，后续登录会重新核验。' :

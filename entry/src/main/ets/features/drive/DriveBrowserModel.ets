@@ -26,6 +26,7 @@ interface DriveSearchQuery {
 interface DrivePagePosition {
   offset: number;
   previousOffsets: number[];
+  nextOffset: number;
 }
 
 interface DriveBrowseReturn {
@@ -40,7 +41,7 @@ interface DriveTabContext extends DriveBrowseReturn {
   hasMore: boolean;
   searchText: string;
   query?: DriveSearchQuery;
-  searchReturn?: DriveBrowseReturn;
+  searchReturn?: DriveTabContext;
   searchPosition?: DrivePagePosition;
 }
 
@@ -75,8 +76,9 @@ export class DriveBrowserModel {
   private onSessionFailure: ((error: NasFailure) => Promise<void>) | undefined = undefined;
   private generation: number = 0;
   private previousOffsets: number[] = [];
+  private nextOffset: number = 0;
   private searchQuery: DriveSearchQuery | undefined = undefined;
-  private searchReturn: DriveBrowseReturn | undefined = undefined;
+  private searchReturn: DriveTabContext | undefined = undefined;
   private searchResultsPosition: DrivePagePosition | undefined = undefined;
   private tabContexts: Map<DriveView, DriveTabContext> = new Map();
   private activeView: DriveView = DriveView.MyDrive;
@@ -114,6 +116,7 @@ export class DriveBrowserModel {
     this.searchResultsPosition = undefined;
     this.hasMore = false;
     this.pageOffset = 0;
+    this.nextOffset = 0;
     this.trail = [{ name: DRIVE_ROOT_LABEL }];
     this.loaded = false;
     this.previousOffsets = [];
@@ -148,7 +151,7 @@ export class DriveBrowserModel {
     if (this.activeView === view && (this.loaded || this.busy)) { return; }
     if (this.loaded) {
       this.tabContexts.set(this.activeView, { trail: this.trail.slice(), view: this.view,
-        position: { offset: this.pageOffset, previousOffsets: this.previousOffsets.slice() }, entries: this.entries.slice(),
+        position: { offset: this.pageOffset, previousOffsets: this.previousOffsets.slice(), nextOffset: this.nextOffset }, entries: this.entries.slice(),
         total: this.total, hasMore: this.hasMore, searchText: this.searchText, query: this.searchQuery,
         searchReturn: this.searchReturn, searchPosition: this.searchResultsPosition });
     }
@@ -165,10 +168,19 @@ export class DriveBrowserModel {
     }
     this.trail = saved.trail.slice(); this.view = saved.view; this.entries = saved.entries.slice();
     this.pageOffset = saved.position.offset; this.previousOffsets = saved.position.previousOffsets.slice();
+    this.nextOffset = saved.position.nextOffset;
     this.total = saved.total; this.hasMore = saved.hasMore; this.loaded = true;
     this.searchText = saved.searchText; this.searchQuery = saved.query;
     this.searchKeyword = saved.query?.keyword ?? ''; this.searchScopeName = saved.query?.scopeName ?? DRIVE_ROOT_LABEL;
     this.searchReturn = saved.searchReturn; this.searchResultsPosition = saved.searchPosition;
+  }
+
+  /** 搜索页打开前保留完整列表，使请求中返回也能恢复浏览位置。 */
+  beginSearch(): void {
+    this.searchReturn = { trail: this.trail.slice(), view: this.view,
+      position: { offset: this.pageOffset, previousOffsets: this.previousOffsets.slice(), nextOffset: this.nextOffset },
+      entries: this.entries.slice(), total: this.total, hasMore: this.hasMore, searchText: '' };
+    this.searchText = '';
   }
 
   async search(value: string): Promise<void> {
@@ -194,8 +206,16 @@ export class DriveBrowserModel {
 
   async exitSearch(): Promise<void> {
     const origin = this.searchReturn;
-    if (this.busy || this.view !== DriveView.Search || origin === undefined) { return; }
-    await this.load(origin.trail, origin.position.offset, origin.view, origin.position.previousOffsets);
+    if (origin === undefined) { return; }
+    // 返回直接恢复浏览快照，保留已追加的条目，也使离开的搜索请求失效。
+    this.generation++; this.busy = false;
+    this.trail = origin.trail; this.view = origin.view; this.entries = origin.entries;
+    this.total = origin.total; this.hasMore = origin.hasMore;
+    this.pageOffset = origin.position.offset; this.previousOffsets = origin.position.previousOffsets;
+    this.nextOffset = origin.position.nextOffset;
+    this.searchText = ''; this.searchKeyword = ''; this.searchScopeName = DRIVE_ROOT_LABEL;
+    this.searchQuery = undefined; this.searchReturn = undefined; this.searchResultsPosition = undefined;
+    this.errorText = ''; this.notice = '';
   }
 
   async openFolder(entry: DriveEntry): Promise<void> {
@@ -236,8 +256,14 @@ export class DriveBrowserModel {
 
   async nextPage(): Promise<void> {
     if (this.busy || !this.hasMore || this.entries.length === 0) { return; }
-    await this.load(this.trail, this.pageOffset + this.entries.length, this.view,
+    await this.load(this.trail, this.nextOffset, this.view,
       this.previousOffsets.concat([this.pageOffset]));
+  }
+
+  /** 按服务器返回的页长继续读取，触底时保留已有列表。 */
+  async loadMore(): Promise<void> {
+    if (this.busy || !this.hasMore || this.entries.length === 0) { return; }
+    await this.load(this.trail, this.nextOffset, this.view, this.previousOffsets, this.searchQuery, undefined, true);
   }
 
   /** 当前页是否还有下一页；供界面决定「下一页」是否可点。 */
@@ -258,7 +284,7 @@ export class DriveBrowserModel {
 
   private async load(trail: DriveTrailItem[], offset: number, view: DriveView = this.view,
     previousOffsets: number[] = [], query: DriveSearchQuery | undefined = this.searchQuery,
-    ancestorTarget?: DriveEntry): Promise<boolean> {
+    ancestorTarget?: DriveEntry, append: boolean = false): Promise<boolean> {
     const adapter = this.adapter;
     if (adapter === undefined || this.busy) { return false; }
     const ticket = this.generation;
@@ -292,18 +318,21 @@ export class DriveBrowserModel {
         this.notice = '已到列表末尾。';
         return false;
       }
-      if (view === DriveView.Search && this.view !== DriveView.Search) {
+      if (view === DriveView.Search && this.view !== DriveView.Search && this.searchReturn === undefined) {
         this.searchReturn = { trail: this.trail, view: this.view,
-          position: { offset: this.pageOffset, previousOffsets: this.previousOffsets } };
+          position: { offset: this.pageOffset, previousOffsets: this.previousOffsets, nextOffset: this.nextOffset },
+          entries: this.entries.slice(), total: this.total, hasMore: this.hasMore, searchText: '' };
       }
       if (view === DriveView.Search && trail.length === 1) {
-        this.searchResultsPosition = { offset: page.offset, previousOffsets };
+        this.searchResultsPosition = { offset: append ? 0 : page.offset, previousOffsets, nextOffset: page.offset + page.items.length };
         this.searchText = query?.keyword ?? '';
       }
-      this.entries = page.items;
+      this.entries = append ? this.entries.concat(page.items.filter((entry: DriveEntry): boolean =>
+        !this.entries.some((existing: DriveEntry): boolean => existing.fileId === entry.fileId))) : page.items;
       this.total = page.total;
       this.pageOffset = page.offset;
-      this.hasMore = page.hasMore;
+      this.nextOffset = page.offset + page.items.length;
+      this.hasMore = page.hasMore && page.items.length > 0;
       this.view = view;
       this.searchKeyword = view === DriveView.Search ? query?.keyword ?? '' : '';
       this.searchScopeName = view === DriveView.Search ? query?.scopeName ?? DRIVE_ROOT_LABEL : DRIVE_ROOT_LABEL;

@@ -11,6 +11,8 @@ export interface NasTelemetrySection<Payload> {
   observedAt: number;
   status: NasTelemetryStatus;
   notice: string;
+  /** 权限失败时隐藏对应卡片，其他读取失败保留重试入口。 */
+  permissionDenied?: boolean;
 }
 
 @ObservedV2
@@ -150,7 +152,7 @@ export class TelemetryMonitor {
         return { observedAt: 0, status: 'error', notice: '登录已失效，请重新登录' };
       }
       if (failure?.kind === NasErrorKind.Permission || failure?.kind === NasErrorKind.Unsupported) {
-        return { observedAt: 0, status: 'unavailable', notice: failure.kind === NasErrorKind.Permission ?
+        return { observedAt: 0, status: 'unavailable', permissionDenied: failure.kind === NasErrorKind.Permission, notice: failure.kind === NasErrorKind.Permission ?
           '当前账号无权读取此项监控数据，文件和相册功能仍可使用' : '此 NAS 不支持已适配的监控接口' };
       }
       return { data: previous.data, observedAt: previous.observedAt, status: previous.data === undefined ? 'error' : 'stale',

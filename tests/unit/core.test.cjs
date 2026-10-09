@@ -121,7 +121,8 @@ test('environment requests preserve exact package identity and full DSM patch ve
 });
 
 test('origin normalization keeps the declared scheme and rejects credentials, paths and URL escapes', () => {
-  assert.equal(protocol.normalizeNasOrigin(' HTTPS://nas.test ' .toLowerCase()), 'https://nas.test');
+  assert.equal(protocol.normalizeNasOrigin(' HTTPS://nas.test '), 'https://nas.test');
+  assert.equal(protocol.normalizeNasOrigin(' HTTP://NAS.test:80 '), 'http://nas.test');
   assert.equal(protocol.normalizeNasOrigin('https://NAS.test:443/'), 'https://nas.test');
   assert.equal(protocol.normalizeNasOrigin('https://[2001:db8::1]:5001'), 'https://[2001:db8::1]:5001');
   assert.equal(protocol.normalizeNasOrigin('http://nas.test'), 'http://nas.test');

@@ -51,11 +51,12 @@ function defaultNasPort(scheme: NasOriginScheme): number {
  * HTTP 与 HTTPS 都保留在 origin 中，证书校验策略由连接层单独记录。
  */
 export function normalizeNasOrigin(input: string): string {
-  const match = /^(https?):\/\/(\[[0-9a-fA-F:]+\]|[a-zA-Z0-9.-]+)(?::([0-9]{1,5}))?\/?$/.exec(input.trim());
+  const match = /^(https?):\/\/(\[[0-9a-fA-F:]+\]|[a-zA-Z0-9.-]+)(?::([0-9]{1,5}))?\/?$/i.exec(input.trim());
   if (match === null) {
-    throw new NasFailure(NasErrorKind.InvalidInput, '请输入 http:// 或 https:// 开头的地址，可包含端口，不包含路径或账号密码。');
+    throw new NasFailure(NasErrorKind.InvalidInput, input.trim().length === 0 ? '请填写服务器地址。' :
+      '地址格式不正确，请检查协议、域名和端口。');
   }
-  const scheme: NasOriginScheme = match[1] === 'http' ? 'http' : 'https';
+  const scheme: NasOriginScheme = match[1].toLowerCase() === 'http' ? 'http' : 'https';
   const host = match[2].toLowerCase();
   if (!host.startsWith('[') && !host.split('.').every((part: string): boolean =>
     /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(part) && part.length <= 63)) {

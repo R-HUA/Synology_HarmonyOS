@@ -1,3 +1,5 @@
+import { uiMaterial } from '@kit.ArkUI';
+
 export class WorkbenchMetrics {
   static readonly pageMargin: number = 16;
   /** 半模态内容与标题栏共用的水平边距，保证标题左边缘与卡片左边缘对齐。 */
@@ -78,13 +80,28 @@ export struct WorkbenchInfoRow {
 export struct WorkbenchNotice {
   @Param text: string = '';
   @Param warning: boolean = false;
+  private shownError: string = '';
+
+  aboutToAppear(): void { this.showError(); }
+
+  /** 页面保留完整错误，系统提示只展示首句，避免遮挡当前操作。 */
+  @Monitor('text', 'warning')
+  private showError(): void {
+    const text = this.text.trim();
+    if (!this.warning || text.length === 0) { this.shownError = ''; return; }
+    if (text === this.shownError) { return; }
+    this.shownError = text;
+    const sentence = text.split(/[。；\n]/)[0];
+    this.getUIContext().getPromptAction().showToast({ message: sentence.length > 36 ? sentence.slice(0, 36) + '…' : sentence,
+      duration: 2500, systemMaterial: new uiMaterial.ImmersiveMaterial({ style: uiMaterial.ImmersiveStyle.REGULAR }) });
+  }
 
   build() {
-    if (this.text.length > 0) {
+    if (!this.warning && this.text.length > 0) {
       Text(this.text).fontSize(14)
-        .fontColor(this.warning ? $r('app.color.workbench_warning') : $r('sys.color.font_secondary'))
+        .fontColor($r('sys.color.font_secondary'))
         .width('100%').padding(12).borderRadius(WorkbenchMetrics.innerRadius)
-        .backgroundColor(this.warning ? $r('app.color.workbench_warning_surface') : $r('app.color.workbench_subtle'))
+        .backgroundColor($r('app.color.workbench_subtle'))
         .accessibilityText(this.text)
     }
   }
@@ -115,12 +132,13 @@ export struct WorkbenchActionRow {
   @Param available: boolean = true;
   @Param destructive: boolean = false;
   @Param showChevron: boolean = true;
+  @Param compact: boolean = false;
   @Event onAction: () => void = (): void => {};
 
   build() {
     Button() {
       Row({ space: 12 }) {
-        WorkbenchIconTile({ icon: this.icon, iconSize: 22, tileSize: 40,
+        WorkbenchIconTile({ icon: this.icon, iconSize: this.compact ? 20 : 22, tileSize: this.compact ? 32 : 40,
           iconColor: this.destructive ? $r('app.color.workbench_danger') : $r('sys.color.icon_emphasize'),
           tileColor: $r('app.color.workbench_subtle') })
         Column({ space: 2 }) {
@@ -135,8 +153,8 @@ export struct WorkbenchActionRow {
           SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(12).fontColor([$r('sys.color.font_tertiary')])
             .accessibilityLevel('no')
         }
-      }.width('100%').padding({ left: 16, right: 16, top: 10, bottom: 10 })
-    }.type(ButtonType.Normal).width('100%').constraintSize({ minHeight: WorkbenchMetrics.rowMinHeight })
+      }.width('100%').padding({ left: 16, right: 16, top: this.compact ? 6 : 10, bottom: this.compact ? 6 : 10 })
+    }.type(ButtonType.Normal).width('100%').constraintSize({ minHeight: this.compact ? WorkbenchMetrics.touchSize : WorkbenchMetrics.rowMinHeight })
       .backgroundColor(Color.Transparent).enabled(this.available).onClick(this.onAction)
       .accessibilityText(this.label + (this.description.length > 0 ? '，' + this.description : ''))
   }

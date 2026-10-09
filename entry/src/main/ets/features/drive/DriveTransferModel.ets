@@ -3,6 +3,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo, fileUri, picker } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { filePreview } from '@kit.PreviewKit';
 import { NasErrorKind, NasFailure, normalizeNasOrigin } from '../../core/domain/DsmProtocol';
 import { DriveEntry, DriveEntryKind } from '../../core/domain/DriveProtocol';
 import { DRIVE_TRANSFER_MAX_BYTES, DriveTransferRecord, copyDriveTransfer, driveTransferFailureState, recoverDriveTransfer } from '../../core/domain/DriveTransferState';
@@ -230,7 +231,13 @@ export class DriveTransferModel {
     });
   }
 
-  async download(entry: DriveEntry): Promise<void> {
+  /** 系统支持的常见文件可以直接打开；其他格式保留详情和显式下载入口。 */
+  canPreview(entry: DriveEntry): boolean {
+    return canIUse('SystemCapability.FileManagement.FilePreview.Core') &&
+      /\.(txt|cpp|c|h|java|xhtml|xml|html|htm|svg|m4a|aac|mp3|ogg|wav|mp4|mkv|ts|pdf|doc|docx|xls|xlsx|ppt|pptx|csv|ofd)$/i.test(entry.name);
+  }
+
+  async download(entry: DriveEntry, openAfterDownload: boolean = false): Promise<void> {
     await this.run(async (session: DriveTransferSession): Promise<void> => {
       this.requireAvailable(false);
       if (entry.kind !== DriveEntryKind.File || !entry.capabilities.canRead || !entry.capabilities.canDownload) {
@@ -238,6 +245,8 @@ export class DriveTransferModel {
       }
       if (entry.sizeBytes !== undefined) { this.checkSize(entry.sizeBytes); }
       const record = this.newRecord(session, 'download', entry, entry.name, entry.sizeBytes);
+      // 打开文件必须在前台完成，避免尚未就绪就跳转到传输页。
+      if (openAfterDownload) { record.executor = 'foreground'; }
       if (record.executor === 'agent' && session.background !== undefined) {
         session.records.push(record); await this.save(session, session.records);
         await ensureTransferDirectory(this.directory(session, record)); this.ensureCurrent(session);
@@ -251,6 +260,20 @@ export class DriveTransferModel {
             maximumBytes: DRIVE_TRANSFER_MAX_BYTES, expectedBytes: entry.sizeBytes }, control);
           record.bytes = result.bytes;
         });
+      if (openAfterDownload && record.state === 'completed') {
+        const path = this.directory(session, record) + '/' + record.name;
+        await copyTransferFile(this.directory(session, record) + '/content', path, record.bytes!,
+          (): void => this.ensureCurrent(session));
+        this.ensureCurrent(session);
+        const uri = fileUri.getUriFromPath(path);
+        if (!await filePreview.canPreview(session.context, uri)) {
+          throw new NasFailure(NasErrorKind.Unsupported, '系统暂不支持预览此文件。');
+        }
+        this.ensureCurrent(session);
+        if (!this.foreground) { throw new NasFailure(NasErrorKind.Cancelled, '请返回应用后重新打开文件。'); }
+        await filePreview.openPreview(session.context, { uri: uri, title: record.name, mimeType: '' });
+        this.notice = '';
+      }
     });
   }
 
@@ -558,6 +581,7 @@ export class DriveTransferModel {
       failure = error as Object;
       record.state = driveTransferFailureState(record.direction, dispatched, failure);
       record.errorText = record.state === 'unknown' ? '上传结果未能确认，请在 NAS 核对目标文件后关闭记录。' : transferMessage(failure);
+      if (this.session === session) { this.errorText = record.errorText; }
       // 即使退出账号，也在旧账号的独立存储中记录中断结果，不向新账号发布旧响应。
       try { await this.save(session, session.records); }
       catch (_) { if (this.session === session) { this.errorText = '结果记录未保存，已暂停新传输，请重新加载记录。'; } }
@@ -589,6 +613,7 @@ export class DriveTransferModel {
     const directory = this.directory(session, record);
     await removeTransferFile(directory + '/upload');
     await removeTransferFile(directory + '/content');
+    if (record.direction === 'download' && record.name !== 'content') { await removeTransferFile(directory + '/' + record.name); }
     await removeTransferFile(directory + '/probe');
     await removeTransferFile(directory + '/remainder');
     try { await fileIo.rmdir(directory); }

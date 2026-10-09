@@ -1,5 +1,5 @@
 import { DriveOriginalModel } from './DriveOriginalModel';
-import { WorkbenchMetrics, WorkbenchNotice } from '../workbench/WorkbenchUi';
+import { WorkbenchNotice } from '../workbench/WorkbenchUi';
 
 @ComponentV2
 export struct DriveOriginalPage {
@@ -41,18 +41,6 @@ export struct DriveOriginalPage {
               }),
             TapGesture({ count: 2 }).onAction((): void => { this.resetView(); this.model.refine(1); })
           ))
-        Row({ space: 8 }) {
-          Button() {
-            Row({ space: 6 }) {
-              SymbolGlyph($r('sys.symbol.arrow_counterclockwise')).fontSize(16).fontColor([$r('sys.color.icon_emphasize')])
-              Text('还原显示').fontSize(14).fontColor($r('sys.color.font_emphasize'))
-            }
-          }.buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
-            .onClick((): void => { this.resetView(); this.model.refine(1); }).accessibilityText('还原原图显示比例')
-          if (this.model.staticFrame) {
-            Text('动态图像以静态画面显示。').fontSize(12).fontColor($r('sys.color.font_secondary')).layoutWeight(1)
-          }
-        }.width('100%')
       } else if (this.model.busy) {
         Column({ space: 8 }) {
           LoadingProgress().width(32).height(32)
