@@ -37,7 +37,7 @@ const { PhotoLibrary } = loadSource('features/photos/PhotoLibrary.ets', {
   '@kit.PerformanceAnalysisKit': { hilog: { error() {} } },
   '../../core/domain/DsmProtocol': protocol,
   '../../core/domain/PhotosProtocol': photos,
-  './PhotoMediaStore': { PhotoMediaStore: MockPhotoMediaStore },
+  '../../platform/PhotoExif': { readPhotoExif: async () => ({}) }, './PhotoMediaStore': { PhotoMediaStore: MockPhotoMediaStore },
 });
 const operations = loadSource('core/domain/FileOperations.ts', { './DsmProtocol': protocol });
 const taskState = loadSource('core/domain/FileTaskState.ts', { './DsmProtocol': protocol, './FileOperations': operations });

@@ -21,7 +21,8 @@ vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(root, 'features/
 }).outputText, { module: navFixture, exports: navFixture.exports,
   require(id) { return require('../../work/core-build/domain/' + id.split('/').at(-1) + '.js'); } });
 const globals = { ...navFixture.exports, DriveEntryKind: drive.DriveEntryKind, DriveView: V, PhotosSpace: P,
-  canPreviewDriveOriginal: require('../../work/core-build/domain/DriveOriginalProtocol.js').canPreviewDriveOriginal };
+  canPreviewDriveOriginal: require('../../work/core-build/domain/DriveOriginalProtocol.js').canPreviewDriveOriginal,
+  canPreviewDriveMedia: require('../../work/core-build/domain/DriveOriginalProtocol.js').canPreviewDriveMedia };
 
 // 执行实际方法体，支持单行方法；ArkUI 构建器仅检查必要的宿主连接。
 function method(source, name) {
@@ -246,7 +247,7 @@ test('Drive file action prepares supported files for preview without navigating 
   assert.deepEqual(state.calls, []);
 });
 
-test('permitted images open original preview while ordinary files keep the download action', () => {
+test('permitted media open thumbnail preview even when original downloading is forbidden', () => {
   const state = page(); state.openDriveOriginal = () => state.calls.push('drive-original');
   state.model.driveTransfers = { download() { state.calls.push('drive-download'); } };
   state.openDriveTransfers = () => state.calls.push('drive-tasks');
@@ -255,7 +256,7 @@ test('permitted images open original preview while ordinary files keep the downl
   open.call(state, picture); assert.deepEqual(state.calls, ['drive-original']);
   state.calls.length = 0;
   open.call(state, { ...picture, capabilities: { canRead: true, canDownload: false, canPreview: true } });
-  assert.deepEqual(state.calls, []);
+  assert.deepEqual(state.calls, ['drive-original']);
 });
 
 

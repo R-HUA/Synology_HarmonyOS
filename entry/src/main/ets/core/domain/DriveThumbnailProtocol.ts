@@ -9,10 +9,12 @@ export const DRIVE_THUMBNAIL_MAX_BYTES = 4 * 1024 * 1024;
 export interface DriveThumbnailRequest { fileId: string; versionId?: string; }
 
 /** 文件类型资源沿用已核对的 Drive 静态路径；扩展名只允许单个安全路径段。 */
-export function driveFileTypeIconPath(filename: string): string {
+export function driveFileTypeIconPath(filename: string, folder: boolean = false): string {
   const dot = filename.lastIndexOf('.');
   const extension = dot > 0 ? filename.slice(dot + 1).toLowerCase() : '';
-  const type = /^[a-z0-9]{1,16}$/.test(extension) ? extension : 'xxx';
+  const type = folder ? 'folder' : /^(?:jpe?g|jpe|jfif|png|gif|webp|bmp|tiff?|svg|ico|heic|heif|avif|dng|raw)$/.test(extension) ? 'image' :
+    /^(?:mp4|mov|mkv|avi|m4v|webm|flv|wmv|3gp|mpeg|mpg|mts|m2ts|ts)$/.test(extension) ? 'video' :
+      /^[a-z0-9]{1,16}$/.test(extension) ? extension : 'xxx';
   return '/webman/3rdparty/SynologyDrive-Drive/images/_Asset/FileType/128/' + type + '.png';
 }
 

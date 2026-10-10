@@ -17,8 +17,8 @@ export struct ExtensionStatusPanel {
   build() {
     Column({ space: 8 }) {
       WorkbenchNotice({ text: this.model.capabilityText(this.feature), warning: true })
-      WorkbenchNotice({ text: this.feature === 'fileSharing' ? this.model.shareError : this.model.downloadError, warning: true })
-      WorkbenchNotice({ text: this.feature === 'fileSharing' ? this.model.shareNotice : this.model.downloadNotice })
+      WorkbenchNotice({ text: this.feature === 'fileSharing' ? this.model.shareError : this.feature === 'photos' ? this.model.photoError : this.model.downloadError, warning: true })
+      WorkbenchNotice({ text: this.feature === 'fileSharing' ? this.model.shareNotice : this.feature === 'photos' ? this.model.photoNotice : this.model.downloadNotice })
       if (this.model.recordsError.length > 0 || !this.model.recordsReady) {
         WorkbenchNotice({ text: this.model.recordsError || '操作记录尚未加载，读取列表不受影响，新的修改已暂停。', warning: true })
         Button('重新加载操作记录').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: 48 })

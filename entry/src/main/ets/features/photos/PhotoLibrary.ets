@@ -5,6 +5,8 @@ import { NasErrorKind, NasFailure } from '../../core/domain/DsmProtocol';
 import { mergePhotoItems, NasPhotoAlbum, NasPhotoItem, NasPhotoMediaAccess, PhotosSpace } from '../../core/domain/PhotosProtocol';
 import { NasConnector } from '../../core/network/NasConnector';
 import { PhotoMediaStore } from './PhotoMediaStore';
+import { PhotoFolder } from '../../core/domain/PhotoActions';
+import { readPhotoExif } from '../../platform/PhotoExif';
 
 export type PhotoLibrarySection = 'timeline' | 'albums';
 interface PhotoTabContext {
@@ -52,6 +54,11 @@ export class PhotoLibrary {
   @Trace mediaErrorText: string = '';
   @Trace thumbnailErrorText: string = '';
   @Trace exportNotice: string = '';
+  @Trace originalExif: Record<string, string> = {};
+  @Trace actionAlbums: NasPhotoAlbum[] = [];
+  @Trace actionFolders: PhotoFolder[] = [];
+  @Trace targetsBusy: boolean = false;
+  @Trace targetsError: string = '';
   private thumbnails: Map<string, PhotoThumbnailState> = new Map();
   private itemByKey: Map<string, NasPhotoItem> = new Map();
   private connector: NasConnector | undefined = undefined;
@@ -235,6 +242,21 @@ export class PhotoLibrary {
       if (detail.thumbnail === undefined) { this.mediaErrorText = '此照片尚未提供可用预览。'; return; }
       const preview = await this.media.thumbnail(detail, 'xl');
       if (this.currentDetail(ticket, detailTicket)) { this.previewPath = this.media.pinPreview(detail, 'xl') || preview; }
+      let favorite = detail.favorite, location = detail.location;
+      if (detail.folderId !== undefined && trusted.space !== PhotosSpace.WithMe) {
+        location = await connector.photoLocation(detail);
+        if (!this.currentDetail(ticket, detailTicket)) { return; }
+      }
+      if (detail.favorite === undefined && trusted.space !== PhotosSpace.WithMe &&
+        connector.supportsPhotoAction({ action: 'favorite', item: detail, favorite: true })) {
+        favorite = await connector.photoFavorite(detail);
+      }
+      if (this.currentDetail(ticket, detailTicket)) {
+        this.detail = { id: detail.id, filename: detail.filename, bytes: detail.bytes, space: detail.space, mediaType: detail.mediaType,
+          takenAt: detail.takenAt, width: detail.width, height: detail.height, orientation: detail.orientation, thumbnail: detail.thumbnail,
+          sourceSpace: detail.sourceSpace, folderId: detail.folderId, description: detail.description, exif: detail.exif, favorite,
+          location, address: detail.address, tags: detail.tags };
+      }
     } catch (error) {
       if (this.currentDetail(ticket, detailTicket)) {
         this.mediaErrorText = this.message(error as Error, '照片详情或预览读取失败，请重试。');
@@ -253,6 +275,7 @@ export class PhotoLibrary {
     this.loadingMedia = false;
     this.mediaErrorText = '';
     this.exportNotice = '';
+    this.originalExif = {}; this.actionAlbums = []; this.actionFolders = []; this.targetsBusy = false; this.targetsError = '';
     this.applyDemand();
   }
 
@@ -267,7 +290,13 @@ export class PhotoLibrary {
     this.exportNotice = '';
     try {
       const original = await this.media.original(item, this.detailAccess);
-      if (this.currentDetail(ticket, detailTicket)) { this.originalPath = original; }
+      if (this.currentDetail(ticket, detailTicket)) {
+        this.originalPath = original;
+        if (item.mediaType !== 'video') {
+          const exif = await readPhotoExif(original);
+          if (this.currentDetail(ticket, detailTicket)) { this.originalExif = exif; }
+        }
+      }
     } catch (error) {
       if (this.currentDetail(ticket, detailTicket)) {
         this.mediaErrorText = this.message(error as Error, '原图读取未完成，请重试。');
@@ -285,6 +314,16 @@ export class PhotoLibrary {
     this.mediaErrorText = '';
     this.exportNotice = '';
     try {
+      if (this.originalPath.length === 0) {
+        const original = await this.media.original(item, this.detailAccess);
+        if (!this.currentDetail(ticket, detailTicket)) { return false; }
+        this.originalPath = original;
+        if (item.mediaType !== 'video') {
+          const exif = await readPhotoExif(original);
+          if (!this.currentDetail(ticket, detailTicket)) { return false; }
+          this.originalExif = exif;
+        }
+      }
       const saved = await this.media.exportOriginal(item);
       if (!this.currentDetail(ticket, detailTicket)) { return false; }
       if (saved) { this.exportNotice = '原图已另存'; }
@@ -296,6 +335,34 @@ export class PhotoLibrary {
       }
       return false;
     } finally { if (this.currentDetail(ticket, detailTicket)) { this.loadingMedia = false; } }
+  }
+
+  /** 目标只从当前会话读取，照片身份与目标不能沿用上次连接。 */
+  async loadActionTargets(mode: 'album' | 'copy', parentId: number = 0): Promise<void> {
+    const connector = this.connector, item = this.detail;
+    if (connector === undefined || item === undefined || this.targetsBusy) { return; }
+    const ticket = this.generation, detailTicket = this.detailGeneration;
+    this.targetsBusy = true; this.targetsError = ''; this.actionAlbums = []; this.actionFolders = [];
+    try {
+      if (mode === 'album') {
+        const albums: NasPhotoAlbum[] = [];
+        let offset = 0, more = true;
+        while (more) {
+          const page = await connector.photoActionAlbums(offset);
+          if (!this.currentDetail(ticket, detailTicket)) { return; }
+          albums.push(...page.items); offset += page.items.length; more = page.items.length > 0 && page.hasMore;
+        }
+        this.actionAlbums = albums;
+      } else {
+        const folders = await connector.photoFolders(item.space, parentId);
+        if (this.currentDetail(ticket, detailTicket)) { this.actionFolders = folders; }
+      }
+    } catch (error) {
+      if (this.currentDetail(ticket, detailTicket)) {
+        this.targetsError = this.message(error as Error, '目标读取失败，请重试。');
+        await this.handleFailure(error as Error, ticket, 'targets');
+      }
+    } finally { if (this.currentDetail(ticket, detailTicket)) { this.targetsBusy = false; } }
   }
 
   thumbnailPath(item: NasPhotoItem): string {

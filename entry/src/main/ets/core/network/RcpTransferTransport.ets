@@ -132,6 +132,7 @@ export class RcpTransferTransport implements NasTransferTransport {
     let callbackFailure: NasFailure | undefined = undefined;
     let failure: NasFailure | undefined = undefined;
     let unsubscribe = (): void => {};
+    let responseStatus = 0;
     try {
       await localSpaceBudget.reserve(target.directory, destination, target.expectedBytes ?? target.maximumBytes);
       this.check(control);
@@ -173,6 +174,7 @@ export class RcpTransferTransport implements NasTransferTransport {
       unsubscribe = control.cancellation.subscribe((): void => { this.session.cancel(request); });
       this.check(control);
       const reply = await this.session.fetch(request);
+      responseStatus = reply.statusCode;
       this.check(control);
       if (callbackFailure !== undefined) { throw callbackFailure as Error; }
       // 不跟随重定向：3xx 一律显式失败，绝不把认证信息转发到别的地址。
@@ -212,6 +214,10 @@ export class RcpTransferTransport implements NasTransferTransport {
       }
     }
     if (failure !== undefined) {
+      if (plan.fields.some((field): boolean => field.name === 'method' && field.content === 'get_thumbnail')) {
+        hilog.error(0x0000, 'NasTransfer', 'operation=drive_thumbnail result=failed status=%{public}d bytes=%{public}d kind=%{public}d code=%{public}d',
+          responseStatus, bytes, failure.kind, failure.code);
+      }
       // 只清理本次独占创建的临时文件；清理异常不得掩盖真正的失败原因。
       try { discard(); } catch (_) {}
       throw failure as Error;

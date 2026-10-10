@@ -10,7 +10,7 @@ const protocol = require('../../work/core-build/domain/DriveThumbnailProtocol.js
 const transport = require('../../work/core-build/network/NasTransferTransport.js');
 const gate = () => { let resolve; const promise = new Promise(r => resolve = r); return { promise, resolve }; };
 const flush = () => new Promise(setImmediate);
-const item = (id, versionId = '1') => ({ fileId: String(id), name: 'a.jpg', kind: 'file', versionId,
+const item = (id, versionId = '1') => ({ fileId: String(id), name: 'a.type' + id, kind: 'file', versionId,
   capabilities: { canRead: true, canPreview: true } });
 
 function fixture(options = {}) {
@@ -42,8 +42,8 @@ function fixture(options = {}) {
     calls.push({ input, directory, control }); directories.add(directory);
     if (options.download) await options.download(input, control);
     return { path: directory + '/content', bytes: options.bytes || 100 };
-  }, async fileTypeIconDrive(filename, directory, control) {
-    iconCalls.push({ filename, directory, control }); directories.add(directory);
+  }, async fileTypeIconDrive(filename, directory, control, folder) {
+    iconCalls.push({ filename, directory, control, folder }); directories.add(directory);
     if (options.iconDownload) await options.iconDownload(filename, control);
     return { path: directory + '/content', bytes: options.bytes || 100 };
   } };
@@ -53,24 +53,17 @@ function fixture(options = {}) {
   return { store, calls, iconCalls, removed, failures, releases, attach, directories };
 }
 
-test('only visible permitted files load; duplicate media observations share one request and cached image', async () => {
+test('folders, images and videos use static type icons; version changes reuse the asset', async () => {
   const f = fixture();
-  f.store.setVisible({ ...item(1), kind: 'folder' }, true);
-  f.store.setVisible({ ...item(1), capabilities: { canRead: false } }, true);
-  f.store.setVisible(item(1), false);
-  assert.equal(f.calls.length, 0);
-  assert.equal(f.iconCalls.length, 0);
-  f.store.setVisible(item(1), true); f.store.setVisible(item(1), true);
+  const folder = { ...item(1), kind: 'folder' }, photo = { ...item(2), name: 'a.jpg' }, video = { ...item(3), name: 'a.mp4' };
+  for (const entry of [folder, photo, video]) f.store.setVisible(entry, true);
   await flush();
-  assert.equal(f.calls.length, 1);
-  assert.ok(f.store.path(item(1)).endsWith('/content'));
-  assert.deepEqual(f.releases, ['pixels', 'source']);
-  f.store.setVisible(item(1), false); f.store.setVisible(item(1), true);
-  assert.equal(f.calls.length, 1);
-  f.store.setVisible(item(1, '2'), true); await flush();
-  assert.equal(f.calls.length, 2);
+  assert.equal(f.calls.length, 0); assert.equal(f.iconCalls.length, 3);
+  assert.equal(f.iconCalls[0].folder, true);
+  assert.ok(f.store.path(folder).endsWith('/content'));
+  f.store.setVisible({ ...photo, versionId: '2' }, true); await flush();
+  assert.equal(f.iconCalls.length, 3);
 });
-
 test('renaming an unchanged media revision reuses its cached thumbnail across row recreation', async () => {
   const f = fixture();
   const original = item(1);
@@ -78,27 +71,27 @@ test('renaming an unchanged media revision reuses its cached thumbnail across ro
   const cached = f.store.path(original);
   assert.ok(cached.endsWith('/content'));
   f.store.setVisible(original, false);
-  const renamed = { ...original, name: 'renamed.jpg' };
+  const renamed = { ...original, name: 'renamed.type1' };
   f.store.setVisible(renamed, true); await flush();
-  assert.equal(f.calls.length, 1);
+  assert.equal(f.iconCalls.length, 1);
   assert.equal(f.store.path(renamed), cached);
   assert.equal(f.removed.length, 0);
 });
 
 test('concurrency is bounded and hidden queued rows never start', async () => {
-  const pending = gate(); const f = fixture({ download: () => pending.promise });
+  const pending = gate(); const f = fixture({ iconDownload: () => pending.promise });
   for (let n = 1; n <= 8; n++) f.store.setVisible(item(n), true);
-  assert.equal(f.calls.length, 3);
+  assert.equal(f.iconCalls.length, 3);
   f.store.setVisible(item(8), false);
   pending.resolve(); await flush(); await flush();
-  assert.equal(f.calls.length, 7);
-  assert.equal(f.calls.some(c => c.input.fileId === '8'), false);
+  assert.equal(f.iconCalls.length, 7);
+  assert.equal(f.iconCalls.some(c => c.filename === 'a.type8'), false);
 });
 
 test('account reset cancels in-flight reads and late results cannot enter the next cache', async () => {
-  const pending = gate(); const f = fixture({ download: () => pending.promise });
+  const pending = gate(); const f = fixture({ iconDownload: () => pending.promise });
   f.store.setVisible(item(1), true);
-  const first = f.calls[0];
+  const first = f.iconCalls[0];
   f.attach(); pending.resolve(); await flush();
   assert.equal(first.control.cancellation.cancelled, true);
   assert.equal(f.store.path(item(1)), '');
@@ -108,11 +101,11 @@ test('account reset cancels in-flight reads and late results cannot enter the ne
 
 test('background cancels reads; foreground resumes only still-visible rows', async () => {
   const pending = gate(); let n = 0;
-  const f = fixture({ download: async () => { if (++n === 1) await pending.promise; } });
+  const f = fixture({ iconDownload: async () => { if (++n === 1) await pending.promise; } });
   f.store.setVisible(item(1), true); f.store.setForeground(false);
-  assert.equal(f.calls[0].control.cancellation.cancelled, true);
-  pending.resolve(); await flush(); assert.equal(f.calls.length, 1);
-  f.store.setForeground(true); await flush(); assert.equal(f.calls.length, 2);
+  assert.equal(f.iconCalls[0].control.cancellation.cancelled, true);
+  pending.resolve(); await flush(); assert.equal(f.iconCalls.length, 1);
+  f.store.setForeground(true); await flush(); assert.equal(f.iconCalls.length, 2);
   assert.ok(f.store.path(item(1)).length > 0);
 });
 
@@ -125,8 +118,8 @@ test('malformed or oversized images are released, removed and retried only on ex
     assert.deepEqual(f.releases, ['source']);
     assert.equal(f.removed.length, 1);
     f.store.setVisible(item(1), false); f.store.setVisible(item(1), true); await flush();
-    assert.equal(f.calls.length, 1);
-    f.store.retryVisible(); await flush(); assert.equal(f.calls.length, 2);
+    assert.equal(f.iconCalls.length, 1);
+    f.store.retryVisible(); await flush(); assert.equal(f.iconCalls.length, 2);
   }
 });
 
@@ -144,20 +137,10 @@ test('files without thumbnails share type icons and hiding one row keeps other v
   assert.equal(f.iconCalls.length, 1);
 });
 
-test('missing media thumbnail uses its file type icon but authentication failures remain explicit', async () => {
-  const f = fixture({ download: () => { throw new dsm.NasFailure(dsm.NasErrorKind.Http, 'not found', 404); } });
-  f.store.setVisible(item(1), true); await flush();
-  assert.equal(f.calls.length, 1); assert.equal(f.iconCalls.length, 1);
-  assert.ok(f.store.path(item(1)).endsWith('/content')); assert.equal(f.store.errorText, '');
-  const expired = fixture({ download: () => { throw new dsm.NasFailure(dsm.NasErrorKind.SessionExpired, 'expired'); } });
-  expired.store.setVisible(item(1), true); await flush();
-  assert.equal(expired.iconCalls.length, 0); assert.equal(expired.failures.length, 1);
-});
-
 test('session expiration is reported once without retrying or exposing credentials', async () => {
-  const f = fixture({ download: () => { throw new dsm.NasFailure(dsm.NasErrorKind.SessionExpired, 'expired'); } });
+  const f = fixture({ iconDownload: () => { throw new dsm.NasFailure(dsm.NasErrorKind.SessionExpired, 'expired'); } });
   f.store.setVisible(item(1), true); await flush();
-  assert.equal(f.failures.length, 1); assert.equal(f.calls.length, 1);
+  assert.equal(f.failures.length, 1); assert.equal(f.iconCalls.length, 1);
   assert.equal(f.store.path(item(1)), '');
 });
 
@@ -169,5 +152,5 @@ test('byte budget evicts old cache files and cleanup failure stops additional ca
   const bad = fixture({ bytes: 4 * 1024 * 1024, cleanupFailure: true });
   for (let n = 1; n <= 7; n++) { bad.store.setVisible(item(n), true); await flush(); bad.store.setVisible(item(n), false); }
   bad.store.setVisible(item(8), true); await flush();
-  assert.equal(bad.calls.length, 7); assert.match(bad.store.errorText, /清理/);
+  assert.equal(bad.iconCalls.length, 7); assert.match(bad.store.errorText, /清理/);
 });

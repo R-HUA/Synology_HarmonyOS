@@ -20,6 +20,7 @@ export struct FileStationPage {
   @Param pickerError: string = '';
   @Param canConfirm: boolean = false;
   @Event onOpenForm: (kind: string, entry?: NasFileEntry) => void = (): void => {};
+  @Event onOpenImage: (entry: NasFileEntry) => void = (): void => {};
   @Event onNavigateBreadcrumb: (path: string) => void = (): void => {};
   @Event onApplyDestination: () => void = (): void => {};
   @Event onCancelDestination: () => void = (): void => {};
@@ -158,6 +159,7 @@ export struct FileStationPage {
               menu: this.pickerMode.length === 0 ? this.entryMenu(entry) : [],
               onOpen: (): void => {
                 if (entry.isDirectory) { this.model.openDirectory(entry); }
+                else if (/\.(?:jpe?g|png|gif|webp|bmp|heic|heif|tiff?|dng|avif|avis)$/i.test(entry.name)) { this.onOpenImage(entry); }
                 else { this.onOpenForm('detail', entry); }
               } })
           }

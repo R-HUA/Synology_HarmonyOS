@@ -1,10 +1,13 @@
 import { nasInteger, nasRecord, nasString, NasErrorKind, NasFailure } from './DsmProtocol';
 
-export type ExtensionFeature = 'fileSharing' | 'nasDownloads';
+export type ExtensionFeature = 'fileSharing' | 'nasDownloads' | 'photos';
 export interface ExtensionPendingWrite {
   feature: ExtensionFeature;
   operation: string;
   createdAt: number;
+  photoId?: number;
+  photoSpace?: number;
+  taskId?: number;
 }
 export interface ExtensionWriteSnapshot {
   version: number;
@@ -17,7 +20,7 @@ export function decodeExtensionWrites(text: string, scope: string): ExtensionPen
   try { parsed = JSON.parse(text) as Object; }
   catch { throw new NasFailure(NasErrorKind.Protocol, '扩展操作记录损坏，请先修复记录，不能重复提交。'); }
   const data = nasRecord(parsed);
-  if (data['version'] !== 1 || data['scope'] !== scope || !Array.isArray(data['pending']) || data['pending'].length > 2) {
+  if (data['version'] !== 1 || data['scope'] !== scope || !Array.isArray(data['pending']) || data['pending'].length > 3) {
     throw new NasFailure(NasErrorKind.Protocol, '扩展操作记录不匹配，暂不能提交新的操作。');
   }
   const result: ExtensionPendingWrite[] = [];
@@ -26,12 +29,18 @@ export function decodeExtensionWrites(text: string, scope: string): ExtensionPen
     const feature = nasString(record['feature']);
     const operation = nasString(record['operation']);
     const createdAt = nasInteger(record['createdAt']);
-    if ((feature !== 'fileSharing' && feature !== 'nasDownloads') ||
-      !['create', 'edit', 'delete', 'pause', 'resume'].includes(operation) || createdAt < 1 ||
+    if ((feature !== 'fileSharing' && feature !== 'nasDownloads' && feature !== 'photos') ||
+      !(feature === 'photos' ? ['favorite', 'delete', 'album', 'share', 'copy'] : ['create', 'edit', 'delete', 'pause', 'resume']).includes(operation) || createdAt < 1 ||
       result.some((existing: ExtensionPendingWrite): boolean => existing.feature === feature)) {
       throw new NasFailure(NasErrorKind.Protocol, '扩展操作记录无效，暂不能提交新的操作。');
     }
-    result.push({ feature: feature as ExtensionFeature, operation: operation, createdAt: createdAt });
+    const pending: ExtensionPendingWrite = { feature: feature as ExtensionFeature, operation, createdAt };
+    if (feature === 'photos') {
+      pending.photoId = nasInteger(record['photoId']); pending.photoSpace = nasInteger(record['photoSpace']);
+      if (![0, 1].includes(pending.photoSpace)) { throw new NasFailure(NasErrorKind.Protocol, '照片操作来源无效。'); }
+      if (record['taskId'] !== undefined) { pending.taskId = nasInteger(record['taskId']); }
+    }
+    result.push(pending);
   }
   return result;
 }

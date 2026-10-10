@@ -415,7 +415,7 @@ function realLibrary(f, connector, globals = {}) {
   const { PhotoLibrary } = load('features/photos/PhotoLibrary.ets', {
     '@kit.ArkTS': { util: { generateRandomUUID: () => '11111111-1111-4111-8111-111111111111' } },
     '@kit.PerformanceAnalysisKit': { hilog: { error() {} } }, '../../core/domain/DsmProtocol': dsm,
-    '../../core/domain/PhotosProtocol': photos, './PhotoMediaStore': { PhotoMediaStore: class { constructor() { return f.store; } } },
+    '../../core/domain/PhotosProtocol': photos, '../../platform/PhotoExif': { readPhotoExif: async () => ({}) }, './PhotoMediaStore': { PhotoMediaStore: class { constructor() { return f.store; } } },
   }, globals);
   const library = new PhotoLibrary(); library.attach(connector, { cacheDir: '/cache/alice' }, async () => {}); return library;
 }

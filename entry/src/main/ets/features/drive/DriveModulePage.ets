@@ -3,7 +3,7 @@ import { uiMaterial } from '@kit.ArkUI';
 import { DriveEntry, DriveEntryKind, DriveView, driveViewLabel, driveEntryRenderKey } from '../../core/domain/DriveProtocol';
 import { driveActionAllowed } from '../../core/domain/DriveActionProtocol';
 import type { DriveAction } from '../../core/domain/DriveActionProtocol';
-import { canPreviewDriveOriginal } from '../../core/domain/DriveOriginalProtocol';
+import { canPreviewDriveOriginal, canPreviewDriveMedia } from '../../core/domain/DriveOriginalProtocol';
 import { telemetryTimestamp } from '../../core/domain/TelemetryProtocol';
 import { driveFileLinkAllowed } from '../../core/domain/DriveCollaborationProtocol';
 import { ConnectionViewModel } from '../connection/ConnectionViewModel';
@@ -333,8 +333,9 @@ export struct DriveModulePage {
   private openDriveEntry(entry: DriveEntry): void {
     if (this.model.drive.busy || !entry.capabilities.canRead) { return; }
     if (entry.kind === DriveEntryKind.Folder) { this.model.drive.openFolder(entry); return; }
-    if (this.model.drive.view === DriveView.Trash || !entry.capabilities.canDownload) { return; }
-    if (canPreviewDriveOriginal(entry)) { this.openDriveOriginal(entry); return; }
+    if (this.model.drive.view === DriveView.Trash) { return; }
+    if (canPreviewDriveMedia(entry)) { this.openDriveOriginal(entry); return; }
+    if (!entry.capabilities.canDownload) { return; }
     if (this.model.driveTransfers.canPreview(entry)) { this.model.driveTransfers.download(entry, true); }
     else { this.detailEntry = entry; this.detailVisible = true; }
   }

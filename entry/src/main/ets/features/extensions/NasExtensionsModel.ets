@@ -9,6 +9,7 @@ import { DownloadTask, DownloadTaskActionResult } from '../downloadStation/Downl
 import { CapabilitySnapshot } from '../../core/capabilities/CapabilityRegistry';
 import { ExtensionFeature, ExtensionPendingWrite, extensionWriteIsUncertain } from '../../core/domain/ExtensionWriteState';
 import { ExtensionWriteStore } from './ExtensionWriteStore';
+import { PhotoActionInput, PhotoActionResult } from '../../core/domain/PhotoActions';
 
 @ObservedV2
 export class NasExtensionsModel {
@@ -19,6 +20,9 @@ export class NasExtensionsModel {
   @Trace downloadError: string = '';
   @Trace shareNotice: string = '';
   @Trace downloadNotice: string = '';
+  @Trace photoError: string = '';
+  @Trace photoNotice: string = '';
+  @Trace photoShare: string = '';
   @Trace pending: ExtensionPendingWrite[] = [];
   @Trace capabilities: CapabilitySnapshot[] = [];
   @Trace shares: ShareLink[] = [];
@@ -78,6 +82,7 @@ export class NasExtensionsModel {
     this.downloadError = '';
     this.shareNotice = '';
     this.downloadNotice = '';
+    this.photoError = ''; this.photoNotice = ''; this.photoShare = '';
     this.pending = [];
     this.capabilities = [];
     this.shares = [];
@@ -226,6 +231,47 @@ export class NasExtensionsModel {
     return this.pending.some((record: ExtensionPendingWrite): boolean => record.feature === feature);
   }
 
+  canPhotoAction(input: PhotoActionInput): boolean {
+    return this.canWrite('photos') && this.connector!.supportsPhotoAction(input);
+  }
+
+  /** 与其他扩展操作共用账号锁与先落盘规则，后台回执始终保留待确认状态。 */
+  async performPhotoAction(input: PhotoActionInput): Promise<boolean> {
+    if (!this.canPhotoAction(input)) { return false; }
+    const ticket = this.generation;
+    const result: PhotoActionResult[] = [];
+    const confirmed = await this.write('photos', input.action, async (connector: NasConnector): Promise<boolean> => {
+      const reply = await connector.photoAction(input); result.push(reply);
+      if (ticket !== this.generation) { return false; }
+      if (reply.taskId !== undefined) {
+        const pending = this.pending.map((record: ExtensionPendingWrite): ExtensionPendingWrite =>
+          record.feature === 'photos' ? { feature: record.feature, operation: record.operation, createdAt: record.createdAt,
+            photoId: record.photoId, photoSpace: record.photoSpace, taskId: reply.taskId } : record);
+        this.pending = pending;
+        await this.store.save(pending);
+      }
+      return reply.completed;
+    }, { feature: 'photos', operation: input.action, createdAt: Date.now(), photoId: input.item.id, photoSpace: input.item.space });
+    if (ticket === this.generation && confirmed && result[0]?.sharePassphrase !== undefined) {
+      this.photoShare = this.origin + '/mo/sharing/' + encodeURIComponent(result[0].sharePassphrase!);
+    }
+    return confirmed;
+  }
+
+  async refreshPhotoTask(): Promise<void> {
+    const connector = this.connector, record = this.pending.find((item: ExtensionPendingWrite): boolean => item.feature === 'photos');
+    if (this.busy || connector === undefined || record?.taskId === undefined) { return; }
+    const ticket = this.generation;
+    this.busy = true; this.photoError = '';
+    try {
+      if (!await connector.photoTaskDone(record.taskId) || ticket !== this.generation) { return; }
+      const pending = this.pending.filter((item: ExtensionPendingWrite): boolean => item.feature !== 'photos');
+      await this.store.save(pending);
+      if (ticket === this.generation) { this.pending = pending; this.photoNotice = '操作已完成'; }
+    } catch (error) { if (ticket === this.generation) { await this.reportFailure('photos', error as Error, ticket); } }
+    finally { if (ticket === this.generation) { this.busy = false; } }
+  }
+
   canWrite(feature: ExtensionFeature): boolean {
     const capability = this.capabilities.find((item: CapabilitySnapshot): boolean => item.feature === feature);
     return this.connector !== undefined && !this.busy && this.recordsReady && this.pending.length === 0 && this.writeAllowed() &&
@@ -322,12 +368,13 @@ export class NasExtensionsModel {
     }
   }
 
-  private async write(feature: ExtensionFeature, operation: string, action: (connector: NasConnector) => Promise<boolean>): Promise<boolean> {
+  private async write(feature: ExtensionFeature, operation: string, action: (connector: NasConnector) => Promise<boolean>,
+    record?: ExtensionPendingWrite): Promise<boolean> {
     const connector = this.connector;
     if (connector === undefined || !this.canWrite(feature)) { return false; }
     const ticket = this.generation;
     const store = this.store;
-    const pending: ExtensionPendingWrite[] = [...this.pending, { feature: feature, operation: operation, createdAt: Date.now() }];
+    const pending: ExtensionPendingWrite[] = [...this.pending, record ?? { feature: feature, operation: operation, createdAt: Date.now() }];
     let submitted = false;
     this.busy = true;
     this.setError(feature, '');
@@ -390,10 +437,10 @@ export class NasExtensionsModel {
   }
 
   private setError(feature: ExtensionFeature, text: string): void {
-    if (feature === 'fileSharing') { this.shareError = text; } else { this.downloadError = text; }
+    if (feature === 'fileSharing') { this.shareError = text; } else if (feature === 'photos') { this.photoError = text; } else { this.downloadError = text; }
   }
   private setNotice(feature: ExtensionFeature, text: string): void {
-    if (feature === 'fileSharing') { this.shareNotice = text; } else { this.downloadNotice = text; }
+    if (feature === 'fileSharing') { this.shareNotice = text; } else if (feature === 'photos') { this.photoNotice = text; } else { this.downloadNotice = text; }
   }
   private message(error: Error, fallback: string): string { return error instanceof NasFailure ? error.message : fallback; }
 }

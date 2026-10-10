@@ -54,7 +54,8 @@ async function fixture(options = {}) {
       assert.ok(options.replies?.length, 'unexpected extension request');
       return options.replies.shift();
     },
-    capabilitySnapshots: () => ['fileSharing', 'nasDownloads'].map(feature => ({ feature, apiVersion: 1, state: 'unverified', reason: 'readNotVerified' })),
+    capabilitySnapshots: () => ['fileSharing', 'nasDownloads', 'photos'].map(feature => ({ feature, apiVersion: 1, state: 'unverified', reason: 'readNotVerified' })),
+    supportsPhotoAction: () => true,
     readExtension: (feature, action) => action(),
     async list() { if (options.fileSessionError) throw options.fileSessionError; return {}; },
   };
@@ -62,6 +63,23 @@ async function fixture(options = {}) {
   await model.attach(connector, { filesDir: '/private' }, 'https://nas.example.test', 'alice', async () => { calls.expired++; });
   return { model, saved, calls, options, connector };
 }
+
+test('photo mutation saves identity before submission, retains accepted task and never replays it', async () => {
+  const f = await fixture();
+  let submitted = 0;
+  f.connector.photoAction = async () => {
+    submitted++; assert.equal(f.saved[0][0].photoId, 42); return { completed: false, taskId: 12 };
+  };
+  const input = { action: 'delete', item: { id: 42, space: 0, filename: 'a.jpg' } };
+  assert.equal(await f.model.performPhotoAction(input), false);
+  assert.equal(f.model.pending[0].taskId, 12);
+  assert.equal(await f.model.performPhotoAction(input), false); assert.equal(submitted, 1);
+  f.connector.photoTaskDone = async () => false; await f.model.refreshPhotoTask(); assert.equal(f.model.pending.length, 1);
+  f.connector.photoTaskDone = async () => true; await f.model.refreshPhotoTask(); assert.equal(f.model.pending.length, 0);
+  const blocked = await fixture({ saveError: new Error('disk') });
+  blocked.connector.photoAction = async () => { throw new Error('must not send'); };
+  assert.equal(await blocked.model.performPhotoAction(input), false); assert.equal(blocked.model.recordsReady, false);
+});
 
 test('write guard is durable before submission and cannot replay an accepted request without a unique result', async () => {
   const { model, saved, calls } = await fixture();

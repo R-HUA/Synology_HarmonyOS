@@ -11,6 +11,13 @@ const isKind = kind => e => e instanceof NasFailure && e.kind === kind;
 test('file type assets use the observed 128 path and restrict extensions to a single safe segment', () => {
   const base = '/webman/3rdparty/SynologyDrive-Drive/images/_Asset/FileType/128/';
   assert.equal(p.driveFileTypeIconPath('报告.TXT'), base + 'txt.png');
+  assert.equal(p.driveFileTypeIconPath('照片', true), base + 'folder.png');
+  for (const name of ['a.jpg', 'a.PNG', 'a.heic', 'a.webp']) {
+    assert.equal(p.driveFileTypeIconPath(name), base + 'image.png');
+  }
+  for (const name of ['a.mp4', 'a.MOV', 'a.webm']) {
+    assert.equal(p.driveFileTypeIconPath(name), base + 'video.png');
+  }
   assert.equal(p.driveFileTypeIconPath('archive.tar.gz'), base + 'gz.png');
   for (const name of ['README', '.hidden', 'report.', 'a.../secret', 'a.txt?token=1', 'a.汉字']) {
     assert.equal(p.driveFileTypeIconPath(name), base + 'xxx.png');

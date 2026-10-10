@@ -6,10 +6,9 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { NasErrorKind, NasFailure } from '../../core/domain/DsmProtocol';
 import { DriveEntryKind } from '../../core/domain/DriveProtocol';
 import type { DriveEntry } from '../../core/domain/DriveProtocol';
-import { canLoadDriveThumbnail, driveFileTypeIconPath } from '../../core/domain/DriveThumbnailProtocol';
+import { driveFileTypeIconPath } from '../../core/domain/DriveThumbnailProtocol';
 import { NasConnector } from '../../core/network/NasConnector';
 import { NasTransferCancellation } from '../../core/network/NasTransferTransport';
-import type { NasDownloadResult } from '../../core/network/NasTransferTransport';
 
 interface DriveThumbnailCache { key: string; directory: string; path: string; bytes: number; }
 interface DriveThumbnailTask {
@@ -71,7 +70,6 @@ export class DriveThumbnailStore {
       this.active.get(key)?.cancellation.cancel();
       return;
     }
-    if (entry.kind !== DriveEntryKind.File || !entry.capabilities.canRead) { return; }
     this.visible.set(visibleKey, entry);
     const index = this.cache.findIndex((row: DriveThumbnailCache): boolean => row.key === key);
     if (index >= 0) { this.cache.push(this.cache.splice(index, 1)[0]); return; }
@@ -135,19 +133,8 @@ export class DriveThumbnailStore {
     try {
       if (connector === undefined) { return; }
       directory = this.privateDirectory();
-      let result: NasDownloadResult;
-      if (canLoadDriveThumbnail(task.entry)) {
-        try {
-          result = await connector.thumbnailDrive({ fileId: task.entry.fileId, versionId: task.entry.versionId },
-            directory, { cancellation: task.cancellation });
-        } catch (error) {
-          if (!(error instanceof NasFailure) || !(error.kind === NasErrorKind.Http && error.code === 404 ||
-            error.kind === NasErrorKind.Unsupported)) { throw error as Error; }
-          result = await connector.fileTypeIconDrive(task.entry.name, directory, { cancellation: task.cancellation });
-        }
-      } else {
-        result = await connector.fileTypeIconDrive(task.entry.name, directory, { cancellation: task.cancellation });
-      }
+      const result = await connector.fileTypeIconDrive(task.entry.name, directory, { cancellation: task.cancellation },
+        task.entry.kind === DriveEntryKind.Folder);
       this.check(task);
       await this.validateImage(result.path);
       this.check(task);
@@ -216,10 +203,7 @@ export class DriveThumbnailStore {
   }
 
   private key(entry: DriveEntry): string {
-    if (entry.kind === DriveEntryKind.File && !canLoadDriveThumbnail(entry)) {
-      return driveFileTypeIconPath(entry.name);
-    }
-    return JSON.stringify([entry.fileId, entry.versionId, entry.modifiedAt, entry.sizeBytes]);
+    return driveFileTypeIconPath(entry.name, entry.kind === DriveEntryKind.Folder);
   }
 
   /** 同类型图标由多行共用，某一行离屏不能取消其他可见行的请求。 */

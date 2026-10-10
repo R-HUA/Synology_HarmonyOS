@@ -6,6 +6,12 @@ export const DRIVE_ORIGINAL_MAX_BYTES = 128 * 1024 * 1024;
 export const DRIVE_ORIGINAL_DECODE_PIXELS = 8 * 1024 * 1024;
 export interface DriveOriginalSize { width: number; height: number; }
 
+/** 缩略图只要求读取与预览权限；原文件另行检查下载权限。 */
+export function canPreviewDriveMedia(entry: DriveEntry): boolean {
+  return entry.kind === DriveEntryKind.File && entry.capabilities.canRead && entry.capabilities.canPreview &&
+    /\.(?:jpe?g|png|gif|webp|bmp|heic|heif|tiff?|dng|avif|avis|mp4|mov|mkv|avi|m4v)$/i.test(entry.name);
+}
+
 /** 原图通过文件下载取得，不能用预览权限绕过禁止下载的限制。 */
 export function canPreviewDriveOriginal(entry: DriveEntry): boolean {
   return entry.kind === DriveEntryKind.File && entry.capabilities.canRead && entry.capabilities.canDownload &&
@@ -19,9 +25,9 @@ export function validateDriveOriginal(entry: DriveEntry): void {
   }
 }
 
-export function driveOriginalUnchanged(before: DriveEntry, after: DriveEntry): boolean {
+export function driveOriginalUnchanged(before: DriveEntry, after: DriveEntry, original: boolean = true): boolean {
   return before.fileId === after.fileId && before.sizeBytes === after.sizeBytes && before.versionId === after.versionId &&
-    before.modifiedAt === after.modifiedAt && canPreviewDriveOriginal(after);
+    before.modifiedAt === after.modifiedAt && (original ? canPreviewDriveOriginal(after) : canPreviewDriveMedia(after));
 }
 
 /** 文件保持完整，显示时按窗口与缩放需要解码；限制的是 PixelMap，不是原文件分辨率。 */

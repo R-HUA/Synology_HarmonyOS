@@ -16,6 +16,13 @@ export interface NasPhotoItem {
   orientation?: number;
   thumbnail?: NasPhotoThumbnail;
   sourceSpace?: PhotosSpace;
+  favorite?: boolean;
+  folderId?: number;
+  description?: string;
+  exif?: Record<string, string>;
+  location?: string;
+  address?: string;
+  tags?: string[];
 }
 
 // 授权上下文只在当前连接内存中使用；scope 是本机随机标识，不包含分享口令。
@@ -61,6 +68,11 @@ export function decodePhotosPage(data: Record<string, Object>, space: PhotosSpac
     if (!['photo', 'video', 'live'].includes(mediaType) || identities.has(id)) { throw incompatiblePhotos(); }
     identities.add(id);
     const item: NasPhotoItem = { id: id, filename: filename, bytes: bytes, space: space, mediaType: mediaType };
+    if (row['is_favorite'] !== undefined) {
+      if (typeof row['is_favorite'] !== 'boolean') { throw incompatiblePhotos(); }
+      item.favorite = row['is_favorite'] as boolean;
+    }
+    if (row['folder_id'] !== undefined) { item.folderId = nasInteger(row['folder_id']); }
     if (row['time'] !== undefined) {
       const seconds = nasInteger(row['time']);
       if (seconds > MAX_PHOTO_TIME_SECONDS) { throw incompatiblePhotos(); }
@@ -71,6 +83,34 @@ export function decodePhotosPage(data: Record<string, Object>, space: PhotosSpac
     }
     if (row['additional'] !== undefined) {
       const additional = nasRecord(row['additional']);
+      if (additional['description'] !== undefined) {
+        if (typeof additional['description'] !== 'string') { throw incompatiblePhotos(); }
+        item.description = additional['description'] as string;
+      }
+      if (additional['address'] !== undefined && additional['address'] !== null) {
+        const address = nasRecord(additional['address']), parts: string[] = [];
+        for (const key of ['country', 'state', 'city', 'county', 'district', 'town', 'village', 'route', 'landmark']) {
+          const value = address[key];
+          if (value !== undefined && value !== null) {
+            if (typeof value !== 'string') { throw incompatiblePhotos(); }
+            if (value.length > 0 && !parts.includes(value)) { parts.push(value); }
+          }
+        }
+        item.address = parts.join('，');
+      }
+      if (additional['tag'] !== undefined) {
+        if (!Array.isArray(additional['tag'])) { throw incompatiblePhotos(); }
+        item.tags = (additional['tag'] as Object[]).map((tag: Object): string => nasString(nasRecord(tag)['name']));
+      }
+      if (additional['exif'] !== undefined) {
+        const exif = nasRecord(additional['exif']);
+        item.exif = {};
+        for (const key of Object.keys(exif)) {
+          const value = exif[key];
+          if (typeof value === 'string' || typeof value === 'number' && Number.isFinite(value)) { item.exif[key] = value.toString(); }
+          else if (value !== null) { throw incompatiblePhotos(); }
+        }
+      }
       if (additional['resolution'] !== undefined) {
         const resolution = nasRecord(additional['resolution']);
         if (resolution['width'] !== undefined) { item.width = nasInteger(resolution['width']); }

@@ -9,6 +9,7 @@ import { PhotoAlbumRow, PhotoTimelineRow, photoAlbumColumns, photoAlbumRows, pho
 import { WorkbenchActionRow, WorkbenchChoice, WorkbenchIconTile, WorkbenchMetrics, WorkbenchNotice,
   WorkbenchSectionTitle } from '../workbench/WorkbenchUi';
 import { supportsPhotoBackup } from '../workbench/ModuleNavigation';
+import { ExtensionStatusPanel } from '../extensions/ExtensionStatusPanel';
 
 @ComponentV2
 export struct PhotoModulePage {
@@ -320,6 +321,13 @@ export struct PhotoModulePage {
   @Builder
   moreView() {
     Column({ space: WorkbenchMetrics.sectionGap }) {
+      if (this.model.extensions.hasPending('photos') || this.model.extensions.recordsError.length > 0) {
+        ExtensionStatusPanel({ model: this.model.extensions, feature: 'photos' })
+        if (this.model.extensions.hasPending('photos')) {
+          Button($r('app.string.preview_check_task')).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.extensions.busy)
+            .onClick((): void => { this.model.extensions.refreshPhotoTask(); })
+        }
+      }
       if (this.showBackupInMore) { this.backupCard() }
       Column() {
         if (this.showTransfersInMore) {

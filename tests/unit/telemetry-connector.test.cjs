@@ -36,7 +36,7 @@ const { NasConnector, NAS_DISCOVERY_QUERY } = load('core/network/NasConnector.ts
     '../network/ApiVersionPolicy': load('core/network/ApiVersionPolicy.ts', { '../domain/DsmProtocol': dsm }) }),
   './DsmRpcClient': load('core/network/DsmRpcClient.ts', { '../domain/DsmProtocol': dsm,
     './ApiVersionPolicy': load('core/network/ApiVersionPolicy.ts', { '../domain/DsmProtocol': dsm }) }),
-  '../domain/DsmProtocol': dsm, '../domain/PhotosProtocol': photos,
+  '../domain/DsmProtocol': dsm, '../domain/PhotoActions': load('core/domain/PhotoActions.ts', { './DsmProtocol': dsm, './PhotosProtocol': photos }), '../domain/PhotosProtocol': photos,
   '../domain/FileOperations': operations, '../domain/TransferQueueState': queueState,
   '../domain/DriveProtocol': drive, '../domain/DriveTransferProtocol': driveTransfer,
   '../domain/DriveThumbnailProtocol': driveThumbnail,

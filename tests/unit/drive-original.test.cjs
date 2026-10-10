@@ -24,7 +24,7 @@ function fixture(options = {}) {
   assert.equal((compiled.diagnostics || []).filter(d => d.category === ts.DiagnosticCategory.Error).length, 0);
   const mocks = {
     '@kit.ArkTS': { util: { generateRandomUUID: () => 'owned-' + ++counter } },
-    '@kit.PerformanceAnalysisKit': { hilog: { error() {} } },
+    '@kit.PerformanceAnalysisKit': { hilog: { error() {}, info() {} } },
     '@kit.CoreFileKit': { fileIo: { async listFile(dir) {
       if (options.startupFailure) throw new Error('list');
       return [...directories].filter(value => value.startsWith(dir + '/')).map(value => value.slice(dir.length + 1));
@@ -50,7 +50,7 @@ function fixture(options = {}) {
     async requestDrive(api, version, method, fields) {
       reads++; events.push(['read', api, version, method, fields]);
       if (options.read) await options.read(reads);
-      return { file_id: entry().fileId, name: 'a.jpg', type: 'file', size: 3,
+      return { file_id: entry().fileId, name: options.name || 'a.jpg', type: 'file', size: options.size || 3,
         version_id: options.changed && reads > 1 ? '2' : '1',
         capabilities: { can_read: true, can_download: options.denied !== true, can_preview: true } };
     },
@@ -61,6 +61,17 @@ function fixture(options = {}) {
       if (directories.has(target.directory)) throw new dsm.NasFailure(dsm.NasErrorKind.Protocol, '无法创建下载临时目录。');
       directories.add(target.directory);
       return { path: target.directory + '/content', bytes: 3 };
+    },
+    async thumbnailDrive(input, directory, control) {
+      events.push(['thumbnail', input, directory, control]); directories.add(directory);
+      return { path: directory + '/thumbnail', bytes: 2 };
+    },
+    async getFileInfo(path) { return { path, name: 'a.jpg', bytes: 3, isDirectory: false }; },
+    async fileImage(path, target, control, original) {
+      events.push(['file-image', path, target, control, original]); directories.add(target.directory);
+      target.onDirectoryCreated();
+      if (options.download) await options.download(control);
+      return { path: target.directory + '/file-image', bytes: original ? 3 : 2 };
     }
   };
   const model = new mod.exports.DriveOriginalModel();
@@ -80,8 +91,40 @@ test('original preview respects download permission and image type; bounded deco
   assert.throws(() => protocol.driveOriginalDecodeSize(0, 8000, 1000, 1000));
 });
 
+test('default Drive preview requests only the thumbnail, and original is an explicit choice', async () => {
+  const f = fixture(); await f.model.open(entry());
+  assert.ok(f.model.pixels); assert.equal(f.model.originalLoaded, false);
+  assert.equal(f.events.filter(e => e[0] === 'thumbnail').length, 1);
+  assert.equal(f.events.some(e => e[0] === 'download'), false);
+  await f.model.open(entry(), true); assert.equal(f.model.originalLoaded, true);
+  await f.model.close(); assert.equal(f.directories.size, 0);
+});
+
+test('Drive media thumbnails do not require original-download permission or consume the original size limit', async () => {
+  const f = fixture({ denied: true, name: 'a.mp4', size: protocol.DRIVE_ORIGINAL_MAX_BYTES + 1 });
+  const video = entry({ name: 'a.mp4', sizeBytes: f.options.size, capabilities: { canRead: true, canPreview: true, canDownload: false } });
+  await f.model.open(video);
+  assert.ok(f.model.pixels); assert.equal(f.model.originalLoaded, false);
+  assert.equal(f.events.some(e => e[0] === 'download'), false);
+  await f.model.open(video, true); assert.equal(f.model.pixels, undefined); assert.notEqual(f.model.errorText, '');
+  await f.model.close(); assert.equal(f.directories.size, 0);
+});
+
+test('File Station preview uses its own thumbnail and original endpoints and cancels late media', async () => {
+  const f = fixture(); const file = { path: '/photo/a.jpg', name: 'a.jpg', isDirectory: false, bytes: 3 };
+  await f.model.openFile(file); assert.ok(f.model.pixels); assert.equal(f.model.originalLoaded, false);
+  assert.equal(f.events.find(e => e[0] === 'file-image')[4], false);
+  assert.equal(f.events.some(e => e[0] === 'read' || e[0] === 'download'), false);
+  const pending = gate(); f.options.download = () => pending.promise;
+  const opening = f.model.openFile(file, true); await flush();
+  const active = f.events.filter(e => e[0] === 'file-image').at(-1);
+  f.model.close(); assert.equal(active[3].cancellation.cancelled, true);
+  pending.resolve(); await opening; await f.model.close();
+  assert.equal(f.model.pixels, undefined); assert.equal(f.directories.size, 0);
+});
+
 test('preview downloads the original in ordinary mode, validates metadata twice and releases every private resource on close', async () => {
-  const f = fixture({ frames: 2 }); await f.model.open(entry());
+  const f = fixture({ frames: 2 }); await f.model.open(entry(), true);
   assert.equal(f.model.errorText, ''); assert.ok(f.model.pixels);
   assert.equal(f.model.staticFrame, true);
   const download = f.events.find(e => e[0] === 'download');
@@ -96,7 +139,7 @@ test('preview downloads the original in ordinary mode, validates metadata twice 
 
 test('changed revision, denied permission and decoder failure never publish a stale or unverified image', async () => {
   for (const options of [{ changed: true }, { denied: true }, { decodeFailure: true }]) {
-    const f = fixture(options); await f.model.open(entry());
+    const f = fixture(options); await f.model.open(entry(), true);
     assert.equal(f.model.pixels, undefined); assert.notEqual(f.model.errorText, ''); assert.equal(f.directories.size, 0);
     if (options.denied) assert.equal(f.events.some(e => e[0] === 'download'), false);
   }
@@ -105,7 +148,7 @@ test('changed revision, denied permission and decoder failure never publish a st
 test('closing or changing the connection cancels the active original read and discards a late response', async () => {
   for (const action of ['close', 'attach', 'background']) {
     const pending = gate(), f = fixture({ download: () => pending.promise });
-    const opening = f.model.open(entry()); await flush();
+    const opening = f.model.open(entry(), true); await flush();
     const download = f.events.find(e => e[0] === 'download'); assert.ok(download);
     assert.ok(f.model.progress > 33 && f.model.progress < 34);
     if (action === 'close') f.model.close(); else if (action === 'attach') f.attach(); else f.model.setForeground(false);
@@ -118,26 +161,26 @@ test('closing or changing the connection cancels the active original read and di
 });
 
 test('cleanup failure retains ownership and blocks opening another image until cleanup can succeed', async () => {
-  const f = fixture(); await f.model.open(entry()); f.options.cleanupFailure = true; await f.model.close();
+  const f = fixture(); await f.model.open(entry(), true); f.options.cleanupFailure = true; await f.model.close();
   assert.equal(f.directories.size, 1); assert.match(f.model.errorText, /清理失败/);
-  await f.model.open(entry()); assert.equal(f.events.filter(e => e[0] === 'download').length, 1);
-  f.options.cleanupFailure = false; await f.model.open(entry());
+  await f.model.open(entry(), true); assert.equal(f.events.filter(e => e[0] === 'download').length, 1);
+  f.options.cleanupFailure = false; await f.model.open(entry(), true);
   assert.ok(f.model.pixels); await f.model.close(); assert.equal(f.directories.size, 0);
 });
 
 test('startup removes only owned stale original directories and preserves unrelated cache data', async () => {
   const old = '/private/cache/drive-original-00000000-0000-4000-8000-000000000000';
   const unrelated = '/private/cache/drive-original-not-an-owned-directory';
-  const f = fixture({ staleDirectories: [old, unrelated] }); await f.model.open(entry());
+  const f = fixture({ staleDirectories: [old, unrelated] }); await f.model.open(entry(), true);
   assert.ok(f.model.pixels); assert.equal(f.directories.has(old), false); assert.equal(f.directories.has(unrelated), true);
   await f.model.close(); assert.deepEqual([...f.directories], [unrelated]);
 });
 
 test('an unreadable cache does not silently bypass startup cleanup and reconnect permits a fresh check', async () => {
-  const f = fixture({ startupFailure: true }); await f.model.open(entry());
+  const f = fixture({ startupFailure: true }); await f.model.open(entry(), true);
   assert.equal(f.model.pixels, undefined); assert.match(f.model.errorText, /缓存清理未完成/);
   assert.equal(f.events.some(e => e[0] === 'download'), false);
-  f.options.startupFailure = false; f.attach(); await f.model.open(entry()); assert.ok(f.model.pixels); await f.model.close();
+  f.options.startupFailure = false; f.attach(); await f.model.open(entry(), true); assert.ok(f.model.pixels); await f.model.close();
 });
 
 test('original model and real RCP transport agree on exclusive directory ownership and release the downloaded file', async () => {
@@ -158,7 +201,7 @@ test('original model and real RCP transport agree on exclusive directory ownersh
   const mocks = {
     '@kit.RemoteCommunicationKit': { rcp: { Request: class { constructor(url, method, headers) { Object.assign(this, { url, method, headers }); } } } },
     '../../platform/LocalSpaceBudget': require('../helpers/load-space-budget.cjs')(dsm),
-    '@kit.CoreFileKit': { fileIo: f.io }, '@kit.PerformanceAnalysisKit': { hilog: { error() {} } },
+    '@kit.CoreFileKit': { fileIo: f.io }, '@kit.PerformanceAnalysisKit': { hilog: { error() {}, info() {} } },
     '../domain/DsmProtocol': dsm, './NasTransferTransport': transport,
     '../../platform/Utf8Codec': { decodeResponsePrefix: bytes => Buffer.from(bytes).toString(), decodeUtf8Complete: bytes => Buffer.from(bytes).toString() }
   };
@@ -173,7 +216,7 @@ test('original model and real RCP transport agree on exclusive directory ownersh
   f.kernel.downloadDrive = (input, target, control) => rcp.download({ address: 'https://nas.test/webapi/entry.cgi', method: 'GET',
     fields: [], session: { sid: 'test', synoToken: 'test' } }, target, control,
     reply => transferProtocol.validateDriveDownload(reply, target));
-  await f.model.open(entry()); assert.equal(f.model.errorText, ''); assert.ok(f.model.pixels);
+  await f.model.open(entry(), true); assert.equal(f.model.errorText, ''); assert.ok(f.model.pixels);
   assert.equal(fetches, 1); assert.equal(files.size, 1);
   await f.model.close(); assert.equal(files.size, 0); assert.equal(f.directories.size, 0); assert.equal(descriptors.size, 0);
 });

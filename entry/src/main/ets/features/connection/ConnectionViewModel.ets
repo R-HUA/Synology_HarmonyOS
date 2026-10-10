@@ -68,6 +68,7 @@ export class ConnectionViewModel {
   readonly drive: DriveBrowserModel = new DriveBrowserModel();
   readonly driveTransfers: DriveTransferModel = new DriveTransferModel();
   readonly driveThumbnails: DriveThumbnailStore = new DriveThumbnailStore();
+  readonly fileOriginal: DriveOriginalModel = new DriveOriginalModel('file-preview');
   readonly driveActions: DriveActionModel = new DriveActionModel();
   readonly driveOriginal: DriveOriginalModel = new DriveOriginalModel();
   readonly driveSharing: DriveSharingModel = new DriveSharingModel();
@@ -859,6 +860,9 @@ export class ConnectionViewModel {
     this.driveOriginal.attach(this.context, connector, async (error: NasFailure): Promise<void> => {
       if (ticket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'drive-original'); }
     });
+    this.fileOriginal.attach(this.context, connector, async (error: NasFailure): Promise<void> => {
+      if (ticket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'file-preview'); }
+    });
     this.driveNotifications.attach(connector, async (error: NasFailure): Promise<void> => {
       if (ticket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'drive-notifications'); }
     });
@@ -1090,6 +1094,7 @@ export class ConnectionViewModel {
     this.driveThumbnails.detach();
     this.driveActions.detach();
     this.driveOriginal.detach();
+    this.fileOriginal.detach();
     this.driveSharing.detach();
     this.driveNotifications.detach();
     this.fileSort = 'name';

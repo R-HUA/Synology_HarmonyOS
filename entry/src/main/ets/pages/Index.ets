@@ -11,9 +11,17 @@ import type { DriveAction } from '../core/domain/DriveActionProtocol';
 import type { DriveActionRecord } from '../core/domain/DriveActionState';
 import { DriveActionPage, DriveActionSummary, DriveActionCard } from '../features/drive/DriveActionUi';
 import { DriveOriginalPage } from '../features/drive/DriveOriginalUi';
+import { ImagePreview, PreviewInformation } from '../features/workbench/ImagePreview';
+import { telemetryTimestamp } from '../core/domain/TelemetryProtocol';
+import { driveActionAllowed } from '../core/domain/DriveActionProtocol';
+import { driveFileLinkAllowed } from '../core/domain/DriveCollaborationProtocol';
+import { ExtensionStatusPanel } from '../features/extensions/ExtensionStatusPanel';
+import { PhotoAction, PhotoActionInput, PhotoFolder } from '../core/domain/PhotoActions';
+import { systemShare } from '@kit.ShareKit';
+import { uniformTypeDescriptor } from '@kit.ArkData';
 import { takeDriveTransferIntent } from '../features/drive/DriveTransferIntent';
 import { DriveSharingPage, DriveNotificationsPage } from '../features/drive/DriveCollaborationUi';
-import { NasPhotoItem, PhotosSpace } from '../core/domain/PhotosProtocol';
+import { NasPhotoAlbum, NasPhotoItem, PhotosSpace } from '../core/domain/PhotosProtocol';
 import { PhotoBackup } from '../features/backup/PhotoBackup';
 import { TransferUploadSource } from '../features/transfers/TransferQueue';
 import { TransferQueueItem } from '../core/domain/TransferQueueState';
@@ -24,7 +32,7 @@ import { NasSystemControlPage } from '../features/control/SystemControlPage';
 import { ShareLinksPage } from '../features/fileSharing/ShareLinksPage';
 import { DownloadStationPage } from '../features/downloadStation/DownloadStationPage';
 import { NasTelemetrySummary, NasTelemetryStorageCard, NasTelemetryDashboard } from '../features/telemetry/TelemetryDashboard';
-import { photoTakenDate, photoMediaLabel, workbenchBytes,
+import { photoTakenDate, workbenchBytes,
   workbenchCanUseDestination, workbenchBottomInset,
   connectionRouteLabel } from '../features/workbench/WorkbenchPresentation';
 import { bundledDeviceArtwork, fallbackDeviceArtwork, hasModelArtwork, deviceArtworkPath } from '../features/workbench/NasDeviceArtwork';
@@ -114,6 +122,7 @@ struct Index {
     this.model.driveThumbnails.setForeground(foreground);
     this.model.driveActions.setForeground(foreground);
     this.model.driveOriginal.setForeground(foreground);
+    this.model.fileOriginal.setForeground(foreground);
     this.model.driveSharing.setForeground(foreground);
     if (!foreground) { this.model.addressBook.cancelProbe(); this.model.systemControl.deactivate(); }
     else if (this.systemControlOpened) { this.model.openSystemControl(); }
@@ -153,7 +162,8 @@ struct Index {
   /** 设备是否支持 ImmersiveMaterial；不支持时退回不透明背板，避免得到一块全透明的弹层。 */
   private sheetMaterialAvailable: boolean = uiMaterial.isImmersiveMaterialSupported();
   @Local private taskSection: string = 'transfers';
-  @Local private mediaDecodeFailed: boolean = false;
+  @Local private photoDestinationMode: 'album' | 'copy' = 'album';
+  @Local private photoFolderTrail: PhotoFolder[] = [];
   /** 未收录型号联网取回的产品图路径；为空时用内置图。 */
   @Local private deviceArtworkPath: string = '';
   private readonly artworkSize: number = 64;
@@ -167,7 +177,6 @@ struct Index {
   private tabSettingsScroller: Scroller = new Scroller();
   private pickerScroller: Scroller = new Scroller();
   private tasksScroller: Scroller = new Scroller();
-  private detailScroller: Scroller = new Scroller();
   private tabsController: HdsTabsController = new HdsTabsController();
 
   aboutToAppear(): void {
@@ -383,7 +392,6 @@ struct Index {
   }
 
   private openPhoto(item: NasPhotoItem): void {
-    this.mediaDecodeFailed = false;
     this.model.photoLibrary.openDetail(item);
     this.navStack.pushPathByName('photo-detail', item.id);
   }
@@ -556,13 +564,19 @@ struct Index {
     } finally { this.formSubmitting = false; }
   }
 
-  private confirmDelete(entry: NasFileEntry): void {
+  private confirmDelete(entry: NasFileEntry, preview: boolean = false): void {
     this.getUIContext().showAlertDialog({ title: entry.isDirectory ? '删除文件夹' : '删除文件',
       message: '确认删除“' + entry.name + '”？' + (entry.isDirectory ? '文件夹内的内容也会被删除。' : ''),
       primaryButton: { value: '取消', action: (): void => {} },
       secondaryButton: { value: '删除', action: (): void => {
         this.sheetVisible = false;
-        this.model.deleteEntry(entry).then((result): void => { if (result === 'pending') { this.taskSection = 'files'; this.switchTab(ROOT_TASK_TAB); } });
+        this.model.deleteEntry(entry).then((result): void => {
+          if (preview) {
+            if (this.model.fileOriginal.fileEntry !== entry) { return; }
+            if (result !== 'failed' && this.navStack.getAllPathName().slice(-1)[0] === 'file-preview') { this.navStack.pop(); }
+          }
+          if (result === 'pending') { this.taskSection = 'files'; this.switchTab(ROOT_TASK_TAB); }
+        });
       } } });
   }
 
@@ -1327,6 +1341,7 @@ struct Index {
       FileStationPage({ model: this.model, scroller: this.filesScroller, topInset: this.contentTopInset(), bottomInset: this.bottomInset(),
         errorText: this.visibleError(), pendingEntry: this.pendingEntry, pendingOperation: this.pendingOperation, canUseDestination: this.destinationAllowed(),
         onOpenForm: (kind: string, entry?: NasFileEntry): void => { this.fileEntryAction(kind, entry); },
+        onOpenImage: (entry: NasFileEntry): void => { this.navStack.pushPathByName('file-preview', undefined); this.model.fileOriginal.openFile(entry); },
         onNavigateBreadcrumb: (target: string): void => { this.navigateBreadcrumb(target); },
         onApplyDestination: (): void => { this.applyDestination(); }, onCancelDestination: (): void => { this.pendingEntry = undefined; this.pendingOperation = ''; } })
     } else if (tab.id === 'tasks') { this.tasksView() }
@@ -1420,60 +1435,249 @@ struct Index {
     this.navStack.pushPathByName('drive-links', undefined);
   }
 
+  private previewText(resource: Resource): string { return this.abilityContext!.resourceManager.getStringSync(resource.id); }
+
+  private previewMenus(source: 'photos' | 'drive' | 'file'): HdsNavigationMenuItemOptions[] {
+    const photo = this.model.photoLibrary.detail;
+    const drive = this.model.driveOriginal.entry;
+    const file = this.model.fileOriginal.fileEntry;
+    const video = source === 'photos' ? photo?.mediaType === 'video' : source === 'drive' && /\.(?:mp4|mov|mkv|avi|m4v)$/i.test(drive?.name ?? '');
+    const enabled = source === 'photos' ? photo !== undefined && !this.model.photoLibrary.loadingMedia && !this.model.photoLibrary.originalPath :
+      source === 'drive' ? drive !== undefined && drive.capabilities.canDownload && !this.model.driveOriginal.originalLoaded :
+        file !== undefined && this.model.supports('SYNO.FileStation.Download') && !this.model.fileOriginal.originalLoaded;
+    const menu = source === 'photos' ? this.photoPreviewMenu() : source === 'drive' ? this.drivePreviewMenu() : this.filePreviewMenu();
+    const id = source + '-preview-menu';
+    return [{ content: { label: this.previewText(video ? $r('app.string.preview_play_video') : $r('app.string.preview_original')),
+      icon: video ? $r('sys.symbol.play') : $r('sys.symbol.arrow_up_left_and_arrow_down_right'), type: IconStyleMode.SMALL,
+      isEnabled: enabled, action: (): void => {
+        if (source === 'photos') { this.model.photoLibrary.loadOriginal(); }
+        else if (source === 'drive' && drive !== undefined) {
+          if (video) { this.model.driveTransfers.download(drive, true); } else { this.model.driveOriginal.open(drive, true); }
+        } else if (source === 'file' && file !== undefined) { this.model.fileOriginal.openFile(file, true); }
+      } } }, { content: { label: this.previewText($r('app.string.preview_more')), icon: $r('sys.symbol.more'), type: IconStyleMode.SMALL,
+        componentId: id, isEnabled: menu.length > 0, action: (): void => {
+          this.openTitleMenu(id, menu.map((item: MenuElement): TitleMenuItem => new TitleMenuItem(
+            typeof item.value === 'string' ? item.value : this.previewText(item.value), true, (): void => { item.action?.(); })));
+        } } }];
+  }
+
+  private drivePreviewInfo(): PreviewInformation[] {
+    const entry = this.model.driveOriginal.entry;
+    if (entry === undefined) { return []; }
+    return [{ label: $r('app.string.file_info_title'), value: entry.name },
+      { label: $r('app.string.file_info_type'), value: entry.name.slice(entry.name.lastIndexOf('.') + 1).toLowerCase() },
+      { label: $r('app.string.file_info_created'), value: entry.createdAt === undefined ? $r('app.string.file_info_unavailable') : telemetryTimestamp(Math.trunc(entry.createdAt * 1000)) },
+      { label: $r('app.string.file_info_modified'), value: entry.modifiedAt === undefined ? $r('app.string.file_info_unavailable') : telemetryTimestamp(Math.trunc(entry.modifiedAt * 1000)) },
+      { label: $r('app.string.file_info_owner'), value: entry.owner?.name ?? entry.owner?.displayName ?? entry.owner?.nickname ?? $r('app.string.file_info_unavailable') },
+      { label: $r('app.string.file_info_size'), value: workbenchBytes(entry.sizeBytes) },
+      { label: $r('app.string.file_info_location'), value: entry.displayPath ?? $r('app.string.file_info_unavailable') }];
+  }
+
+  private drivePreviewMenu(): MenuElement[] {
+    const entry = this.model.driveOriginal.entry;
+    if (entry === undefined) { return []; }
+    const menu: MenuElement[] = [];
+    if (entry.capabilities.canDownload) { menu.push({ value: this.previewText($r('app.string.preview_download')), action: (): void => { this.model.driveTransfers.download(entry); } }); }
+    for (const action of ['copy', 'move'] as DriveAction[]) {
+      if (driveActionAllowed(entry, action) && this.model.driveActions.available) {
+        menu.push({ value: this.previewText(action === 'copy' ? $r('app.string.preview_copy') : $r('app.string.preview_move')),
+          action: (): void => { this.prepareDriveAction(entry, action); } });
+      }
+    }
+    return menu;
+  }
+
+  private deleteDrivePreview(): void {
+    const entry = this.model.driveOriginal.entry;
+    if (entry === undefined) { return; }
+    this.getUIContext().showAlertDialog({ title: $r('app.string.preview_delete'), message: entry.name,
+      primaryButton: { value: $r('app.string.action_cancel'), action: (): void => {} },
+      secondaryButton: { value: $r('app.string.preview_delete'), action: (): void => {
+        this.model.driveActions.prepare(entry, 'delete').then(async (prepared: boolean): Promise<void> => {
+          if (this.model.driveOriginal.entry !== entry) { return; }
+          if (prepared && await this.model.driveActions.submit() && this.model.driveOriginal.entry === entry) {
+            this.model.driveActions.clearDraft();
+            if (this.navStack.getAllPathName().slice(-1)[0] === 'drive-original') { this.navStack.pop(); }
+            this.model.drive.reload();
+          }
+        });
+      } } });
+  }
+
+  private filePreviewInfo(): PreviewInformation[] {
+    const entry = this.model.fileOriginal.fileEntry;
+    if (entry === undefined) { return []; }
+    return [{ label: $r('app.string.file_info_title'), value: entry.name },
+      { label: $r('app.string.file_info_type'), value: entry.name.slice(entry.name.lastIndexOf('.') + 1).toLowerCase() },
+      { label: $r('app.string.file_info_size'), value: workbenchBytes(entry.bytes) },
+      { label: $r('app.string.file_info_location'), value: entry.path }];
+  }
+
+  private filePreviewMenu(): MenuElement[] {
+    const entry = this.model.fileOriginal.fileEntry;
+    if (entry === undefined) { return []; }
+    const menu: MenuElement[] = [{ value: this.previewText($r('app.string.preview_download')), action: (): void => { this.model.downloadFile(entry); } }];
+    if (this.model.supports('SYNO.FileStation.CopyMove')) {
+      menu.push({ value: this.previewText($r('app.string.preview_copy')), action: (): void => { this.navStack.pop(); this.chooseDestination(entry, 'copy'); } },
+        { value: this.previewText($r('app.string.preview_move')), action: (): void => { this.navStack.pop(); this.chooseDestination(entry, 'move'); } });
+    }
+    return menu;
+  }
+
+  private photoPreviewInfo(): PreviewInformation[] {
+    const item = this.model.photoLibrary.detail;
+    if (item === undefined) { return []; }
+    const rows: PreviewInformation[] = [{ label: $r('app.string.file_info_title'), value: item.filename },
+      { label: $r('app.string.preview_date'), value: photoTakenDate(item) },
+      { label: $r('app.string.file_info_size'), value: workbenchBytes(item.bytes) }];
+    if (item.width !== undefined && item.height !== undefined) {
+      rows.push({ label: $r('app.string.preview_resolution'), value: item.width.toString() + ' × ' + item.height.toString() });
+    }
+    if (item.description) { rows.push({ label: $r('app.string.preview_description'), value: item.description }); }
+    if (item.location) { rows.push({ label: $r('app.string.file_info_location'), value: item.location }); }
+    if (item.address) { rows.push({ label: $r('app.string.preview_location'), value: item.address }); }
+    if (item.exif?.camera) { rows.push({ label: $r('app.string.preview_camera'), value: item.exif.camera }); }
+    if (item.tags && item.tags.length > 0) { rows.push({ label: $r('app.string.preview_tags'), value: item.tags.join('，') }); }
+    return rows;
+  }
+
+  private photoExifInfo(): PreviewInformation[] {
+    const values: Record<string, string> = this.model.photoLibrary.detail?.exif ?? {};
+    const rows: PreviewInformation[] = [];
+    const names: string[] = ['camera', 'aperture', 'exposure_time', 'focal_length', 'iso', 'lens'];
+    const labels: Resource[] = [$r('app.string.preview_camera'), $r('app.string.preview_aperture'), $r('app.string.preview_exposure'),
+      $r('app.string.preview_focal_length'), $r('app.string.preview_iso'), $r('app.string.preview_lens')];
+    names.forEach((name: string, index: number): void => { if (values[name]?.length > 0) { rows.push({ label: labels[index], value: values[name] }); } });
+    const exifLabels: Record<string, Resource> = { 'ImageWidth': $r('app.string.exif_image_width'), 'ImageLength': $r('app.string.exif_image_height'),
+      'ImageDescription': $r('app.string.preview_description'), 'Make': $r('app.string.exif_manufacturer'), 'Model': $r('app.string.preview_camera'),
+      'Orientation': $r('app.string.exif_orientation'), 'XResolution': $r('app.string.exif_x_resolution'), 'YResolution': $r('app.string.exif_y_resolution'),
+      'ResolutionUnit': $r('app.string.exif_resolution_unit'), 'DateTimeOriginal': $r('app.string.preview_date'), 'DateTimeDigitized': $r('app.string.exif_digitized'),
+      'YCbCrPositioning': $r('app.string.exif_positioning'), 'ExposureTime': $r('app.string.preview_exposure'), 'FNumber': $r('app.string.preview_aperture'),
+      'ExposureProgram': $r('app.string.exif_exposure_program'), 'ISOSpeedRatings': $r('app.string.preview_iso'), 'ExifVersion': $r('app.string.exif_version'),
+      'FocalLength': $r('app.string.preview_focal_length'), 'LensMake': $r('app.string.exif_lens_manufacturer'), 'LensModel': $r('app.string.preview_lens') };
+    for (const key of Object.keys(this.model.photoLibrary.originalExif)) {
+      rows.push({ label: exifLabels[key], value: this.model.photoLibrary.originalExif[key] });
+    }
+    return rows;
+  }
+
+  private photoCan(action: PhotoAction): boolean {
+    const item = this.model.photoLibrary.detail;
+    if (item === undefined || item.space === PhotosSpace.WithMe) { return false; }
+    return this.model.extensions.canPhotoAction({ action, item, favorite: !item.favorite, targetId: 0 });
+  }
+
+  private async photoAction(action: PhotoAction, targetId?: number): Promise<void> {
+    const item = this.model.photoLibrary.detail;
+    if (item === undefined) { return; }
+    const input: PhotoActionInput = { action, item, targetId, favorite: !item.favorite };
+    const confirmed = await this.model.extensions.performPhotoAction(input);
+    if (this.model.photoLibrary.detail !== item) { return; }
+    if (confirmed && action === 'favorite') { this.model.photoLibrary.openDetail(item); }
+    if (confirmed && action === 'album' && this.navStack.getAllPathName().slice(-1)[0] === 'photo-actions') { this.navStack.pop(); }
+    if (confirmed && action === 'share') {
+      try {
+        const data = new systemShare.SharedData({ utd: uniformTypeDescriptor.UniformDataType.HYPERLINK,
+          content: this.model.extensions.photoShare, title: item.filename });
+        await new systemShare.ShareController(data).show(this.abilityContext!, { selectionMode: systemShare.SelectionMode.SINGLE,
+          previewMode: systemShare.SharePreviewMode.DEFAULT });
+      } catch { this.showTitleMenuError(this.previewText($r('app.string.preview_share_failed'))); }
+    }
+    if (action === 'delete' || action === 'copy') {
+      if (!confirmed && !this.model.extensions.hasPending('photos')) {
+        this.showTitleMenuError(this.model.extensions.photoError); return;
+      }
+      await this.refreshPhotoPreviewTask();
+      if (this.model.photoLibrary.detail !== item) { return; }
+      if (this.model.extensions.hasPending('photos') && this.navStack.getAllPathName().slice(-1)[0] !== 'photo-actions') {
+        this.navStack.pushPathByName('photo-actions', undefined);
+      }
+    } else if (this.model.extensions.photoError.length > 0) { this.showTitleMenuError(this.model.extensions.photoError); }
+  }
+
+  private async refreshPhotoPreviewTask(): Promise<void> {
+    const record = this.model.extensions.pending.find((row): boolean => row.feature === 'photos');
+    const item = this.model.photoLibrary.detail;
+    await this.model.extensions.refreshPhotoTask();
+    if (record === undefined || this.model.extensions.hasPending('photos') || this.model.photoLibrary.detail !== item) { return; }
+    if (this.navStack.getAllPathName().slice(-1)[0] === 'photo-actions') { this.navStack.pop(); }
+    if (record.operation === 'delete' && item !== undefined && item.id === record.photoId && item.space === record.photoSpace) {
+      if (this.navStack.getAllPathName().slice(-1)[0] === 'photo-detail') { this.navStack.pop(); }
+      this.model.photoLibrary.refresh();
+    }
+  }
+
+  private deletePhotoPreview(): void {
+    const item = this.model.photoLibrary.detail;
+    if (item === undefined) { return; }
+    this.getUIContext().showAlertDialog({ title: $r('app.string.preview_delete'), message: item.filename,
+      primaryButton: { value: $r('app.string.action_cancel'), action: (): void => {} },
+      secondaryButton: { value: $r('app.string.preview_delete'), action: (): void => { this.photoAction('delete'); } } });
+  }
+
+  private photoPreviewMenu(): MenuElement[] {
+    const menu: MenuElement[] = [{ value: this.previewText($r('app.string.preview_download')), action: (): void => { this.model.photoLibrary.exportOriginal(); } }];
+    if (this.photoCan('album')) { menu.push({ value: this.previewText($r('app.string.preview_album')), action: (): void => { this.openPhotoDestination('album'); } }); }
+    if (this.photoCan('copy')) { menu.push({ value: this.previewText($r('app.string.preview_copy')), action: (): void => { this.openPhotoDestination('copy'); } }); }
+    return menu;
+  }
+
+  private openPhotoDestination(mode: 'album' | 'copy'): void {
+    this.photoDestinationMode = mode; this.photoFolderTrail = [];
+    this.navStack.pushPathByName('photo-actions', undefined); this.model.photoLibrary.loadActionTargets(mode);
+  }
+
+  @Builder
+  photoActionsView() {
+    Column({ space: 12 }) {
+      if (this.model.extensions.hasPending('photos') || this.model.extensions.recordsError.length > 0) {
+        ExtensionStatusPanel({ model: this.model.extensions, feature: 'photos' })
+      }
+      if (this.model.extensions.hasPending('photos')) {
+        Button($r('app.string.preview_check_task')).enabled(!this.model.extensions.busy)
+          .onClick((): void => { this.refreshPhotoPreviewTask(); })
+      } else if (this.model.photoLibrary.detail !== undefined) {
+        WorkbenchNotice({ text: this.model.photoLibrary.targetsError, warning: true })
+        if (this.model.photoLibrary.targetsBusy) { LoadingProgress().width(32).height(32) }
+        List() {
+          if (this.photoDestinationMode === 'album') {
+            ForEach(this.model.photoLibrary.actionAlbums, (album: NasPhotoAlbum): void => {
+              ListItem() { Button(album.name).width('100%').buttonStyle(ButtonStyleMode.TEXTUAL)
+                .enabled(!this.model.extensions.busy).onClick((): void => { this.photoAction('album', album.id); }) }
+            })
+          } else {
+            ForEach(this.model.photoLibrary.actionFolders, (folder: PhotoFolder): void => {
+              ListItem() { Button(folder.name).width('100%').buttonStyle(ButtonStyleMode.TEXTUAL)
+                .onClick((): void => { this.photoFolderTrail = [...this.photoFolderTrail, folder]; this.model.photoLibrary.loadActionTargets('copy', folder.id); }) }
+            })
+          }
+        }.width('100%').layoutWeight(1)
+        if (this.photoDestinationMode === 'copy' && this.photoFolderTrail.length > 0) {
+          Text(this.photoFolderTrail.map((folder: PhotoFolder): string => folder.name).join(' / ')).width('100%')
+          Button($r('app.string.preview_copy_here')).enabled(!this.model.photoLibrary.targetsBusy && !this.model.extensions.busy)
+            .onClick((): void => { this.photoAction('copy', this.photoFolderTrail[this.photoFolderTrail.length - 1].id); })
+          Button($r('app.string.preview_parent')).buttonStyle(ButtonStyleMode.TEXTUAL)
+            .onClick((): void => { this.photoFolderTrail = this.photoFolderTrail.slice(0, -1); this.model.photoLibrary.loadActionTargets('copy', this.photoFolderTrail[this.photoFolderTrail.length - 1]?.id ?? 0); })
+        }
+      }
+    }.width('100%').height('100%').padding(16)
+  }
+
   @Builder
   photoDetailView() {
-    Scroll(this.detailScroller) {
-      Column({ space: 16 }) {
-        if (this.model.photoLibrary.detail !== undefined) {
-          Stack() {
-            SymbolGlyph($r('sys.symbol.picture')).fontSize(48).fontColor([$r('sys.color.font_tertiary')])
-            if (this.model.photoLibrary.detail.mediaType === 'video' && this.model.photoLibrary.originalPath.length > 0) {
-              Video({ src: fileUri.getUriFromPath(this.model.photoLibrary.originalPath) }).width('100%').height('100%').autoPlay(false).controls(true)
-                .onError((): void => { this.mediaDecodeFailed = true; })
-            } else if (this.model.photoLibrary.previewPath.length > 0 || this.model.photoLibrary.originalPath.length > 0) {
-              Image(fileUri.getUriFromPath(this.model.photoLibrary.originalPath.length > 0 ? this.model.photoLibrary.originalPath : this.model.photoLibrary.previewPath))
-                .width('100%').height('100%').objectFit(ImageFit.Contain).sourceSize({ width: 1440, height: 1440 })
-                .onError((): void => { this.mediaDecodeFailed = true; })
-            }
-            if (this.model.photoLibrary.loadingMedia) { LoadingProgress().width(40).height(40) }
-          }.width('100%').height(Math.max(220, Math.min(480, this.contentWidth))).borderRadius(WorkbenchMetrics.innerRadius).clip(true)
-            .backgroundColor($r('app.color.workbench_subtle'))
-          Column({ space: 6 }) {
-            Text(this.model.photoLibrary.detail.filename).fontSize(20).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
-            Text(photoTakenDate(this.model.photoLibrary.detail)).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
-            Text(photoMediaLabel(this.model.photoLibrary.detail) + ' · ' + workbenchBytes(this.model.photoLibrary.detail.bytes))
-              .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
-            if (this.model.photoLibrary.detail.width !== undefined && this.model.photoLibrary.detail.height !== undefined) {
-              Text(this.model.photoLibrary.detail.width.toString() + ' × ' + this.model.photoLibrary.detail.height.toString())
-                .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
-            }
-            if (this.model.photoLibrary.detail.mediaType === 'live') {
-              Text('动态照片仅显示静态预览。').fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
-            }
-          }.width('100%').alignItems(HorizontalAlign.Start)
-          if (this.mediaDecodeFailed) {
-            Text('此设备无法预览该格式，可将原文件另存后使用支持的应用打开。').fontSize(14).fontColor($r('sys.color.font_primary')).width('100%')
-          }
-          if (this.model.photoLibrary.exportNotice.length > 0) {
-            Text(this.model.photoLibrary.exportNotice).fontSize(14).fontColor($r('sys.color.font_emphasize')).width('100%')
-          }
-          if (this.model.photoLibrary.mediaErrorText.length > 0) {
-            Text(this.model.photoLibrary.mediaErrorText).fontSize(14).fontColor($r('sys.color.font_primary')).width('100%')
-          }
-          Button(this.model.photoLibrary.loadingMedia ? '正在读取…' : this.model.photoLibrary.originalPath.length > 0 ? '重新读取原文件' :
-            this.model.photoLibrary.detail.mediaType === 'video' ? '读取原视频' : '查看原图')
-            .width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).enabled(!this.model.photoLibrary.loadingMedia)
-            .onClick((): void => { this.mediaDecodeFailed = false; this.model.photoLibrary.loadOriginal(); })
-          if (this.model.photoLibrary.originalPath.length > 0) {
-            Button('另存原文件').width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.photoLibrary.loadingMedia)
-              .onClick((): void => { this.model.photoLibrary.exportOriginal(); })
-          }
-          Text('原文件在本页读取，离开即结束。')
-            .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
-        }
-      }.width('100%').constraintSize({ maxWidth: 840 }).padding({ left: 16, right: 16, top: 16, bottom: 32 })
-        .alignItems(HorizontalAlign.Start)
-    }.width('100%').height('100%').scrollBar(BarState.Auto)
+    ImagePreview({ source: this.model.photoLibrary.originalPath.length > 0 ? fileUri.getUriFromPath(this.model.photoLibrary.originalPath) :
+        this.model.photoLibrary.previewPath.length > 0 ? fileUri.getUriFromPath(this.model.photoLibrary.previewPath) : '',
+      name: this.model.photoLibrary.detail?.filename ?? '', photos: true, video: this.model.photoLibrary.detail?.mediaType === 'video',
+      busy: this.model.photoLibrary.loadingMedia, original: this.model.photoLibrary.originalPath.length > 0,
+      favorite: this.model.photoLibrary.detail?.favorite === true,
+      canFavorite: this.model.photoLibrary.detail?.favorite !== undefined && this.photoCan('favorite'),
+      canShare: this.photoCan('share'), canDelete: this.photoCan('delete'),
+      information: this.photoPreviewInfo(), exif: this.photoExifInfo(),
+      errorText: this.model.photoLibrary.mediaErrorText || this.model.extensions.photoError,
+      onDownload: (): void => { this.model.photoLibrary.exportOriginal(); },
+      onFavorite: (): void => { this.photoAction('favorite'); }, onShare: (): void => { this.photoAction('share'); },
+      onDelete: (): void => { this.deletePhotoPreview(); },
+      onDecodeError: (): void => { this.showTitleMenuError(this.previewText($r('app.string.preview_decode_failed'))); } })
   }
 
   @Builder
@@ -1535,12 +1739,38 @@ struct Index {
         .bindToScrollable([this.driveNotificationsScroller])
         .onShown((): void => { this.model.driveNotifications.refresh(); })
     } else if (name === 'drive-original') {
-      HdsNavDestination() { DriveOriginalPage({ model: this.model.driveOriginal }) }
+      HdsNavDestination() { DriveOriginalPage({ model: this.model.driveOriginal, information: this.drivePreviewInfo(),
+        canDelete: this.model.driveOriginal.entry !== undefined && driveActionAllowed(this.model.driveOriginal.entry, 'delete') &&
+          this.model.driveActions.available && this.model.driveActions.ready && !this.model.driveActions.busy && !this.model.driveActions.hasPending,
+        canShare: this.model.driveOriginal.entry !== undefined && driveFileLinkAllowed(this.model.driveOriginal.entry) &&
+          this.model.driveSharing.available && this.model.driveSharing.ready && !this.model.driveSharing.busy && !this.model.driveSharing.hasPending,
+        onDownload: (): void => { const entry = this.model.driveOriginal.entry; if (entry !== undefined) { this.model.driveTransfers.download(entry); } },
+        onDelete: (): void => { this.deleteDrivePreview(); },
+        onShare: (): void => { const entry = this.model.driveOriginal.entry; if (entry !== undefined) { this.openDriveLinks(entry); } } }) }
         .backgroundColor($r('app.color.workbench_background'))
-        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: this.model.driveOriginal.entry?.name || '原图' } } })
+        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: this.model.driveOriginal.entry?.name || '原图' },
+          menu: { value: this.previewMenus('drive'), maxCount: 2 } },
+          style: { systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE } } })
         .onHidden((): void => {
-          if (this.foreground) { this.model.driveOriginal.close(); } else { this.model.driveOriginal.setForeground(false); }
+          if (!this.navStack.getAllPathName().includes('drive-original')) { this.model.driveOriginal.close(); }
         })
+    } else if (name === 'file-preview') {
+      HdsNavDestination() {
+        ImagePreview({ source: this.model.fileOriginal.pixels ?? '', name: this.model.fileOriginal.fileEntry?.name ?? '',
+          busy: this.model.fileOriginal.busy, original: this.model.fileOriginal.originalLoaded, errorText: this.model.fileOriginal.errorText,
+          information: this.filePreviewInfo(),
+          canDelete: this.model.supports('SYNO.FileStation.Delete'), canShare: this.model.extensions.canWrite('fileSharing'),
+          canDownload: this.model.supports('SYNO.FileStation.Download'),
+          onDownload: (): void => { const entry = this.model.fileOriginal.fileEntry; if (entry !== undefined) { this.model.downloadFile(entry); } },
+          onShare: (): void => { const entry = this.model.fileOriginal.fileEntry; if (entry !== undefined) { this.fileEntryAction('share', entry); } },
+          onDelete: (): void => { const entry = this.model.fileOriginal.fileEntry; if (entry !== undefined) { this.confirmDelete(entry, true); } },
+          onViewport: (width: number, height: number): void => { this.model.fileOriginal.setViewport(width, height); },
+          onRefine: (scale: number): void => { this.model.fileOriginal.refine(scale); } })
+      }.backgroundColor($r('app.color.workbench_background'))
+        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: this.model.fileOriginal.fileEntry?.name ?? '' },
+          menu: { value: this.previewMenus('file'), maxCount: 2 } },
+          style: { systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE } } })
+        .onHidden((): void => { if (!this.navStack.getAllPathName().includes('file-preview')) { this.model.fileOriginal.close(); } })
     } else if (name === 'drive-action') {
       HdsNavDestination() {
         DriveActionPage({ model: this.model.driveActions, scroller: this.driveActionScroller,
@@ -1626,9 +1856,16 @@ struct Index {
     } else if (name === 'photo-detail') {
       HdsNavDestination() { this.photoDetailView() }
         .backgroundColor($r('app.color.workbench_background'))
-        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: '照片详情' } } })
-        .bindToScrollable([this.detailScroller])
-        .onDisAppear((): void => { if (this.navStack.size() === 0) { this.model.photoLibrary.closeDetail(); } })
+        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: '照片详情' },
+          menu: { value: this.previewMenus('photos'), maxCount: 2 } },
+          style: { systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE } } })
+        .onHidden((): void => { if (!this.navStack.getAllPathName().includes('photo-detail')) { this.model.photoLibrary.closeDetail(); } })
+    } else if (name === 'photo-actions') {
+      HdsNavDestination() { this.photoActionsView() }
+        .backgroundColor($r('app.color.workbench_background'))
+        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: this.model.extensions.hasPending('photos') ?
+          $r('app.string.preview_photo_task') : this.photoDestinationMode === 'album' ? $r('app.string.preview_album') : $r('app.string.preview_copy') } },
+          style: { systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE } } })
     }
   }
 

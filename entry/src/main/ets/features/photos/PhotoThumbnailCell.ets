@@ -9,12 +9,15 @@ export struct PhotoThumbnailCell {
   @Require @Param library: PhotoLibrary;
   @Require @Param state: PhotoThumbnailState;
   @Param available: boolean = true;
+  @Local private decodedPath: string = '';
   @Event onOpen: (item: NasPhotoItem) => void = (_item: NasPhotoItem): void => {};
 
   @Builder
   thumbnail(path: string) {
     Image(fileUri.getUriFromPath(path)).width('100%').height('100%').objectFit(ImageFit.Cover)
       .sourceSize({ width: 320, height: 320 }).accessibilityLevel('no')
+      .opacity(this.decodedPath === path ? 1 : 0)
+      .onComplete((): void => { this.decodedPath = path; })
       .onError((): void => { this.library.thumbnailImageError(this.item, path); })
   }
 
@@ -22,9 +25,13 @@ export struct PhotoThumbnailCell {
     Stack({ alignContent: Alignment.BottomStart }) {
       Button() {
         Stack() {
-          SymbolGlyph($r('sys.symbol.picture')).fontSize(32).fontColor([$r('sys.color.font_tertiary')])
           if (this.state.path.length > 0) { this.thumbnail(this.state.path) }
-          if (this.state.loading) { LoadingProgress().width(24).height(24) }
+          if (this.state.loading || this.item.thumbnail !== undefined && this.state.errorText.length === 0 &&
+            (this.state.path.length === 0 || this.decodedPath !== this.state.path)) {
+            LoadingProgress().width(24).height(24).color($r('sys.color.font_secondary')).accessibilityLevel('no')
+          } else if (this.state.path.length === 0 && this.state.errorText.length === 0) {
+            Text($r('app.string.preview_unavailable')).fontSize(12).fontColor($r('sys.color.font_tertiary'))
+          }
         }.width('100%').height('100%').backgroundColor($r('app.color.workbench_subtle'))
       }.width('100%').height('100%').type(ButtonType.Normal).backgroundColor(Color.Transparent)
         .borderRadius(8).enabled(this.available).onClick((): void => { this.onOpen(this.item); })

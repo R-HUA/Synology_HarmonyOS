@@ -1,5 +1,5 @@
 import { decodeCapabilities, decodeNasFileInfo, decodeNasFilePage, decodeNasResponse, decodeNasSession,
-  nasString, NasErrorKind, NasFailure,
+  nasString, nasRecord, nasInteger, NasErrorKind, NasFailure,
   normalizeNasOrigin, selectNasApi, validateApiPath, validateLogicalPath } from '../domain/DsmProtocol';
 import type { NasApiDescriptor, NasFileEntry, NasFileInfo, NasFilePage, NasFormField, NasLoginSession } from '../domain/DsmProtocol';
 import { assertNasControlAccepted, validateNasControlAction } from '../domain/SystemControl';
@@ -8,6 +8,8 @@ import { decodePhotosPage, decodeSharedAlbumPage, decodePhotoAlbumPage, decodePh
   photoMediaSource, PhotosSpace } from '../domain/PhotosProtocol';
 import type { NasPhotoMediaAccess, NasPhotoItem, NasPhotoAlbum, NasPhotoAlbumPage, NasPhotoPage,
   NasSharedAlbum, NasSharedAlbumPage } from '../domain/PhotosProtocol';
+import { photoActionRequest, decodePhotoActionResult, decodePhotoFolders } from '../domain/PhotoActions';
+import type { PhotoActionInput, PhotoActionResult, PhotoFolder } from '../domain/PhotoActions';
 import { assertFileOperationSuccess, decodeFileOperationEntry, decodeFileTask, decodeFileTaskStatus,
   NasFileSortBy, NasFileSortDirection, NasFileTaskKind,
   validateFileName, validateFileOperationPath, validateFileOperationPaths, validateFileTask } from '../domain/FileOperations';
@@ -47,6 +49,8 @@ export const NAS_DISCOVERY_QUERY = 'SYNO.API.Auth,SYNO.FileStation.List,SYNO.Fil
   'SYNO.FileStation.Upload,SYNO.FileStation.Download,SYNO.Foto.Browse.Item,SYNO.FotoTeam.Browse.Item,' +
   'SYNO.DSM.Info,SYNO.Core.Package,SYNO.Foto.Sharing.Misc,SYNO.Core.Network,' +
   'SYNO.Foto.Browse.Album,SYNO.FotoTeam.Browse.Album,SYNO.Foto.Thumbnail,SYNO.FotoTeam.Thumbnail,SYNO.Foto.Download,SYNO.FotoTeam.Download,' +
+  'SYNO.FileStation.Thumb,SYNO.Foto.Browse.NormalAlbum,SYNO.Foto.Browse.Folder,SYNO.FotoTeam.Browse.Folder,' +
+  'SYNO.Foto.BackgroundTask.File,SYNO.FotoTeam.BackgroundTask.File,SYNO.Foto.BackgroundTask.Info,SYNO.Foto.Sharing.Passphrase,' +
   'SYNO.FileStation.CreateFolder,SYNO.FileStation.Rename,SYNO.FileStation.Delete,SYNO.FileStation.CopyMove,SYNO.FileStation.MD5,' +
   'SYNO.FileStation.Sharing,SYNO.DownloadStation.Task,' +
   // Drive 是独立套件，必须单独问；SYNO.API.Info 只回答被问到的名字。
@@ -78,6 +82,7 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     { feature: 'personalPhotos', api: 'SYNO.Foto.Browse.Item', verifiedVersions: [1] },
     { feature: 'sharedPhotos', api: 'SYNO.FotoTeam.Browse.Item', verifiedVersions: [1] },
     { feature: 'fileSharing', api: 'SYNO.FileStation.Sharing', verifiedVersions: [3] },
+    { feature: 'photos', api: 'SYNO.Foto.Browse.Item', verifiedVersions: [1] },
     { feature: 'nasDownloads', api: 'SYNO.DownloadStation.Task', verifiedVersions: [1, 3] },
     { feature: 'driveBrowse', api: DRIVE_FILES_API, verifiedVersions: [DRIVE_LIST_VERSION] },
     { feature: 'driveRecent', api: DRIVE_FILES_API, verifiedVersions: [2] },
@@ -473,10 +478,103 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
   async photoDetail(item: NasPhotoItem): Promise<NasPhotoItem> {
     this.requireSession();
     validatePhotoIdentity(item);
-    return decodePhotoDetail(await this.photosCall(this.photoApi(item.space, 'Browse.Item'), 'get', [
+    const api = this.photoApi(item.space, 'Browse.Item');
+    const version = this.capabilities.some((entry: NasApiDescriptor): boolean => entry.name === api && entry.minVersion <= 7 && entry.maxVersion >= 7) ? 7 : 1;
+    return decodePhotoDetail(await this.photosCall(api, 'get', [
       { name: 'id', content: JSON.stringify([item.id]) },
-      { name: 'additional', content: JSON.stringify(['thumbnail', 'resolution', 'orientation']) }
-    ]), item);
+      { name: 'additional', content: JSON.stringify(['thumbnail', 'resolution', 'orientation', 'exif', 'description', 'gps', 'address', 'tag']) }
+    ], version), item);
+  }
+
+  supportsPhotoAction(input: PhotoActionInput): boolean {
+    try {
+      const request = photoActionRequest(input); selectNasApi(this.capabilities, request.api, [request.version]);
+      if (input.action === 'share') { selectNasApi(this.capabilities, 'SYNO.Foto.Sharing.Passphrase', [1]); }
+      return true;
+    }
+    catch (error) { if (error instanceof NasFailure && [NasErrorKind.Unsupported, NasErrorKind.InvalidInput].includes(error.kind)) { return false; } throw error; }
+  }
+
+  async photoAction(input: PhotoActionInput): Promise<PhotoActionResult> {
+    const request = photoActionRequest(input);
+    this.requireSession();
+    selectNasApi(this.capabilities, request.api, [request.version]);
+    if (input.action === 'share') { selectNasApi(this.capabilities, 'SYNO.Foto.Sharing.Passphrase', [1]); }
+    const result = decodePhotoActionResult(input, await this.photosCall(request.api, request.method, request.fields, request.version));
+    if (input.action === 'share') {
+      try {
+        await this.photosCall('SYNO.Foto.Sharing.Passphrase', 'update', [
+          { name: 'passphrase', content: JSON.stringify(result.sharePassphrase!) },
+          { name: 'expiration', content: '0' }, { name: 'password', content: JSON.stringify('') },
+          { name: 'permission', content: JSON.stringify([{ action: 'update', role: 'view', member: { type: 'public' } }]) }
+        ]);
+      } catch (error) {
+        // 相册已创建，第二步失败不能当作整个写入被拒绝，更不能自动重复创建。
+        throw new NasFailure(NasErrorKind.Protocol, '分享相册已创建，链接设置未完成：' +
+          (error instanceof NasFailure ? error.message : '请在照片网页核对。'));
+      }
+    }
+    return result;
+  }
+
+  async photoTaskDone(id: number): Promise<boolean> {
+    const data = await this.photosCall('SYNO.Foto.BackgroundTask.Info', 'get_status', [{ name: 'id', content: JSON.stringify([id]) }]);
+    const list = data['list'];
+    if (!Array.isArray(list) || list.length !== 1) { throw new NasFailure(NasErrorKind.Protocol, '未能关联照片操作结果，请在照片网页核对。'); }
+    const task = nasRecord(list[0]);
+    if (nasInteger(task['id']) !== id) { throw new NasFailure(NasErrorKind.Protocol, '照片任务编号不匹配。'); }
+    if (nasString(task['status']) !== 'done') { return false; }
+    if (task['total'] !== undefined && task['completion'] !== undefined && nasInteger(task['total']) !== nasInteger(task['completion'])) {
+      throw new NasFailure(NasErrorKind.Server, '部分照片未完成操作，请在照片网页核对。');
+    }
+    return true;
+  }
+
+  async photoLocation(item: NasPhotoItem): Promise<string | undefined> {
+    validatePhotoIdentity(item);
+    const api = this.photoApi(item.space, 'Browse.Folder');
+    if (!this.capabilities.some((entry: NasApiDescriptor): boolean => entry.name === api && entry.minVersion <= 1 && entry.maxVersion >= 1)) { return undefined; }
+    const data = await this.photosCall(api, 'get', [{ name: 'id', content: item.folderId!.toString() }]);
+    const folder = nasRecord(data['folder']);
+    if (nasInteger(folder['id']) !== item.folderId) { throw new NasFailure(NasErrorKind.Protocol, '照片所在位置不匹配。'); }
+    return nasString(folder['name']);
+  }
+
+  async photoFavorite(item: NasPhotoItem): Promise<boolean> {
+    validatePhotoIdentity(item);
+    const api = this.photoApi(item.space, 'Browse.Item');
+    let offset = 0;
+    while (true) {
+      const data = await this.photosCall(api, 'list', [{ name: 'offset', content: offset.toString() },
+        { name: 'limit', content: '500' }, { name: 'is_favorite', content: 'true' }]);
+      const list = data['list'];
+      if (!Array.isArray(list) || list.length > 500) { throw new NasFailure(NasErrorKind.Protocol, '收藏列表响应格式不正确。'); }
+      if ((list as Object[]).some((value: Object): boolean => nasInteger(nasRecord(value)['id']) === item.id)) { return true; }
+      if (list.length < 500) { return false; }
+      offset += list.length;
+    }
+  }
+
+  async photoFolders(space: PhotosSpace, parentId?: number): Promise<PhotoFolder[]> {
+    if (space === PhotosSpace.WithMe) { throw new NasFailure(NasErrorKind.Unsupported, '接收相册不支持目录操作。'); }
+    const folders: PhotoFolder[] = [];
+    let offset = 0;
+    while (true) {
+      const fields: NasFormField[] = [{ name: 'offset', content: offset.toString() }, { name: 'limit', content: '1000' },
+        { name: 'id', content: (parentId ?? 0).toString() }];
+      const page = decodePhotoFolders(await this.photosCall(this.photoApi(space, 'Browse.Folder'), 'list', fields));
+      if (page.length > 1000) { throw new NasFailure(NasErrorKind.Protocol, '照片目录响应格式不正确。'); }
+      folders.push(...page);
+      if (page.length < 1000) { return folders; }
+      offset += page.length;
+    }
+  }
+
+  /** 添加目标仅列普通相册，条件相册不接受 add_item。 */
+  async photoActionAlbums(offset: number): Promise<NasPhotoAlbumPage> {
+    return decodePhotoAlbumPage(await this.photosCall('SYNO.Foto.Browse.NormalAlbum', 'list', [
+      { name: 'offset', content: offset.toString() }, { name: 'limit', content: '20' }
+    ]), PhotosSpace.Personal, offset, 20);
   }
 
   photoThumbnailPlan(item: NasPhotoItem, size: 'm' | 'xl' = 'm', access?: NasPhotoMediaAccess): NasTransferPlan {
@@ -594,9 +692,9 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     }
   }
 
-  private async photosCall(api: string, method: string, fields: NasFormField[]): Promise<Record<string, Object>> {
+  private async photosCall(api: string, method: string, fields: NasFormField[], version: number = 1): Promise<Record<string, Object>> {
     this.requireSession();
-    try { return await this.call(api, 1, method, fields, false); }
+    try { return await this.call(api, version, method, fields, false); }
     catch (error) {
       if (error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) {
         await this.list('', 0);
@@ -782,7 +880,7 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     }
   }
 
-  async readExtension<T>(feature: 'fileSharing' | 'nasDownloads', readAndValidate: () => Promise<T>): Promise<T> {
+  async readExtension<T>(feature: 'fileSharing' | 'nasDownloads' | 'photos', readAndValidate: () => Promise<T>): Promise<T> {
     this.requireSession(feature === 'nasDownloads' ? 'DownloadStation' : 'FileStation');
     return this.featureRegistry.read(feature, readAndValidate);
   }
@@ -887,13 +985,32 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     return this.downloadDriveBinary(request, target, control, validateDriveThumbnail);
   }
 
+  /** File Station 图片使用自身的缩略图与下载接口，不依赖 Drive 套件。 */
+  async fileImage(path: string, target: NasDownloadTarget, control: NasTransferControl, original: boolean): Promise<NasDownloadResult> {
+    validateLogicalPath(path); validateNasDownloadTarget(target);
+    const session = this.requireSession('FileStation');
+    const api = selectNasApi(this.capabilities, original ? 'SYNO.FileStation.Download' : 'SYNO.FileStation.Thumb', [2]);
+    const fields: NasFormField[] = [{ name: 'api', content: api.name }, { name: 'version', content: '2' },
+      { name: 'method', content: original ? 'download' : 'get' },
+      { name: 'path', content: original ? JSON.stringify([path]) : api.jsonParameters ? JSON.stringify(path) : path }];
+    fields.push({ name: original ? 'mode' : 'size', content: api.jsonParameters ? JSON.stringify(original ? 'download' : 'large') : original ? 'download' : 'large' });
+    return this.downloadDriveBinary({ address: this.origin + '/webapi/' + api.path, method: 'GET', session, fields }, target, control,
+      (reply: NasBinaryReply, output: NasDownloadTarget): void => {
+        if (/^\s*\{/.test(reply.prefixText) && /application\/json/i.test(reply.contentType)) {
+          decodeNasResponse(api.name, reply.status, reply.prefixText);
+          throw new NasFailure(NasErrorKind.Protocol, '服务器未返回图片。');
+        }
+        if (original) { validateDriveDownload(reply, output); } else { validateDriveThumbnail(reply); }
+      });
+  }
+
   /** 静态类型图标复用当前连接的证书策略与取消流程，仅资源不存在时改取通用图标。 */
   async fileTypeIconDrive(filename: string, directory: string,
-    control: NasTransferControl): Promise<NasDownloadResult> {
+    control: NasTransferControl, folder: boolean = false): Promise<NasDownloadResult> {
     this.requireSession('FileStation');
     const target: NasDownloadTarget = { directory, maximumBytes: DRIVE_THUMBNAIL_MAX_BYTES };
     validateNasDownloadTarget(target);
-    const path = driveFileTypeIconPath(filename);
+    const path = driveFileTypeIconPath(filename, folder);
     const fallback = driveFileTypeIconPath('');
     const request: NasTransferRequest = { address: this.origin + path, method: 'GET', fields: [],
       session: { sid: '', synoToken: '' } };

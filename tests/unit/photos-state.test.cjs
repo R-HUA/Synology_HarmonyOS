@@ -36,7 +36,7 @@ const connectorModule = load('core/network/NasConnector.ts', { '../domain/DsmPro
     '../network/ApiVersionPolicy': load('core/network/ApiVersionPolicy.ts', { '../domain/DsmProtocol': dsm }) }),
   './DsmRpcClient': load('core/network/DsmRpcClient.ts', { '../domain/DsmProtocol': dsm,
     './ApiVersionPolicy': load('core/network/ApiVersionPolicy.ts', { '../domain/DsmProtocol': dsm }) }),
-  '../domain/PhotosProtocol': photos, '../domain/FileOperations': operations, '../domain/TransferQueueState': queueState,
+  '../domain/PhotoActions': load('core/domain/PhotoActions.ts', { './DsmProtocol': dsm, './PhotosProtocol': photos }), '../domain/PhotosProtocol': photos, '../domain/FileOperations': operations, '../domain/TransferQueueState': queueState,
   '../domain/DriveProtocol': drive, '../domain/DriveTransferProtocol': driveTransfer,
   '../domain/DriveThumbnailProtocol': driveThumbnail,
   './NasTransferTransport': transferContracts,
@@ -168,8 +168,8 @@ class MockMedia {
 }
 let nextScope = 1;
 const { PhotoLibrary } = load('features/photos/PhotoLibrary.ets', { '@kit.ArkTS': { util: { generateRandomUUID: () => '11111111-1111-4111-8111-' + String(nextScope++).padStart(12, '0') } }, '@kit.PerformanceAnalysisKit': log,
-  '../../core/domain/DsmProtocol': dsm, '../../core/domain/PhotosProtocol': photos, './PhotoMediaStore': { PhotoMediaStore: MockMedia } });
-function library(connector, expired = async () => {}) { const model = new PhotoLibrary(); model.attach(connector, undefined, expired); return model; }
+  '../../core/domain/DsmProtocol': dsm, '../../core/domain/PhotosProtocol': photos, '../../platform/PhotoExif': { readPhotoExif: async () => ({}) }, './PhotoMediaStore': { PhotoMediaStore: MockMedia } });
+function library(connector, expired = async () => {}) { connector.supportsPhotoAction ??= () => false; const model = new PhotoLibrary(); model.attach(connector, undefined, expired); return model; }
 
 test('photo tabs retain pagination and selected albums without mixing a late response into another tab', async () => {
   const late = deferred(); let delayed = false;
