@@ -1448,17 +1448,17 @@ struct Index {
     const menu = source === 'photos' ? this.photoPreviewMenu() : source === 'drive' ? this.drivePreviewMenu() : this.filePreviewMenu();
     const id = source + '-preview-menu';
     return [{ content: { label: this.previewText(video ? $r('app.string.preview_play_video') : $r('app.string.preview_original')),
-      icon: video ? $r('sys.symbol.play') : source === 'photos' ? $r('app.media.preview_original') :
+      icon: video ? $r('sys.symbol.play') : source === 'photos' ? $r('sys.symbol.picture') :
         $r('sys.symbol.arrow_up_left_and_arrow_down_right'),
-      type: IconStyleMode.SMALL,
+      type: source === 'photos' ? IconStyleMode.NORMAL : IconStyleMode.SMALL,
       isEnabled: enabled, action: (): void => {
         if (source === 'photos') { this.model.photoLibrary.loadOriginal(); }
         else if (source === 'drive' && drive !== undefined) {
           if (video) { this.model.driveTransfers.download(drive, true); } else { this.model.driveOriginal.open(drive, true); }
         } else if (source === 'file' && file !== undefined) { this.model.fileOriginal.openFile(file, true); }
       } } }, { content: { label: this.previewText($r('app.string.preview_more')),
-        icon: source === 'photos' ? $r('app.media.preview_more') : $r('sys.symbol.more'),
-        type: IconStyleMode.SMALL,
+        icon: source === 'photos' ? $r('sys.media.ohos_ic_public_more') : $r('sys.symbol.more'),
+        type: source === 'photos' ? IconStyleMode.NORMAL : IconStyleMode.SMALL,
         componentId: id, isEnabled: menu.length > 0, action: (): void => {
           this.openTitleMenu(id, menu.map((item: MenuElement): TitleMenuItem => new TitleMenuItem(
             typeof item.value === 'string' ? item.value : this.previewText(item.value), true, (): void => { item.action?.(); })));

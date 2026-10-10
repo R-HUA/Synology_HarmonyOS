@@ -42,7 +42,8 @@ export struct ImagePreview {
   @Local viewHeight: number = 0;
   @Local infoVisible: boolean = false;
   private material: uiMaterial.Material = new uiMaterial.ImmersiveMaterial({ style: uiMaterial.ImmersiveStyle.ULTRA_THICK });
-  private toolbarMaterial: uiMaterial.Material = new uiMaterial.ImmersiveMaterial({ style: uiMaterial.ImmersiveStyle.THIN });
+  private toolbarMaterial: uiMaterial.Material = new uiMaterial.ImmersiveMaterial({
+    style: uiMaterial.ImmersiveStyle.ULTRA_THIN, colorInvert: true, interactive: true });
   private materialAvailable: boolean = uiMaterial.isImmersiveMaterialSupported();
 
   @Monitor('itemKey')
@@ -163,8 +164,7 @@ export struct ImagePreview {
       this.photoAction($r('sys.symbol.info_circle'), $r('app.string.preview_information'), true, (): void => { this.infoVisible = true; })
       this.photoAction($r('sys.symbol.trash'), $r('app.string.preview_delete'), this.canDelete, (): void => { this.onDelete(); })
     }.padding(4).borderRadius(28)
-      .backgroundColor(this.materialAvailable ? Color.Transparent : $r('app.color.workbench_surface'))
-      .systemMaterial(this.materialAvailable ? this.toolbarMaterial : undefined)
+      .systemMaterial(this.toolbarMaterial)
       .margin({ bottom: 16 })
   }
 
