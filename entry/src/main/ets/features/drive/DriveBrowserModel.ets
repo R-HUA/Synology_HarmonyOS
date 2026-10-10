@@ -57,6 +57,8 @@ export class DriveBrowserModel {
   /** 服务器是否通告了可用的 Drive 接口；false 时来源切换应保持不可选并说明原因。 */
   @Trace available: boolean = false;
   @Trace busy: boolean = false;
+  /** 保留旧列表时仍需区分整页读取与末尾追加，避免加载指示重复或滚出视口。 */
+  @Trace listLoading: 'idle' | 'content' | 'more' = 'idle';
   @Trace errorText: string = '';
   /** 只读阶段的一次性说明（例如点了暂不支持的文件），换目录或刷新时清空。 */
   @Trace notice: string = '';
@@ -103,6 +105,7 @@ export class DriveBrowserModel {
     this.activeView = DriveView.MyDrive;
     this.generation++;
     this.busy = false;
+    this.listLoading = 'idle';
     this.errorText = '';
     this.notice = '';
     this.entries = [];
@@ -157,6 +160,7 @@ export class DriveBrowserModel {
     }
     this.generation++;
     this.busy = false;
+    this.listLoading = 'idle';
     this.activeView = view;
     const saved = this.tabContexts.get(view);
     this.errorText = ''; this.notice = '';
@@ -209,6 +213,7 @@ export class DriveBrowserModel {
     if (origin === undefined) { return; }
     // 返回直接恢复浏览快照，保留已追加的条目，也使离开的搜索请求失效。
     this.generation++; this.busy = false;
+    this.listLoading = 'idle';
     this.trail = origin.trail; this.view = origin.view; this.entries = origin.entries;
     this.total = origin.total; this.hasMore = origin.hasMore;
     this.pageOffset = origin.position.offset; this.previousOffsets = origin.position.previousOffsets;
@@ -289,6 +294,7 @@ export class DriveBrowserModel {
     if (adapter === undefined || this.busy) { return false; }
     const ticket = this.generation;
     this.busy = true;
+    this.listLoading = append ? 'more' : 'content';
     this.errorText = '';
     this.notice = '';
     try {
@@ -350,7 +356,7 @@ export class DriveBrowserModel {
     } catch (error) {
       if (ticket === this.generation) { await this.fail(error as Object); }
       return false;
-    } finally { if (ticket === this.generation) { this.busy = false; } }
+    } finally { if (ticket === this.generation) { this.busy = false; this.listLoading = 'idle'; } }
   }
 
   /** 会话失效要交给连接层统一处理；其余错误只在本来源内提示，不污染 File Station 的文案。 */

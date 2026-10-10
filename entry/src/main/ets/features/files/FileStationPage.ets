@@ -127,7 +127,7 @@ export struct FileStationPage {
   }
 
   build() {
-    Column() {
+    Stack({ alignContent: Alignment.Center }) {
       List({ space: 0, scroller: this.scroller }) {
         ListItem() {
           Column({ space: 8 }) {
@@ -136,12 +136,6 @@ export struct FileStationPage {
             this.pickerBar()
             WorkbenchNotice({ text: this.errorText, warning: true })
             if (this.errorText.length === 0) { WorkbenchNotice({ text: this.model.actionNotice }) }
-            if (this.model.busy && this.model.entries.length === 0) {
-              Row({ space: 12 }) {
-                LoadingProgress().width(24).height(24)
-                Text('正在处理…').fontSize(14).fontColor($r('sys.color.font_secondary'))
-              }.width('100%').padding(12)
-            }
           }.width('100%').padding({ left: 16, right: 16, top: this.topInset + 4, bottom: 8 })
             .alignItems(HorizontalAlign.Start)
         }
@@ -167,17 +161,26 @@ export struct FileStationPage {
         if (this.model.entries.length > 0) {
           ListItem() {
             Row({ space: 8 }) {
-              if (this.model.busy) { LoadingProgress().width(24).height(24) }
-              Text(this.model.entries.length.toString() + ' / ' + this.model.total.toString() + ' 项').fontSize(12).fontColor($r('sys.color.font_secondary'))
-                .layoutWeight(1).textAlign(TextAlign.Center)
-            }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 12 })
+              if (this.model.listLoading === 'more') {
+                LoadingProgress().width(24).height(24).accessibilityText($r('app.string.file_list_loading'))
+              } else {
+                Text(this.model.entries.length.toString() + ' / ' + this.model.total.toString() + ' 项')
+                  .fontSize(12).fontColor($r('sys.color.font_secondary'))
+              }
+            }.width('100%').height(50).justifyContent(FlexAlign.Center)
           }
         }
       }.width('100%').height('100%').scrollBar(BarState.Auto).contentEndOffset(this.bottomInset)
         .onReachEnd((): void => {
           if (this.model.directoryErrorText.length === 0 && !this.pickerBusy) { this.model.nextPage(); }
         })
-    }.width('100%').height('100%').alignItems(HorizontalAlign.Start)
+      if (this.model.listLoading === 'content') {
+        Column() {
+          LoadingProgress().width(40).height(40).accessibilityText($r('app.string.file_list_loading'))
+        }.width('100%').height('100%').padding({ top: this.topInset, bottom: this.bottomInset })
+          .justifyContent(FlexAlign.Center).hitTestBehavior(HitTestMode.None)
+      }
+    }.width('100%').height('100%')
       .backgroundColor($r('app.color.workbench_surface'))
   }
 }

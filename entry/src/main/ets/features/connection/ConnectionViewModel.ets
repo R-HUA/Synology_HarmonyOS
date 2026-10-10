@@ -46,6 +46,8 @@ export class ConnectionViewModel {
   @Trace insecureTls: boolean = false;
   @Trace capabilities: NasApiDescriptor[] = [];
   @Trace entries: NasFileEntry[] = [];
+  /** 列表读取与文件操作共用 busy，加载位置须按实际读取类型区分。 */
+  @Trace listLoading: 'idle' | 'content' | 'more' = 'idle';
   @Trace directory: string = '';
   @Trace pageOffset: number = 0;
   @Trace total: number = 0;
@@ -1050,6 +1052,7 @@ export class ConnectionViewModel {
     if (this.busy || !this.authenticated || connector === undefined) { return false; }
     const ticket = this.generation;
     this.busy = true;
+    this.listLoading = append ? 'more' : 'content';
     this.errorText = '';
     this.directoryErrorText = '';
     try {
@@ -1068,7 +1071,7 @@ export class ConnectionViewModel {
       }
       return false;
     }
-    finally { if (ticket === this.generation) { this.busy = false; } }
+    finally { if (ticket === this.generation) { this.busy = false; this.listLoading = 'idle'; } }
   }
   private applyPage(path: string, page: NasFilePage, append: boolean = false): void {
     this.entries = append ? this.entries.concat(page.entries.filter((entry: NasFileEntry): boolean =>
@@ -1081,6 +1084,7 @@ export class ConnectionViewModel {
   }
   /** 只清理账号相关的会话状态；地址与证书策略由连接流程单独管理。 */
   private resetSessionState(): void {
+    this.listLoading = 'idle';
     this.mutationInFlight = false;
     this.extensions.reset();
     this.systemControl.deactivate();

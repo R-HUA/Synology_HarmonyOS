@@ -23,7 +23,7 @@
     { "name": "sort_descending", "value": "降序" },
     { "name": "sort_direction", "value": "排列顺序" },
     { "name": "drive_search_title", "value": "搜索" },
-    { "name": "drive_file_loading", "value": "正在处理文件…" },
+    { "name": "file_list_loading", "value": "正在加载文件列表" },
     { "name": "connection_device", "value": "连接设备" },
     { "name": "connection_ignore_certificate", "value": "忽略证书校验" },
     { "name": "connection_accept_login_risk", "value": "确认并登录" },

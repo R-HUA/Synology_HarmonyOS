@@ -64,8 +64,11 @@ test('tab return preserves folder and search state and ignores a late request fr
   assert.equal(f.model.trail.at(-1).fileId, folderId);
   delayed = true;
   const pending = f.model.activateView(V.Recent);
+  assert.equal(f.model.listLoading, 'content');
   await f.model.activateView(V.MyDrive);
+  assert.equal(f.model.listLoading, 'idle');
   late.resolve({ items: [], total: 0 }); await pending;
+  assert.equal(f.model.listLoading, 'idle');
   assert.equal(f.model.view, V.MyDrive); assert.equal(f.model.trail.at(-1).fileId, folderId);
 });
 
@@ -195,10 +198,13 @@ test('scroll loading appends short pages, ignores duplicate end events and keeps
     return { total: 3, items: [entry(offset + 1)] };
   });
   await f.model.open(); const loading = f.model.loadMore();
+  assert.equal(f.model.listLoading, 'more');
   await f.model.loadMore(); assert.equal(f.calls.length, 2);
   pending.resolve({ total: 3, items: [entry(2)] }); await loading;
+  assert.equal(f.model.listLoading, 'idle');
   assert.deepEqual(Array.from(f.model.entries, item => item.fileId), ['1', '2']);
   fail = true; await f.model.loadMore();
+  assert.equal(f.model.listLoading, 'idle');
   assert.deepEqual(Array.from(f.model.entries, item => item.fileId), ['1', '2']);
   fail = false; await f.model.loadMore();
   assert.deepEqual(f.calls.map(call => Number(call.fields.offset)), [0, 1, 2, 2]);

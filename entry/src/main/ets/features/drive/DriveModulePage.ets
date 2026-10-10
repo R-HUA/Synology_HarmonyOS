@@ -113,12 +113,6 @@ export struct DriveModulePage {
     WorkbenchNotice({ text: this.model.driveTransfers.errorText, warning: true })
     WorkbenchNotice({ text: this.model.driveActions.errorText, warning: true })
     WorkbenchNotice({ text: this.model.driveSharing.errorText, warning: true })
-    if (this.model.driveTransfers.busy) {
-      Row({ space: 8 }) {
-        LoadingProgress().width(24).height(24)
-        Text($r('app.string.drive_file_loading')).fontSize(14).fontColor($r('sys.color.font_secondary'))
-      }.width('100%').padding({ top: 4, bottom: 4 })
-    }
   }
 
   @Builder
@@ -132,85 +126,91 @@ export struct DriveModulePage {
 
   @Builder
   driveFileList() {
-    List({ space: 0, scroller: this.scroller }) {
-      ListItem() {
-        Column({ space: 4 }) {
-          if (this.tabId === 'more') {
-            Button() {
-              SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(20).fontColor([$r('sys.color.icon_primary')])
-            }.width(48).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).type(ButtonType.Normal)
-              .padding(0).backgroundColor(Color.Transparent).accessibilityText('返回更多')
-              .enabled(!this.model.busy && !this.model.drive.busy).onClick(this.onBackToMore)
-          }
-          if (this.searchPage) { this.driveSearch() }
-          if (this.canRenderEntries()) {
-            this.driveBreadcrumb()
-          }
-          this.driveNotices()
-          if (this.model.drive.busy && this.model.drive.entries.length === 0) {
-            Row({ space: 12 }) {
-              LoadingProgress().width(24).height(24)
-              Text('正在读取 Drive 内容…').fontSize(14).fontColor($r('sys.color.font_secondary'))
-            }.width('100%').padding(12)
-          }
-        }.width('100%').alignItems(HorizontalAlign.Start)
-          .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin,
-            top: this.topInset + 4, bottom: 4 })
-      }
-      if (this.canRenderEntries()) {
-        if (!this.model.drive.busy && this.model.drive.entries.length === 0) {
-          ListItem() {
-            if (this.model.drive.errorText.length > 0) {
-              this.emptyState($r('sys.symbol.exclamationmark_circle'), 'Drive 内容未能读取', '请使用标题栏的刷新重试。')
-            } else if (this.model.drive.view === DriveView.Search && this.model.drive.trail.length === 1) {
-              this.emptyState($r('sys.symbol.magnifyingglass'), '没有搜索结果', '请尝试其他关键词。')
-            } else {
-              this.emptyState($r('sys.symbol.folder'), '此位置为空', '当前列表没有可显示的项目。')
+    Stack({ alignContent: Alignment.Center }) {
+      List({ space: 0, scroller: this.scroller }) {
+        ListItem() {
+          Column({ space: 4 }) {
+            if (this.tabId === 'more') {
+              Button() {
+                SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(20).fontColor([$r('sys.color.icon_primary')])
+              }.width(48).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).type(ButtonType.Normal)
+                .padding(0).backgroundColor(Color.Transparent).accessibilityText('返回更多')
+                .enabled(!this.model.busy && !this.model.drive.busy).onClick(this.onBackToMore)
+            }
+            if (this.searchPage) { this.driveSearch() }
+            if (this.canRenderEntries()) {
+              this.driveBreadcrumb()
+            }
+            this.driveNotices()
+          }.width('100%').alignItems(HorizontalAlign.Start)
+            .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin,
+              top: this.topInset + 4, bottom: 4 })
+        }
+        if (this.canRenderEntries()) {
+          if (!this.model.drive.busy && this.model.drive.entries.length === 0) {
+            ListItem() {
+              if (this.model.drive.errorText.length > 0) {
+                this.emptyState($r('sys.symbol.exclamationmark_circle'), 'Drive 内容未能读取', '请使用标题栏的刷新重试。')
+              } else if (this.model.drive.view === DriveView.Search && this.model.drive.trail.length === 1) {
+                this.emptyState($r('sys.symbol.magnifyingglass'), '没有搜索结果', '请尝试其他关键词。')
+              } else {
+                this.emptyState($r('sys.symbol.folder'), '此位置为空', '当前列表没有可显示的项目。')
+              }
             }
           }
-        }
-        ForEach(this.model.drive.entries, (entry: DriveEntry): void => {
-          ListItem() {
-            WorkbenchEntryRow({ title: entry.name, subtitle: this.driveRowSubtitle(entry),
-                thumbnail: this.model.driveThumbnails.path(entry).length > 0 ?
-                  fileUri.getUriFromPath(this.model.driveThumbnails.path(entry)) : '',
-                icon: entry.kind === DriveEntryKind.Folder ? $r('sys.symbol.folder') : $r('sys.symbol.doc'),
-                iconColor: entry.kind === DriveEntryKind.Folder ? $r('sys.color.icon_emphasize') : $r('sys.color.font_secondary'),
-                available: !this.model.busy && !this.model.drive.busy && entry.capabilities.canRead &&
-                  this.model.drive.view !== DriveView.Trash &&
-                  (entry.kind === DriveEntryKind.Folder || entry.capabilities.canDownload &&
-                    this.model.driveTransfers.ready && !this.model.driveTransfers.busy),
-                menu: this.driveEntryMenu(entry), menuAvailable: !this.model.busy && !this.model.drive.busy,
-                onOpen: (): void => { this.openDriveEntry(entry); } })
-          }
-          .onVisibleAreaChange([0], (visible: boolean, ratio: number): void => {
-            this.model.driveThumbnails.setVisible(entry, visible && ratio > 0 && this.canRenderEntries() &&
-              this.model.drive.view !== DriveView.Trash);
-          })
-          .onDisAppear((): void => { this.model.driveThumbnails.setVisible(entry, false); })
-        }, (entry: DriveEntry): string => driveEntryRenderKey(entry))
-        ListItem() {
-          Row({ space: 8 }) {
-            if (this.model.drive.busy) { LoadingProgress().width(24).height(24) }
-            Text(this.driveCountText()).fontSize(12).fontColor($r('sys.color.font_secondary'))
-              .layoutWeight(1).textAlign(TextAlign.Center)
-          }.width('100%').padding({ top: 4, bottom: 4 })
-        }
-      } else if (!this.model.drive.busy && !this.searchPage) {
-        ListItem() {
-          Column({ space: 8 }) {
-            this.emptyState($r('sys.symbol.folder'), '此入口尚未打开', '请重试读取此入口的内容。')
-            if (this.model.drive.supportsView(this.expectedView)) {
-              Button('重新读取').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
-                .enabled(!this.model.busy).onClick((): void => { this.model.drive.selectView(this.expectedView); })
+          ForEach(this.model.drive.entries, (entry: DriveEntry): void => {
+            ListItem() {
+              WorkbenchEntryRow({ title: entry.name, subtitle: this.driveRowSubtitle(entry),
+                  thumbnail: this.model.driveThumbnails.path(entry).length > 0 ?
+                    fileUri.getUriFromPath(this.model.driveThumbnails.path(entry)) : '',
+                  icon: entry.kind === DriveEntryKind.Folder ? $r('sys.symbol.folder') : $r('sys.symbol.doc'),
+                  iconColor: entry.kind === DriveEntryKind.Folder ? $r('sys.color.icon_emphasize') : $r('sys.color.font_secondary'),
+                  available: !this.model.busy && !this.model.drive.busy && entry.capabilities.canRead &&
+                    this.model.drive.view !== DriveView.Trash &&
+                    (entry.kind === DriveEntryKind.Folder || entry.capabilities.canDownload &&
+                      this.model.driveTransfers.ready && !this.model.driveTransfers.busy),
+                  menu: this.driveEntryMenu(entry), menuAvailable: !this.model.busy && !this.model.drive.busy,
+                  onOpen: (): void => { this.openDriveEntry(entry); } })
             }
-          }.width('100%')
+            .onVisibleAreaChange([0], (visible: boolean, ratio: number): void => {
+              this.model.driveThumbnails.setVisible(entry, visible && ratio > 0 && this.canRenderEntries() &&
+                this.model.drive.view !== DriveView.Trash);
+            })
+            .onDisAppear((): void => { this.model.driveThumbnails.setVisible(entry, false); })
+          }, (entry: DriveEntry): string => driveEntryRenderKey(entry))
+          if (this.model.drive.entries.length > 0) {
+            ListItem() {
+              Row({ space: 8 }) {
+                if (this.model.drive.listLoading === 'more') {
+                  LoadingProgress().width(24).height(24).accessibilityText($r('app.string.file_list_loading'))
+                } else {
+                  Text(this.driveCountText()).fontSize(12).fontColor($r('sys.color.font_secondary'))
+                }
+              }.width('100%').height(50).justifyContent(FlexAlign.Center)
+            }
+          }
+        } else if (!this.model.drive.busy && !this.searchPage) {
+          ListItem() {
+            Column({ space: 8 }) {
+              this.emptyState($r('sys.symbol.folder'), '此入口尚未打开', '请重试读取此入口的内容。')
+              if (this.model.drive.supportsView(this.expectedView)) {
+                Button('重新读取').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
+                  .enabled(!this.model.busy).onClick((): void => { this.model.drive.selectView(this.expectedView); })
+              }
+            }.width('100%')
+          }
         }
+      }.width('100%').height('100%').scrollBar(BarState.Auto).contentEndOffset(this.bottomInset)
+        .onReachEnd((): void => {
+          if (this.canRenderEntries() && !this.model.busy && this.model.drive.errorText.length === 0) { this.model.drive.loadMore(); }
+        })
+      if (this.active && this.model.drive.listLoading === 'content') {
+        Column() {
+          LoadingProgress().width(40).height(40).accessibilityText($r('app.string.file_list_loading'))
+        }.width('100%').height('100%').padding({ top: this.topInset, bottom: this.bottomInset })
+          .justifyContent(FlexAlign.Center).hitTestBehavior(HitTestMode.None)
       }
-    }.width('100%').height('100%').scrollBar(BarState.Auto).contentEndOffset(this.bottomInset)
-      .onReachEnd((): void => {
-        if (this.canRenderEntries() && !this.model.busy && this.model.drive.errorText.length === 0) { this.model.drive.loadMore(); }
-      })
+    }.width('100%').height('100%')
   }
 
   @Builder
