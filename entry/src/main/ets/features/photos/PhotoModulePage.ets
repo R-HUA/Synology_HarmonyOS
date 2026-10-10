@@ -357,7 +357,7 @@ export struct PhotoModulePage {
 
   build() {
     Column() {
-      List({ space: 4, scroller: this.scroller }) {
+      List({ space: 2, scroller: this.scroller }) {
         if (this.tabId === 'more') {
           ListItem() { this.moreView() }
         } else if (this.tabId === 'backup') {
@@ -402,7 +402,7 @@ export struct PhotoModulePage {
                     Text(row.item.title).fontSize(16).fontWeight(FontWeight.Medium)
                       .fontColor($r('sys.color.font_secondary')).width('100%').padding({ top: 8 })
                   }
-                  Row({ space: 4 }) {
+                  Row({ space: 2 }) {
                     ForEach(row.item.items, (item: NasPhotoItem): void => { this.photoCard(item) },
                       (item: NasPhotoItem): string => item.space.toString() + ':' + item.id.toString())
                     ForEach([0, 1, 2, 3, 4, 5].slice(0, photoGridColumns(this.contentWidth) - row.item.items.length),

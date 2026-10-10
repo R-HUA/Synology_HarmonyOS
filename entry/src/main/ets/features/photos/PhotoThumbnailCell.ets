@@ -15,7 +15,7 @@ export struct PhotoThumbnailCell {
   @Builder
   thumbnail(path: string) {
     Image(fileUri.getUriFromPath(path)).width('100%').height('100%').objectFit(ImageFit.Cover)
-      .sourceSize({ width: 320, height: 320 }).accessibilityLevel('no')
+      .accessibilityLevel('no')
       .opacity(this.decodedPath === path ? 1 : 0)
       .onComplete((): void => { this.decodedPath = path; })
       .onError((): void => { this.library.thumbnailImageError(this.item, path); })
@@ -34,7 +34,7 @@ export struct PhotoThumbnailCell {
           }
         }.width('100%').height('100%').backgroundColor($r('app.color.workbench_subtle'))
       }.width('100%').height('100%').type(ButtonType.Normal).backgroundColor(Color.Transparent)
-        .borderRadius(8).enabled(this.available).onClick((): void => { this.onOpen(this.item); })
+        .borderRadius(2).enabled(this.available).onClick((): void => { this.onOpen(this.item); })
         .accessibilityText(photoMediaLabel(this.item) + '，' + this.item.filename + '，' + photoTakenDate(this.item))
       if (this.item.mediaType !== 'photo') {
         Text(photoMediaLabel(this.item)).fontSize(12).fontColor(Color.White)
@@ -47,6 +47,6 @@ export struct PhotoThumbnailCell {
           .onClick((): void => { this.library.retryThumbnail(this.item); })
           .accessibilityDescription(this.state.errorText)
       }
-    }.width('100%').aspectRatio(1).borderRadius(8).clip(true)
+    }.width('100%').aspectRatio(1).borderRadius(2).clip(true)
   }
 }

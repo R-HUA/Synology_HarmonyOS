@@ -15,6 +15,8 @@ export struct ImagePreview {
   @Param canDownload: boolean = true;
   @Param video: boolean = false;
   @Param photos: boolean = false;
+  @Param itemKey: string = '';
+  @Param canNavigate: boolean = true;
   @Param favorite: boolean = false;
   @Param canFavorite: boolean = false;
   @Param canDelete: boolean = false;
@@ -26,6 +28,7 @@ export struct ImagePreview {
   @Event onDelete: () => void = (): void => {};
   @Event onShare: () => void = (): void => {};
   @Event onFavorite: () => void = (): void => {};
+  @Event onNavigate: (direction: number) => void = (_direction: number): void => {};
   @Event onDecodeError: () => void = (): void => {};
   @Event onViewport: (width: number, height: number) => void = (): void => {};
   @Event onRefine: (scale: number) => void = (): void => {};
@@ -38,22 +41,23 @@ export struct ImagePreview {
   @Local viewWidth: number = 0;
   @Local viewHeight: number = 0;
   @Local infoVisible: boolean = false;
-  @Local exifSelected: boolean = false;
   private material: uiMaterial.Material = new uiMaterial.ImmersiveMaterial({ style: uiMaterial.ImmersiveStyle.ULTRA_THICK });
+  private toolbarMaterial: uiMaterial.Material = new uiMaterial.ImmersiveMaterial({ style: uiMaterial.ImmersiveStyle.THIN });
   private materialAvailable: boolean = uiMaterial.isImmersiveMaterialSupported();
+
+  @Monitor('itemKey')
+  private resetPhotoView(): void {
+    this.resetView();
+    this.infoVisible = false;
+  }
 
   private resetView(): void { this.scaleValue = 1; this.offsetX = 0; this.offsetY = 0; }
 
   private action(icon: Resource, label: Resource, enabled: boolean, callback: () => void): ActionBarButton {
-    return new ActionBarButton({ baseIcon: icon, enabled, accessibilityText: label, onClick: callback });
+    return new ActionBarButton({ baseIcon: icon, enabled, accessibilityText: label, hoverTips: label, onClick: callback });
   }
 
   private startActions(): ActionBarButton[] {
-    if (this.photos) {
-      return [this.action($r('sys.symbol.share'), $r('app.string.preview_share'), this.canShare, this.onShare),
-        this.action(this.favorite ? $r('sys.symbol.heart_fill') : $r('sys.symbol.heart'),
-          this.favorite ? $r('app.string.preview_unfavorite') : $r('app.string.preview_favorite'), this.canFavorite, this.onFavorite)];
-    }
     return [this.action($r('sys.symbol.arrow_down_circle'), $r('app.string.preview_download'), this.canDownload, this.onDownload),
       this.action($r('sys.symbol.trash'), $r('app.string.preview_delete'), this.canDelete, this.onDelete)];
   }
@@ -61,38 +65,31 @@ export struct ImagePreview {
   private endActions(): ActionBarButton[] {
     const information = this.action($r('sys.symbol.info_circle'), $r('app.string.preview_information'), true,
       (): void => { this.infoVisible = true; });
-    if (this.photos) { return [information, this.action($r('sys.symbol.trash'), $r('app.string.preview_delete'), this.canDelete, this.onDelete)]; }
     return [this.action($r('sys.symbol.share'), $r('app.string.preview_share'), this.canShare, this.onShare), information];
   }
 
   @Builder
   details() {
-    Column() {
-      if (this.photos) {
-        Row({ space: 16 }) {
-          Button($r('app.string.preview_details')).buttonStyle(ButtonStyleMode.TEXTUAL)
-            .fontColor(this.exifSelected ? $r('sys.color.font_secondary') : $r('sys.color.font_emphasize'))
-            .onClick((): void => { this.exifSelected = false; })
-          Button($r('app.string.preview_exif')).buttonStyle(ButtonStyleMode.TEXTUAL)
-            .fontColor(this.exifSelected ? $r('sys.color.font_emphasize') : $r('sys.color.font_secondary'))
-            .onClick((): void => { this.exifSelected = true; })
-        }.width('100%').padding({ left: 8, right: 8 })
-      }
-      Scroll() {
-        Column({ space: 8 }) {
-          ForEach(this.photos && this.exifSelected ? this.exif : this.information, (row: PreviewInformation): void => {
-            WorkbenchInfoRow({ label: row.label, value: row.value, labelWidth: 88, valueAlign: TextAlign.Start })
+    Scroll() {
+      Column({ space: 16 }) {
+        ForEach(this.information, (row: PreviewInformation): void => {
+          WorkbenchInfoRow({ label: row.label, value: row.value, labelWidth: 72, valueAlign: TextAlign.Start })
+        })
+        if (this.photos && this.exif.length > 0) {
+          Divider().color($r('sys.color.comp_divider'))
+          Text($r('app.string.preview_exif')).fontSize(16).fontWeight(FontWeight.Medium)
+            .fontColor($r('sys.color.font_primary')).width('100%')
+          ForEach(this.exif, (row: PreviewInformation): void => {
+            WorkbenchInfoRow({ label: row.label, value: row.value, labelWidth: 72, valueAlign: TextAlign.Start })
           })
-          if (this.photos && this.exifSelected && this.exif.length === 0) {
-            Text($r('app.string.preview_no_exif')).fontColor($r('sys.color.font_secondary')).width('100%')
-          }
-        }.width('100%').padding(24).alignItems(HorizontalAlign.Start)
-      }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
-        .nestedScroll({ scrollForward: NestedScrollMode.PARENT_FIRST, scrollBackward: NestedScrollMode.SELF_FIRST })
-    }.width('100%').height('100%')
+        }
+      }.width('100%').padding({ left: 24, right: 24, top: 12, bottom: 24 }).alignItems(HorizontalAlign.Start)
+    }.width('100%').constraintSize({ maxHeight: this.viewHeight * 0.8 }).scrollBar(BarState.Auto)
+      .nestedScroll({ scrollForward: NestedScrollMode.PARENT_FIRST, scrollBackward: NestedScrollMode.SELF_FIRST })
   }
 
-  build() {
+  @Builder
+  content() {
     Column() {
       Stack({ alignContent: Alignment.Center }) {
         if (this.source !== '') {
@@ -101,8 +98,7 @@ export struct ImagePreview {
               .onError((): void => { this.onDecodeError(); })
           } else {
             Image(this.source).width('100%').height('100%').objectFit(ImageFit.Contain)
-              .sourceSize({ width: Math.max(640, Math.min(2880, this.viewWidth * this.scaleValue * 2)),
-                height: Math.max(640, Math.min(2880, this.viewHeight * this.scaleValue * 2)) })
+              .syncLoad(!this.original)
               .scale({ x: this.scaleValue, y: this.scaleValue }).translate({ x: this.offsetX, y: this.offsetY })
               .accessibilityText(this.name).onError((): void => { this.onDecodeError(); })
           }
@@ -127,14 +123,57 @@ export struct ImagePreview {
                 this.offsetX = Math.min(limitX, Math.max(-limitX, this.initialX + event.offsetX));
                 this.offsetY = Math.min(limitY, Math.max(-limitY, this.initialY + event.offsetY));
               }
+            })
+            .onActionEnd((event: GestureEvent): void => {
+              // 缩放后的拖动只移动图片，原始比例下的横向滑动才切换照片。
+              if (this.photos && this.canNavigate && this.scaleValue === 1 &&
+                Math.abs(event.offsetX) >= 48 && Math.abs(event.offsetX) > Math.abs(event.offsetY) * 1.5) {
+                this.onNavigate(event.offsetX < 0 ? 1 : -1);
+              }
             }),
           TapGesture({ count: 2 }).onAction((): void => { this.resetView(); this.onRefine(1); })
         ))
       WorkbenchNotice({ text: this.errorText, warning: true })
-      HdsActionBar({ startButtons: this.startActions(), endButtons: this.endActions() })
-        .margin({ left: 16, right: 16, bottom: 12 })
+      if (!this.photos) { this.actionBar() }
+    }.width('100%').height('100%')
+  }
+
+  @Builder
+  actionBar() {
+    HdsActionBar({ startButtons: this.startActions(), endButtons: this.endActions() })
+      .margin({ left: 16, right: 16, bottom: 12 })
+  }
+
+  @Builder
+  photoAction(icon: Resource, label: Resource, enabled: boolean, callback: () => void) {
+    Button({ type: ButtonType.Circle }) {
+      SymbolGlyph(icon).fontSize(24).fontColor([$r('sys.color.font_primary')])
+    }.width(48).height(48).backgroundColor(Color.Transparent)
+      .enabled(enabled).opacity(enabled ? 1 : 0.4).accessibilityText(label)
+      .onClick(callback)
+  }
+
+  @Builder
+  photoActionBar() {
+    Row({ space: 8 }) {
+      this.photoAction($r('sys.symbol.share'), $r('app.string.preview_share'), this.canShare, (): void => { this.onShare(); })
+      this.photoAction(this.favorite ? $r('sys.symbol.heart_fill') : $r('sys.symbol.heart'),
+        this.favorite ? $r('app.string.preview_unfavorite') : $r('app.string.preview_favorite'), this.canFavorite,
+        (): void => { this.onFavorite(); })
+      this.photoAction($r('sys.symbol.info_circle'), $r('app.string.preview_information'), true, (): void => { this.infoVisible = true; })
+      this.photoAction($r('sys.symbol.trash'), $r('app.string.preview_delete'), this.canDelete, (): void => { this.onDelete(); })
+    }.padding(4).borderRadius(28)
+      .backgroundColor(this.materialAvailable ? Color.Transparent : $r('app.color.workbench_surface'))
+      .systemMaterial(this.materialAvailable ? this.toolbarMaterial : undefined)
+      .margin({ bottom: 16 })
+  }
+
+  build() {
+    Stack({ alignContent: Alignment.Bottom }) {
+      this.content()
+      if (this.photos) { this.photoActionBar() }
     }.width('100%').height('100%').backgroundColor($r('app.color.workbench_background'))
-      .bindSheet($$this.infoVisible, this.details(), { height: SheetSize.MEDIUM, detents: [SheetSize.MEDIUM, SheetSize.LARGE],
+      .bindSheet($$this.infoVisible, this.details(), { height: SheetSize.FIT_CONTENT,
         title: { title: $r('app.string.preview_information') }, showClose: true,
         backgroundColor: this.materialAvailable ? Color.Transparent : $r('app.color.workbench_surface'), systemMaterial: this.material })
   }

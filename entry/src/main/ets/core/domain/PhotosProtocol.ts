@@ -83,6 +83,10 @@ export function decodePhotosPage(data: Record<string, Object>, space: PhotosSpac
     }
     if (row['additional'] !== undefined) {
       const additional = nasRecord(row['additional']);
+      if (additional['favorite'] !== undefined) {
+        if (typeof additional['favorite'] !== 'boolean') { throw incompatiblePhotos(); }
+        item.favorite = additional['favorite'] as boolean;
+      }
       if (additional['description'] !== undefined) {
         if (typeof additional['description'] !== 'string') { throw incompatiblePhotos(); }
         item.description = additional['description'] as string;

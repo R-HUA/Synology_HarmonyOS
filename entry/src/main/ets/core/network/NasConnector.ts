@@ -482,7 +482,7 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     const version = this.capabilities.some((entry: NasApiDescriptor): boolean => entry.name === api && entry.minVersion <= 7 && entry.maxVersion >= 7) ? 7 : 1;
     return decodePhotoDetail(await this.photosCall(api, 'get', [
       { name: 'id', content: JSON.stringify([item.id]) },
-      { name: 'additional', content: JSON.stringify(['thumbnail', 'resolution', 'orientation', 'exif', 'description', 'gps', 'address', 'tag']) }
+      { name: 'additional', content: JSON.stringify(['thumbnail', 'resolution', 'orientation', 'exif', 'description', 'gps', 'address', 'tag', 'favorite']) }
     ], version), item);
   }
 
@@ -538,21 +538,6 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     const folder = nasRecord(data['folder']);
     if (nasInteger(folder['id']) !== item.folderId) { throw new NasFailure(NasErrorKind.Protocol, '照片所在位置不匹配。'); }
     return nasString(folder['name']);
-  }
-
-  async photoFavorite(item: NasPhotoItem): Promise<boolean> {
-    validatePhotoIdentity(item);
-    const api = this.photoApi(item.space, 'Browse.Item');
-    let offset = 0;
-    while (true) {
-      const data = await this.photosCall(api, 'list', [{ name: 'offset', content: offset.toString() },
-        { name: 'limit', content: '500' }, { name: 'is_favorite', content: 'true' }]);
-      const list = data['list'];
-      if (!Array.isArray(list) || list.length > 500) { throw new NasFailure(NasErrorKind.Protocol, '收藏列表响应格式不正确。'); }
-      if ((list as Object[]).some((value: Object): boolean => nasInteger(nasRecord(value)['id']) === item.id)) { return true; }
-      if (list.length < 500) { return false; }
-      offset += list.length;
-    }
   }
 
   async photoFolders(space: PhotosSpace, parentId?: number): Promise<PhotoFolder[]> {

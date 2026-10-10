@@ -1448,13 +1448,17 @@ struct Index {
     const menu = source === 'photos' ? this.photoPreviewMenu() : source === 'drive' ? this.drivePreviewMenu() : this.filePreviewMenu();
     const id = source + '-preview-menu';
     return [{ content: { label: this.previewText(video ? $r('app.string.preview_play_video') : $r('app.string.preview_original')),
-      icon: video ? $r('sys.symbol.play') : $r('sys.symbol.arrow_up_left_and_arrow_down_right'), type: IconStyleMode.SMALL,
+      icon: video ? $r('sys.symbol.play') : source === 'photos' ? $r('app.media.preview_original') :
+        $r('sys.symbol.arrow_up_left_and_arrow_down_right'),
+      type: IconStyleMode.SMALL,
       isEnabled: enabled, action: (): void => {
         if (source === 'photos') { this.model.photoLibrary.loadOriginal(); }
         else if (source === 'drive' && drive !== undefined) {
           if (video) { this.model.driveTransfers.download(drive, true); } else { this.model.driveOriginal.open(drive, true); }
         } else if (source === 'file' && file !== undefined) { this.model.fileOriginal.openFile(file, true); }
-      } } }, { content: { label: this.previewText($r('app.string.preview_more')), icon: $r('sys.symbol.more'), type: IconStyleMode.SMALL,
+      } } }, { content: { label: this.previewText($r('app.string.preview_more')),
+        icon: source === 'photos' ? $r('app.media.preview_more') : $r('sys.symbol.more'),
+        type: IconStyleMode.SMALL,
         componentId: id, isEnabled: menu.length > 0, action: (): void => {
           this.openTitleMenu(id, menu.map((item: MenuElement): TitleMenuItem => new TitleMenuItem(
             typeof item.value === 'string' ? item.value : this.previewText(item.value), true, (): void => { item.action?.(); })));
@@ -1573,7 +1577,7 @@ struct Index {
     const input: PhotoActionInput = { action, item, targetId, favorite: !item.favorite };
     const confirmed = await this.model.extensions.performPhotoAction(input);
     if (this.model.photoLibrary.detail !== item) { return; }
-    if (confirmed && action === 'favorite') { this.model.photoLibrary.openDetail(item); }
+    if (confirmed && action === 'favorite') { this.model.photoLibrary.confirmFavorite(item, input.favorite!); }
     if (confirmed && action === 'album' && this.navStack.getAllPathName().slice(-1)[0] === 'photo-actions') { this.navStack.pop(); }
     if (confirmed && action === 'share') {
       try {
@@ -1668,9 +1672,13 @@ struct Index {
     ImagePreview({ source: this.model.photoLibrary.originalPath.length > 0 ? fileUri.getUriFromPath(this.model.photoLibrary.originalPath) :
         this.model.photoLibrary.previewPath.length > 0 ? fileUri.getUriFromPath(this.model.photoLibrary.previewPath) : '',
       name: this.model.photoLibrary.detail?.filename ?? '', photos: true, video: this.model.photoLibrary.detail?.mediaType === 'video',
+      itemKey: this.model.photoLibrary.detail === undefined ? '' :
+        this.model.photoLibrary.detail.space.toString() + ':' + this.model.photoLibrary.detail.id.toString(),
+      canNavigate: !this.model.extensions.busy && !this.model.extensions.hasPending('photos'),
+      onNavigate: (direction: number): void => { this.model.photoLibrary.switchDetail(direction); },
       busy: this.model.photoLibrary.loadingMedia, original: this.model.photoLibrary.originalPath.length > 0,
       favorite: this.model.photoLibrary.detail?.favorite === true,
-      canFavorite: this.model.photoLibrary.detail?.favorite !== undefined && this.photoCan('favorite'),
+      canFavorite: !this.model.photoLibrary.loadingMedia && this.model.photoLibrary.detail?.favorite !== undefined && this.photoCan('favorite'),
       canShare: this.photoCan('share'), canDelete: this.photoCan('delete'),
       information: this.photoPreviewInfo(), exif: this.photoExifInfo(),
       errorText: this.model.photoLibrary.mediaErrorText || this.model.extensions.photoError,
@@ -1856,7 +1864,7 @@ struct Index {
     } else if (name === 'photo-detail') {
       HdsNavDestination() { this.photoDetailView() }
         .backgroundColor($r('app.color.workbench_background'))
-        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: '照片详情' },
+        .titleBar({ enableComponentSafeArea: true, content: {
           menu: { value: this.previewMenus('photos'), maxCount: 2 } },
           style: { systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE } } })
         .onHidden((): void => { if (!this.navStack.getAllPathName().includes('photo-detail')) { this.model.photoLibrary.closeDetail(); } })

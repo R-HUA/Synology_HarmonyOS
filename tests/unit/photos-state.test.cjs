@@ -284,6 +284,78 @@ test('detail and original failures preserve entry points and export cancellation
   assert.equal(model.exportNotice, '');
 });
 
+test('favorite state is available while the large preview is still loading', async () => {
+  const preview = deferred();
+  const photo = { ...item(1), favorite: false, thumbnail: { cacheKey: '1', unitId: 1 } };
+  const model = library({ async photos() { return { items: [photo], offset: 0, hasMore: false }; },
+    async photoDetail() { return photo; } });
+  model.media.thumbnail = () => preview.promise;
+  await model.open(S.Personal);
+  const opening = model.openDetail(model.items[0]);
+  await turn();
+  assert.equal(model.detail.favorite, false);
+  assert.equal(model.loadingMedia, true);
+  preview.resolve('/private/preview');
+  await opening;
+  assert.equal(model.loadingMedia, false);
+});
+
+test('swiping follows loaded order, stops at boundaries and ignores a late previous detail', async () => {
+  const late = deferred();
+  const model = library({ async photos() { return { items: [item(1), item(2), item(3)], offset: 0, hasMore: false }; },
+    async photoDetail(photo) { return photo.id === 1 ? late.promise : photo; } });
+  await model.open(S.Personal);
+  const opening = model.openDetail(model.items[0]);
+  await model.switchDetail(-1);
+  assert.equal(model.detail.id, 1);
+  await model.switchDetail(1);
+  late.resolve(item(1));
+  await opening;
+  assert.equal(model.detail.id, 2);
+  await model.switchDetail(1);
+  await model.switchDetail(1);
+  assert.equal(model.detail.id, 3);
+  await model.switchDetail(-1);
+  assert.equal(model.detail.id, 2);
+});
+
+test('confirmed favorite changes preserve media and cannot modify a different photo', async () => {
+  const photo = { ...item(1), favorite: false };
+  const model = library({ async photos() { return { items: [photo], offset: 0, hasMore: false }; },
+    async photoDetail() { return photo; } });
+  await model.open(S.Personal);
+  await model.openDetail(model.items[0]);
+  model.originalPath = '/private/original';
+  model.previewPath = '/private/preview';
+  model.confirmFavorite(model.detail, true);
+  assert.equal(model.detail.favorite, true);
+  assert.equal(model.items[0].favorite, true);
+  assert.equal(model.originalPath, '/private/original');
+  assert.equal(model.previewPath, '/private/preview');
+  const previous = model.detail;
+  model.confirmFavorite(previous, false);
+  assert.equal(model.detail.favorite, false);
+  model.confirmFavorite(previous, true);
+  assert.equal(model.detail.favorite, false);
+});
+
+test('swiping loads the next page and leaving detail cancels a pending page transition', async () => {
+  const page = deferred();
+  const model = library({ async photos(space, offset) {
+    return offset === 0 ? { items: [item(1)], offset, hasMore: true } : page.promise;
+  }, async photoDetail(photo) { return photo; } });
+  await model.open(S.Personal);
+  await model.openDetail(model.items[0]);
+  const switching = model.switchDetail(1);
+  model.closeDetail();
+  page.resolve({ items: [item(2)], offset: 1, hasMore: false });
+  await switching;
+  assert.equal(model.detail, undefined);
+  await model.openDetail(model.items[0]);
+  await model.switchDetail(1);
+  assert.equal(model.detail.id, 2);
+});
+
 const jpeg = new Uint8Array([255, 216, 255, 224, 0, 0, 0, 0]);
 function mediaCheck(overrides = {}) {
   const values = { status: 200, type: 'image/jpeg', length: '8', received: 8, prefix: jpeg, text: '', thumbnail: true, expected: undefined, ...overrides };

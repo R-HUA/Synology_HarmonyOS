@@ -51,6 +51,16 @@ test('pending photo identity and task survive account-scoped persistence; invali
   assert.throws(() => decodeExtensionWrites(text(pending), 'another-account'));
 });
 
+test('favorite is read from item additional metadata, including an explicit false', () => {
+  const row = { id: 42, filename: item.filename, filesize: 8, type: 'photo' };
+  for (const favorite of [true, false]) {
+    assert.equal(decodePhotosPage({ list: [{ ...row, additional: { favorite } }] }, S.Personal, 0, 1).items[0].favorite, favorite);
+  }
+  assert.equal(decodePhotosPage({ list: [row] }, S.Personal, 0, 1).items[0].favorite, undefined);
+  assert.throws(() => decodePhotosPage({ list: [{ ...row, additional: { favorite: 'false' } }] }, S.Personal, 0, 1),
+    error => error.kind === K.Protocol);
+});
+
 async function fixture() {
   const calls = [], replies = [];
   const capabilities = { 'SYNO.API.Auth': { path: 'auth.cgi', minVersion: 1, maxVersion: 6 } };

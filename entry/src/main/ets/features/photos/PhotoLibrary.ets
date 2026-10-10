@@ -239,17 +239,11 @@ export class PhotoLibrary {
       if (!this.currentDetail(ticket, detailTicket)) { return; }
       this.detail = detail;
       // 详情元数据只属于详情视图；不重新映射整个时间线或触发日期分行。
-      if (detail.thumbnail === undefined) { this.mediaErrorText = '此照片尚未提供可用预览。'; return; }
-      const preview = await this.media.thumbnail(detail, 'xl');
-      if (this.currentDetail(ticket, detailTicket)) { this.previewPath = this.media.pinPreview(detail, 'xl') || preview; }
-      let favorite = detail.favorite, location = detail.location;
+      const favorite = detail.favorite;
+      let location = detail.location;
       if (detail.folderId !== undefined && trusted.space !== PhotosSpace.WithMe) {
         location = await connector.photoLocation(detail);
         if (!this.currentDetail(ticket, detailTicket)) { return; }
-      }
-      if (detail.favorite === undefined && trusted.space !== PhotosSpace.WithMe &&
-        connector.supportsPhotoAction({ action: 'favorite', item: detail, favorite: true })) {
-        favorite = await connector.photoFavorite(detail);
       }
       if (this.currentDetail(ticket, detailTicket)) {
         this.detail = { id: detail.id, filename: detail.filename, bytes: detail.bytes, space: detail.space, mediaType: detail.mediaType,
@@ -257,12 +251,41 @@ export class PhotoLibrary {
           sourceSpace: detail.sourceSpace, folderId: detail.folderId, description: detail.description, exif: detail.exif, favorite,
           location, address: detail.address, tags: detail.tags };
       }
+      if (detail.thumbnail === undefined) { this.mediaErrorText = '此照片尚未提供可用预览。'; return; }
+      const preview = await this.media.thumbnail(detail, 'xl');
+      if (this.currentDetail(ticket, detailTicket)) { this.previewPath = this.media.pinPreview(detail, 'xl') || preview; }
     } catch (error) {
       if (this.currentDetail(ticket, detailTicket)) {
         this.mediaErrorText = this.message(error as Error, '照片详情或预览读取失败，请重试。');
         await this.handleFailure(error as Error, ticket, 'detail');
       }
     } finally { if (this.currentDetail(ticket, detailTicket)) { this.loadingMedia = false; } }
+  }
+
+  /** 只在当前列表内切换，翻页期间离开详情则丢弃切换请求。 */
+  async switchDetail(direction: number): Promise<void> {
+    const item = this.detail;
+    if (item === undefined) { return; }
+    const index = this.items.findIndex((entry: NasPhotoItem): boolean => this.itemKey(entry) === this.itemKey(item));
+    const next = index + direction;
+    if (next < 0) { return; }
+    const ticket = this.detailGeneration;
+    if (next === this.items.length && this.hasMore) {
+      await this.loadMore();
+      if (ticket !== this.detailGeneration) { return; }
+      if (this.appendError.length > 0) { this.mediaErrorText = this.appendError; return; }
+    }
+    if (next < this.items.length) { await this.openDetail(this.items[next]); }
+  }
+
+  /** 服务端确认写入后更新状态，避免重新打开详情清空原图和缩放。 */
+  confirmFavorite(item: NasPhotoItem, favorite: boolean): void {
+    if (this.detail !== item) { return; }
+    this.detail = { id: item.id, filename: item.filename, bytes: item.bytes, space: item.space, mediaType: item.mediaType,
+      takenAt: item.takenAt, width: item.width, height: item.height, orientation: item.orientation, thumbnail: item.thumbnail,
+      sourceSpace: item.sourceSpace, folderId: item.folderId, description: item.description, exif: item.exif, favorite,
+      location: item.location, address: item.address, tags: item.tags };
+    this.itemByKey.get(this.itemKey(item))!.favorite = favorite;
   }
 
   closeDetail(): void {
