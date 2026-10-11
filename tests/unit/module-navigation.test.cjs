@@ -34,6 +34,8 @@ test('Photos backup requires both photo service and file upload capabilities', (
   assert.deepEqual(ids(n.photoTabs(api => ['SYNO.FileStation.Upload', 'SYNO.Foto.Browse.Item'].includes(api), true, ['backup'])), ['photos', 'albums', 'backup', 'more']);
 });
 test('Photos sharing can move to more and promotions respect the five-tab maximum', () => {
+  assert.deepEqual(ids(n.photoTabs(api => ['SYNO.Foto.Browse.Item', 'SYNO.Foto.Browse.Album'].includes(api), true, [])),
+    ['photos', 'albums', 'shared', 'more']);
   assert.deepEqual(ids(n.photoTabs(() => true, true, ['backup', 'transfers'])), ['photos', 'albums', 'shared', 'backup', 'more']);
   assert.deepEqual(ids(n.photoTabs(() => true, false, ['backup', 'transfers'])), ['photos', 'albums', 'backup', 'transfers', 'more']);
 });

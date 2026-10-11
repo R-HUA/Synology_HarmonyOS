@@ -466,6 +466,18 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     return decodePhotoAlbumPage(data, space, offset, 20);
   }
 
+  /** 使用网页端共享分类查询本人分享的相册，分页中不混入未共享相册。 */
+  async photoSharedByMeAlbums(offset: number = 0): Promise<NasPhotoAlbumPage> {
+    this.validatePhotosOffset(offset);
+    const api = selectNasApi(this.capabilities, 'SYNO.Foto.Browse.Album', [4]);
+    const data = await this.photosCall(api.name, 'list', [
+      { name: 'offset', content: offset.toString() }, { name: 'limit', content: '20' },
+      { name: 'category', content: api.jsonParameters ? JSON.stringify('shared') : 'shared' },
+      { name: 'additional', content: JSON.stringify(['thumbnail', 'sharing_info']) }
+    ], 4);
+    return decodePhotoAlbumPage(data, PhotosSpace.Personal, offset, 20);
+  }
+
   async albumPhotos(album: NasPhotoAlbum, offset: number = 0): Promise<NasPhotoPage> {
     this.validatePhotosOffset(offset);
     if (!Number.isSafeInteger(album.id) || album.id < 0) { throw new NasFailure(NasErrorKind.InvalidInput, '相册标识不正确。'); }

@@ -55,12 +55,13 @@ const deferred = () => { let resolve, reject; const promise = new Promise((a, b)
 const turn = () => new Promise(resolve => setImmediate(resolve));
 const log = { hilog: { error() {}, info() {} } };
 
-async function connected() {
+async function connected(albumVersion = 1) {
   const calls = [];
   const replies = [];
   const capabilities = {};
   for (const name of connectorModule.NAS_DISCOVERY_QUERY.split(',')) capabilities[name] = {
-    path: 'entry.cgi', minVersion: 1, maxVersion: name === 'SYNO.API.Auth' ? 6 : name === 'SYNO.FileStation.List' ? 2 : 1,
+    path: 'entry.cgi', minVersion: 1, maxVersion: name === 'SYNO.API.Auth' ? 6 : name === 'SYNO.FileStation.List' ? 2 :
+      name === 'SYNO.Foto.Browse.Album' ? albumVersion : 1,
     requestFormat: 'JSON',
   };
   const connector = new connectorModule.NasConnector({ async post(address, body, session) {
@@ -147,6 +148,20 @@ test('connector selects optional independent namespaces and exact album, get and
   assert.throws(() => connector.photoOriginalPlan(item(1, S.WithMe)), isKind(K.Unsupported));
 });
 
+test('my shared albums use the official v4 shared category and preserve album identity', async () => {
+  const { connector, calls, replies } = await connected(4);
+  replies.push(ok({ list: [{ id: 17, name: '我的共享相册', item_count: 3 }] }));
+  const result = await connector.photoSharedByMeAlbums(20);
+  const request = calls.at(-1).body;
+  assert.equal(request.get('api'), 'SYNO.Foto.Browse.Album');
+  assert.equal(request.get('version'), '4');
+  assert.equal(JSON.parse(request.get('category')), 'shared');
+  assert.deepEqual(JSON.parse(request.get('additional')), ['thumbnail', 'sharing_info']);
+  assert.equal(request.get('offset'), '20');
+  assert.equal(request.get('limit'), '20');
+  assert.deepEqual(plain(result), { items: [{ id: 17, name: '我的共享相册', itemCount: 3, space: S.Personal }], offset: 20, hasMore: false });
+});
+
 test('Photos detail and media expiry first verify the base session and distinguish package rejection from logout', async () => {
   const { connector, replies } = await connected();
   replies.push(bad(119), ok({ shares: [], offset: 0, total: 0 }));
@@ -188,6 +203,31 @@ test('photo tabs retain pagination and selected albums without mixing a late res
   late.resolve({ items: [], offset: 0, hasMore: false }); await pending;
   assert.equal(model.space, S.Personal); assert.equal(model.items.length, 2);
   model.reset(); assert.equal(model.tabContexts.size, 0);
+});
+
+test('my shared albums keep their filter through pagination, album contents and return', async () => {
+  const calls = [];
+  const model = library({
+    async photoSharedByMeAlbums(offset) {
+      calls.push(['shared', offset]);
+      return { items: Array.from({ length: offset === 0 ? 20 : 1 }, (_, i) =>
+        ({ id: offset + i, name: '共享相册', itemCount: 1, space: S.Personal })), offset, hasMore: offset === 0 };
+    },
+    async albumPhotos(album, offset) {
+      calls.push(['items', album.id, offset]); return { items: [item(99)], offset, hasMore: false };
+    }
+  });
+  await model.activateTab('shared', S.Personal, 'sharedByMe');
+  await model.loadMore();
+  assert.equal(model.albums.length, 21);
+  await model.openAlbum(model.albums[5]);
+  assert.equal(model.items[0].id, 99);
+  await model.backToLibrary();
+  assert.equal(model.section, 'sharedByMe');
+  assert.equal(model.selectedAlbum, undefined);
+  assert.equal(model.albums.length, 20);
+  assert.deepEqual(calls, [['shared', 0], ['shared', 20], ['items', 5, 0], ['shared', 0]]);
+  assert.equal(model.errorText, '');
 });
 
 test('timeline pagination appends and deduplicates while advancing by wire row count', async () => {

@@ -724,14 +724,16 @@ struct Index {
 
   private expectedPhotoSpace(id: string): PhotosSpace {
     const preferred = id === 'shared' ? this.sharedSpace : id === 'albums' ? this.albumSpace : this.photoSpace;
-    if (preferred === PhotosSpace.Personal && id !== 'shared' && this.model.supports('SYNO.Foto.Browse.Item') ||
+    if (preferred === PhotosSpace.Personal && this.model.supports(id === 'shared' ? 'SYNO.Foto.Browse.Album' : 'SYNO.Foto.Browse.Item') ||
       preferred === PhotosSpace.Shared && this.model.supports('SYNO.FotoTeam.Browse.Item') ||
       preferred === PhotosSpace.WithMe && this.model.supports('SYNO.Foto.Sharing.Misc')) { return preferred; }
     if (id !== 'shared' && this.model.supports('SYNO.Foto.Browse.Item')) { return PhotosSpace.Personal; }
-    return this.model.supports('SYNO.FotoTeam.Browse.Item') ? PhotosSpace.Shared : PhotosSpace.WithMe;
+    if (this.model.supports('SYNO.FotoTeam.Browse.Item')) { return PhotosSpace.Shared; }
+    return this.model.supports('SYNO.Foto.Sharing.Misc') ? PhotosSpace.WithMe : PhotosSpace.Personal;
   }
 
   private expectedPhotoSection(id: string, space: PhotosSpace): PhotoLibrarySection {
+    if (id === 'shared' && space === PhotosSpace.Personal) { return 'sharedByMe'; }
     return id === 'photos' && space !== PhotosSpace.WithMe ? 'timeline' : 'albums';
   }
 
@@ -841,7 +843,8 @@ struct Index {
       }
       return items;
     }
-    if (this.module === 'photos' && ['photos', 'albums', 'shared'].includes(this.effectivePhotoTab())) {
+    if (this.module === 'photos' && ['albums', 'shared'].includes(this.effectivePhotoTab()) &&
+      this.model.photoLibrary.selectedAlbum === undefined) {
       return [{ content: { label: '刷新', icon: $r('sys.symbol.arrow_clockwise'), type: IconStyleMode.SMALL,
         isEnabled: !this.navigationBusy(), action: (): void => { this.model.photoLibrary.refresh(); } } }];
     }

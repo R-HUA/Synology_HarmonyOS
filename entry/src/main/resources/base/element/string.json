@@ -52,6 +52,7 @@
     { "name": "file_info_folder", "value": "文件夹" },
     { "name": "file_info_file", "value": "文件" },
     { "name": "preview_unavailable", "value": "暂无预览" },
+    { "name": "photos_shared_by_me", "value": "我的共享" },
     { "name": "preview_original", "value": "查看原图" },
     { "name": "preview_original_loaded", "value": "原图" },
     { "name": "preview_more", "value": "更多操作" },

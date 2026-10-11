@@ -41,7 +41,7 @@ export function driveTabs(supports: (view: DriveView) => boolean, pinned: string
 }
 
 export function supportsPhotoSharing(supports: (api: string) => boolean): boolean {
-  return supports('SYNO.FotoTeam.Browse.Item') || supports('SYNO.Foto.Sharing.Misc');
+  return supports('SYNO.FotoTeam.Browse.Item') || supports('SYNO.Foto.Sharing.Misc') || supports('SYNO.Foto.Browse.Album');
 }
 
 export function supportsPhotos(supports: (api: string) => boolean): boolean {

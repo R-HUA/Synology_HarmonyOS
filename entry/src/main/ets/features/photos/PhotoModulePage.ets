@@ -128,8 +128,10 @@ export struct PhotoModulePage {
     if (this.tabId === 'photos') {
       return this.expectedSection === (this.expectedSpace === PhotosSpace.WithMe ? 'albums' : 'timeline');
     }
-    return this.expectedSection === 'albums' && (this.tabId === 'albums' ||
-      this.tabId === 'shared' && this.expectedSpace !== PhotosSpace.Personal);
+    if (this.tabId === 'shared' && this.expectedSpace === PhotosSpace.Personal) {
+      return this.expectedSection === 'sharedByMe' && this.model.supports('SYNO.Foto.Browse.Album');
+    }
+    return this.expectedSection === 'albums' && (this.tabId === 'albums' || this.tabId === 'shared');
   }
 
   private libraryMatches(): boolean {
@@ -148,7 +150,7 @@ export struct PhotoModulePage {
   }
 
   private visibleAlbums(): NasPhotoAlbum[] {
-    return this.canShowLibrary() && this.expectedSection === 'albums' &&
+    return this.canShowLibrary() && this.expectedSection !== 'timeline' &&
       this.model.photoLibrary.selectedAlbum === undefined ? this.model.photoLibrary.albums : [];
   }
 
@@ -182,7 +184,7 @@ export struct PhotoModulePage {
   loadingState() {
     Row({ space: WorkbenchMetrics.itemGap }) {
       LoadingProgress().width(24).height(24)
-      Text(this.expectedSection === 'albums' && (!this.canShowLibrary() || this.model.photoLibrary.selectedAlbum === undefined) ?
+      Text(this.expectedSection !== 'timeline' && (!this.canShowLibrary() || this.model.photoLibrary.selectedAlbum === undefined) ?
         '正在读取相册…' : '正在读取照片…').fontSize(14).fontColor($r('sys.color.font_secondary'))
     }.width('100%').padding(WorkbenchMetrics.itemGap)
   }
@@ -281,6 +283,10 @@ export struct PhotoModulePage {
     Column({ space: WorkbenchMetrics.sectionGap }) {
       if (this.tabId === 'shared') {
         Flex({ wrap: FlexWrap.Wrap }) {
+          if (this.supportsSpace(PhotosSpace.Personal) && this.model.supports('SYNO.Foto.Browse.Album')) {
+            this.photoSpaceButton(PhotosSpace.Personal,
+              this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.photos_shared_by_me').id))
+          }
           if (this.supportsSpace(PhotosSpace.Shared)) { this.photoSpaceButton(PhotosSpace.Shared, '共享空间') }
           if (this.supportsSpace(PhotosSpace.WithMe)) { this.photoSpaceButton(PhotosSpace.WithMe, '与我共享') }
         }.width('100%')
@@ -334,7 +340,8 @@ export struct PhotoModulePage {
             description: '查看上传与下载进度', available: this.active,
             onAction: (): void => { this.onOpenTransfers(); } })
         }
-        if (this.showSharedInMore && (this.supportsSpace(PhotosSpace.Shared) || this.supportsSpace(PhotosSpace.WithMe))) {
+        if (this.showSharedInMore && (this.supportsSpace(PhotosSpace.Shared) || this.supportsSpace(PhotosSpace.WithMe) ||
+          this.model.supports('SYNO.Foto.Browse.Album'))) {
           WorkbenchActionRow({ icon: $r('sys.symbol.picture'), label: '共享相册',
             description: '浏览共享空间与收到的相册', available: this.active,
             onAction: (): void => { this.onOpenShared(); } })

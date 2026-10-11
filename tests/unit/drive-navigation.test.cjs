@@ -155,6 +155,14 @@ test('photo tabs request their own space and section once and retain an open mat
   state.model.photoLibrary.selectedAlbum = { space: P.Personal, id: 1 }; state.ensurePhotosOpen(); assert.equal(state.calls.length, 1);
   state.photoTabId = 'photos'; state.ensurePhotosOpen(); assert.deepEqual(state.calls.at(-1), ['photos', P.Personal, 'timeline']);
 });
+test('my shared view selects the outgoing album filter without changing personal albums', () => {
+  const state = page(); state.module = 'photos'; state.photoTabId = 'shared';
+  state.selectPhotoSpace('shared', P.Personal);
+  assert.deepEqual(state.calls, [['photos', P.Personal, 'sharedByMe']]);
+  state.photoTabId = 'albums'; state.ensurePhotosOpen();
+  assert.deepEqual(state.calls.at(-1), ['photos', P.Personal, 'albums']);
+});
+
 test('hidden shared tab opens sharing in more with its own album space', () => {
   const state = page(); state.module = 'photos'; state.photoTabId = 'more'; state.showPhotoShared = false;
   method(index, 'openPhotoShared').call(state); assert.equal(state.photoMoreShared, true);

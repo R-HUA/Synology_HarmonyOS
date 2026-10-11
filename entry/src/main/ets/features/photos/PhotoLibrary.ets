@@ -8,7 +8,7 @@ import { PhotoMediaStore } from './PhotoMediaStore';
 import { PhotoFolder } from '../../core/domain/PhotoActions';
 import { readPhotoExif } from '../../platform/PhotoExif';
 
-export type PhotoLibrarySection = 'timeline' | 'albums';
+export type PhotoLibrarySection = 'timeline' | 'albums' | 'sharedByMe';
 interface PhotoTabContext {
   space: PhotosSpace;
   section: PhotoLibrarySection;
@@ -127,7 +127,8 @@ export class PhotoLibrary {
   }
 
   async open(space: PhotosSpace = this.space, section: PhotoLibrarySection = this.section): Promise<void> {
-    if (![PhotosSpace.Personal, PhotosSpace.Shared, PhotosSpace.WithMe].includes(space) || !['timeline', 'albums'].includes(section)) {
+    if (![PhotosSpace.Personal, PhotosSpace.Shared, PhotosSpace.WithMe].includes(space) ||
+      !['timeline', 'albums', 'sharedByMe'].includes(section) || section === 'sharedByMe' && space !== PhotosSpace.Personal) {
       this.errorText = '照片空间或视图不正确。'; return;
     }
     this.requestGeneration++;
@@ -217,7 +218,7 @@ export class PhotoLibrary {
   }
 
   async backToLibrary(): Promise<void> {
-    await this.open(this.space, this.selectedAlbum === undefined ? this.section : 'albums');
+    await this.open(this.space, this.section);
   }
 
   async openDetail(item: NasPhotoItem): Promise<void> {
@@ -536,7 +537,7 @@ export class PhotoLibrary {
     if (state !== undefined) { state.path = path ?? ''; }
   }
   private maybeLoadMore(): void {
-    const count = this.section === 'albums' && this.selectedAlbum === undefined ? this.albums.length : this.items.length;
+    const count = this.section !== 'timeline' && this.selectedAlbum === undefined ? this.albums.length : this.items.length;
     if (!this.canDemand() || !this.nearEnd || this.viewportCount !== count || this.errorText.length > 0 || this.appendError.length > 0) { return; }
     this.loadMore();
   }
@@ -548,14 +549,14 @@ export class PhotoLibrary {
     const requestTicket = ++this.requestGeneration;
     const space = this.space;
     const album = this.selectedAlbum;
-    const albumList = this.section === 'albums' && album === undefined;
+    const albumList = this.section !== 'timeline' && album === undefined;
     const offset = replace ? 0 : this.offset;
     if (replace) { this.busy = true; this.errorText = ''; }
     else { this.appending = true; }
     this.appendError = '';
     try {
       if (albumList) {
-        const page = await connector.photoAlbums(space, offset);
+        const page = this.section === 'sharedByMe' ? await connector.photoSharedByMeAlbums(offset) : await connector.photoAlbums(space, offset);
         if (!this.currentPage(ticket, requestTicket)) { return; }
         const albums = replace ? [] : this.albums.slice();
         if (replace) { this.albumPassphrases.clear(); }
