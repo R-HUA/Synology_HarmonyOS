@@ -157,6 +157,7 @@ export struct ImagePreview {
     }.width('100%').height('100%').barPosition(BarPosition.End).scrollable(false)
       .barOverlap(true).vertical(false).barHeight(56)
       .barFloatingStyle({ barWidth: { smallWidth: 224, mediumWidth: 224, largeWidth: 224 }, barBottomMargin: 12,
+        gradientMask: { maskColor: Color.Transparent, maskHeight: 0 },
         systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE },
         thermoCtrl: true })
       .backgroundColor($r('app.color.workbench_background'))
