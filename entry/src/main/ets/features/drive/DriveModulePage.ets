@@ -136,7 +136,7 @@ export struct DriveModulePage {
             this.driveNotices()
           }.width('100%').alignItems(HorizontalAlign.Start)
             .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin,
-              top: this.topInset + 4, bottom: 4 })
+              top: 4, bottom: 4 })
         }
         if (this.canRenderEntries()) {
           if (!this.model.drive.busy && this.model.drive.entries.length === 0) {
@@ -192,7 +192,8 @@ export struct DriveModulePage {
             }.width('100%')
           }
         }
-      }.width('100%').height('100%').scrollBar(BarState.Auto).contentEndOffset(this.bottomInset)
+      }.width('100%').height('100%').scrollBar(BarState.Auto)
+        .contentStartOffset(this.topInset).contentEndOffset(this.bottomInset)
         .onReachEnd((): void => {
           if (this.canRenderEntries() && !this.model.busy && this.model.drive.errorText.length === 0) { this.model.drive.loadMore(); }
         })
