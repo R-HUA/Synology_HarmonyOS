@@ -480,10 +480,13 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     validatePhotoIdentity(item);
     const api = this.photoApi(item.space, 'Browse.Item');
     const version = this.capabilities.some((entry: NasApiDescriptor): boolean => entry.name === api && entry.minVersion <= 7 && entry.maxVersion >= 7) ? 7 : 1;
-    return decodePhotoDetail(await this.photosCall(api, 'get', [
+    const detail = decodePhotoDetail(await this.photosCall(api, 'get', [
       { name: 'id', content: JSON.stringify([item.id]) },
       { name: 'additional', content: JSON.stringify(['thumbnail', 'resolution', 'orientation', 'exif', 'description', 'gps', 'address', 'tag', 'favorite']) }
     ], version), item);
+    // Photos 1.9 网页的 v7 详情将缺失的 additional.favorite 按未收藏处理。
+    if (version === 7 && detail.favorite === undefined) { detail.favorite = false; }
+    return detail;
   }
 
   supportsPhotoAction(input: PhotoActionInput): boolean {

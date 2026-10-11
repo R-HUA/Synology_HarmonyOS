@@ -80,6 +80,22 @@ async function fixture() {
   return { connector, calls, replies };
 }
 
+test('v7 photo detail follows the web favorite default without hiding malformed metadata', async () => {
+  const f = await fixture();
+  const row = { id: 42, filename: item.filename, filesize: 8, type: 'photo' };
+  for (const additional of [{ favorite: true }, { favorite: false }, {}]) {
+    f.replies.push(ok({ list: [{ ...row, additional }] }));
+    assert.equal((await f.connector.photoDetail(item)).favorite, additional.favorite ?? false);
+    const request = f.calls.at(-1).body;
+    assert.equal(request.get('method'), 'get');
+    assert.equal(request.get('version'), '7');
+    assert.equal(request.get('id'), '[42]');
+    assert.ok(JSON.parse(request.get('additional')).includes('favorite'));
+  }
+  f.replies.push(ok({ list: [{ ...row, additional: { favorite: 'false' } }] }));
+  await assert.rejects(f.connector.photoDetail(item), error => error.kind === K.Protocol);
+});
+
 test('Photos task completion must match the persisted task; empty or wrong results remain uncertain', async () => {
   const f = await fixture();
   for (const data of [{ list: [] }, { list: [{ id: 13, status: 'done' }] }]) {
