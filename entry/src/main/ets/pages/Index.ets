@@ -2,7 +2,7 @@ import { common } from '@kit.AbilityKit';
 import { ComponentContent, DrawableDescriptor, LengthMetrics, SymbolGlyphModifier, uiMaterial, window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileUri } from '@kit.CoreFileKit';
-import { HdsNavigation, HdsNavigationTitleMode, HdsNavDestination, HdsTabs, HdsTabsController, hdsMaterial, IconStyleMode, ScrollEffectType, HdsNavigationMenuItemOptions } from '@kit.UIDesignKit';
+import { HdsNavigation, HdsNavigationTitleMode, HdsNavDestination, HdsTabs, HdsTabsController, hdsMaterial, IconStyleMode, TextStyleMode, ScrollEffectType, HdsNavigationMenuItemOptions } from '@kit.UIDesignKit';
 import { NasFailure, NasFileEntry } from '../core/domain/DsmProtocol';
 import { DriveEntry, DriveView, driveViewLabel } from '../core/domain/DriveProtocol';
 import { DriveTransferRecord } from '../core/domain/DriveTransferState';
@@ -1447,10 +1447,11 @@ struct Index {
         file !== undefined && this.model.supports('SYNO.FileStation.Download') && !this.model.fileOriginal.originalLoaded;
     const menu = source === 'photos' ? this.photoPreviewMenu() : source === 'drive' ? this.drivePreviewMenu() : this.filePreviewMenu();
     const id = source + '-preview-menu';
-    return [{ content: { label: this.previewText(video ? $r('app.string.preview_play_video') : $r('app.string.preview_original')),
-      icon: video ? $r('sys.symbol.play') : source === 'photos' ? $r('sys.symbol.picture') :
+    return [{ content: { label: this.previewText(video ? $r('app.string.preview_play_video') : source === 'photos' ?
+        $r('app.string.preview_original_loaded') : $r('app.string.preview_original')),
+      icon: video ? $r('sys.symbol.play') : source === 'photos' ? undefined :
         $r('sys.symbol.arrow_up_left_and_arrow_down_right'),
-      type: source === 'photos' ? IconStyleMode.NORMAL : IconStyleMode.SMALL,
+      type: source === 'photos' && !video ? TextStyleMode.NORMAL : source === 'photos' ? IconStyleMode.NORMAL : IconStyleMode.SMALL,
       isEnabled: enabled, action: (): void => {
         if (source === 'photos') { this.model.photoLibrary.loadOriginal(); }
         else if (source === 'drive' && drive !== undefined) {

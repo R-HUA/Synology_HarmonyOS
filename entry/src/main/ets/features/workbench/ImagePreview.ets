@@ -155,7 +155,8 @@ export struct ImagePreview {
           TapGesture({ count: 2 }).onAction((): void => { this.resetView(); this.onRefine(1); })
         ))
       WorkbenchNotice({ text: this.errorText, warning: true })
-    }.width('100%').height('100%')
+    // 悬浮栏不占布局空间，图片视口需让出栏高及底部间距才能在操作区之间居中。
+    }.width('100%').height('100%').padding({ bottom: 68 })
   }
 
   @Builder
