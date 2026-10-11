@@ -1876,9 +1876,9 @@ struct Index {
     });
   }
 
-  /** 返回箭头沿用系统模板尺寸，材质按钮保持常规文字颜色。 */
+  /** 返回箭头保留系统模板尺寸，颜色交由标题栏适配材质。 */
   private navigationBackSymbol(): SymbolGlyphModifier {
-    return new SymbolGlyphModifier($r('sys.symbol.chevron_left')).fontSize(24).fontColor([$r('sys.color.font_primary')]);
+    return new SymbolGlyphModifier($r('sys.symbol.chevron_left')).fontSize(24);
   }
 
   @Builder
