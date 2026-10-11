@@ -147,7 +147,7 @@ export struct ImagePreview {
         this.actionButton($r('sys.symbol.share'), $r('app.string.preview_share'), this.canShare, (): void => { this.onShare(); })
         this.actionButton($r('sys.symbol.info_circle'), $r('app.string.preview_information'), true, (): void => { this.infoVisible = true; })
       }
-    }.padding(4).width(224).height(56).justifyContent(FlexAlign.Center)
+    }.padding({ left: 4, right: 4 }).width(224).height(48).justifyContent(FlexAlign.Center)
   }
 
   build() {
