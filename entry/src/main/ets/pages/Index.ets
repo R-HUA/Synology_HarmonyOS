@@ -1018,9 +1018,14 @@ struct Index {
     const target = this.driveViewMatches() ? this.model.drive.uploadDestination() : undefined;
     const items: TitleMenuItem[] = [];
     if (this.model.driveTransfers.available) {
-      items.push(new TitleMenuItem(target === undefined ? '进入可写文件夹后上传' : '上传文件',
+      items.push(new TitleMenuItem('上传文件',
         target !== undefined && this.model.driveTransfers.ready && !this.model.driveTransfers.busy,
         (): void => { if (target !== undefined) { this.prepareDriveUpload(target); } }));
+    }
+    if (this.model.driveActions.available) {
+      items.push(new TitleMenuItem(this.previewText($r('app.string.drive_create_folder')),
+        target !== undefined && this.model.driveActions.ready && !this.model.driveActions.busy && !this.model.driveActions.hasPending,
+        (): void => { if (target !== undefined) { this.prepareDriveAction(target, 'create'); } }));
     }
     items.push(new TitleMenuItem('刷新目录', true, (): void => { this.refreshDriveView(); }));
     items.push(new TitleMenuItem('查看传输记录', true, (): void => { this.openDriveTransfers(); }));
@@ -1461,10 +1466,14 @@ struct Index {
   }
 
   private async submitDriveAction(): Promise<void> {
+    const creating = this.model.driveActions.draft?.action === 'create';
     if (await this.model.driveActions.submit()) {
       const paths: string[] = this.navStack.getAllPathName();
       if (!this.pageActive || paths[paths.length - 1] !== 'drive-action') { return; }
-      this.navStack.pop(); this.model.driveActions.clearDraft(); this.taskSection = 'drive-actions'; this.switchTab(ROOT_TASK_TAB);
+      this.navStack.pop(); this.model.driveActions.clearDraft();
+      if (creating && this.model.driveActions.items[0].state === 'completed') {
+        this.model.drive.reload();
+      } else { this.taskSection = 'drive-actions'; this.switchTab(ROOT_TASK_TAB); }
       this.updateTelemetryMode();
     }
   }

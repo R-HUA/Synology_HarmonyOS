@@ -90,7 +90,7 @@ export class DriveActionModel {
       this.requireWrite(session);
       if (!driveActionAllowed(entry, action)) { throw new NasFailure(NasErrorKind.Permission, '没有权限执行此操作。'); }
       this.draft = { action, entry };
-      this.newName = entry.name;
+      this.newName = action === 'create' ? '' : entry.name;
       this.destinations.reset();
       if (action === 'move' || action === 'copy') { await this.destinations.open(); this.check(session); }
       prepared = true;
@@ -125,8 +125,10 @@ export class DriveActionModel {
         throw new NasFailure(NasErrorKind.InvalidInput, '请先选择并检查目标文件夹。');
       }
       const record: DriveActionRecord = { id: util.generateRandomUUID(), action: input.action,
-        resource: { nasOrigin: session.origin, account: session.account, fileId: input.entry.fileId }, name: input.entry.name,
-        destination: input.action === 'rename' ? this.newName.trim() : input.target?.displayPath || input.target?.name || '',
+        resource: { nasOrigin: session.origin, account: session.account, fileId: input.entry.fileId },
+        name: input.action === 'create' ? this.newName.trim() : input.entry.name,
+        destination: input.action === 'create' ? input.entry.displayPath || input.entry.name :
+          input.action === 'rename' ? this.newName.trim() : input.target?.displayPath || input.target?.name || '',
         state: 'unknown', errorText: '操作结果待确认，请先在 NAS 核对。' };
       const records = session.records.concat([record]);
       await this.save(session, records);

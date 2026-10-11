@@ -17,12 +17,19 @@ export struct DriveActionPage {
       ListItem() {
         Column({ space: 8 }) {
           if (this.model.draft !== undefined) {
-            Text(driveActionText(this.model.draft.action) + '“' + this.model.draft.entry.name + '”')
-              .fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
-            if (this.model.draft.action === 'rename') {
-              TextInput({ text: this.model.newName, placeholder: '新名称' }).maxLength(255)
+            if (this.model.draft.action === 'create') {
+              Text($r('app.string.drive_create_folder')).fontSize(16).fontWeight(FontWeight.Medium)
+                .fontColor($r('sys.color.font_primary')).width('100%')
+            } else {
+              Text(driveActionText(this.model.draft.action) + '“' + this.model.draft.entry.name + '”')
+                .fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
+            }
+            if (this.model.draft.action === 'rename' || this.model.draft.action === 'create') {
+              TextInput({ text: this.model.newName, placeholder: this.model.draft.action === 'create' ?
+                $r('app.string.drive_folder_name') : $r('app.string.drive_new_name') }).maxLength(255)
                 .constraintSize({ minHeight: WorkbenchMetrics.touchSize }).enabled(!this.model.busy)
-                .onChange((value: string): void => { this.model.newName = value; }).accessibilityText('新名称')
+                .onChange((value: string): void => { this.model.newName = value; })
+                .accessibilityText(this.model.draft.action === 'create' ? $r('app.string.drive_folder_name') : $r('app.string.drive_new_name'))
             } else if (this.model.draft.action === 'delete') {
               Text('请确认删除此项目。能否恢复取决于 NAS 的回收站与版本设置；文件夹内的内容也会受影响。')
                 .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
@@ -58,7 +65,8 @@ export struct DriveActionPage {
             Flex({ wrap: FlexWrap.Wrap }) {
               Button('确认' + driveActionText(this.model.draft.action)).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
                 .enabled(this.model.ready && !this.model.busy && !this.model.hasPending &&
-                  (this.model.draft.action === 'rename' || this.model.draft.action === 'delete' || this.model.draft.target !== undefined))
+                  (this.model.draft.action === 'create' ? this.model.newName.trim().length > 0 :
+                    this.model.draft.action === 'rename' || this.model.draft.action === 'delete' || this.model.draft.target !== undefined))
                 .fontColor(this.model.draft.action === 'delete' ? $r('app.color.workbench_danger') : $r('sys.color.font_primary'))
                 .onClick(this.onSubmit)
               Button('取消').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: WorkbenchMetrics.touchSize })

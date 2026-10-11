@@ -74,6 +74,29 @@ test('rename selection has no write; confirmation durably saves uncertainty befo
   assert.equal(f.history.get('alice')[0].destination, '新文件.txt');
 });
 
+test('folder creation saves the parent and requested name before dispatch and survives record reload', async () => {
+  const f = fixture({ request: method => method === 'create' ?
+    { file_id: '900000000000000003', parent_id: folder().fileId, name: '新目录', type: 'dir' } : undefined });
+  await f.attach('alice');
+  assert.equal(await f.model.prepare(folder(), 'create'), true);
+  assert.equal(f.model.newName, ''); assert.equal(f.requests().length, 0);
+  f.model.newName = ' 新目录 ';
+  assert.equal(await f.model.submit(), true);
+  const n = f.events.findIndex(e => e[0] === 'request');
+  assert.equal(f.events[n - 1][0], 'save'); assert.equal(f.events[n - 1][2][0].state, 'unknown');
+  assert.equal(f.model.items[0].name, '新目录'); assert.equal(f.model.items[0].resource.fileId, folder().fileId);
+  assert.equal(f.model.items[0].destination, folder().name); assert.equal(f.model.items[0].state, 'completed');
+  assert.equal(await f.model.submit(), false); assert.equal(f.requests().length, 1);
+  await f.attach('alice'); assert.equal(f.model.items[0].action, 'create'); assert.equal(f.requests().length, 1);
+});
+
+test('an unconfirmed folder creation remains pending and cannot be sent twice', async () => {
+  const f = fixture({ request: () => ({}) }); await f.attach('alice');
+  await f.model.prepare(folder(), 'create'); f.model.newName = '新目录'; await f.model.submit();
+  assert.equal(f.model.items[0].state, 'unknown'); assert.equal(f.model.hasPending, true);
+  assert.equal(await f.model.submit(), false); assert.equal(f.requests().length, 1);
+});
+
 test('target selection performs only dry run; accepted task is stored then queried without replaying the write', async () => {
   const f = fixture({ conflicts: [{}] }); await f.attach('alice');
   await f.model.prepare(file(), 'move'); await f.model.selectDestination(folder());

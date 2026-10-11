@@ -12,7 +12,7 @@ export interface DriveActionRecord {
 }
 export interface DriveActionSnapshot { version: number; scope: string; records: DriveActionRecord[]; }
 export function driveActionText(action: DriveAction): string {
-  switch (action) { case 'rename': return '改名'; case 'move': return '移动'; case 'copy': return '复制'; case 'delete': return '删除'; }
+  switch (action) { case 'create': return '新建文件夹'; case 'rename': return '改名'; case 'move': return '移动'; case 'copy': return '复制'; case 'delete': return '删除'; }
 }
 export function driveActionStateText(state: string): string {
   switch (state) {
@@ -40,15 +40,15 @@ export function decodeDriveActions(text: string, scope: string, origin: string, 
     const taskId = row['taskId'];
     const progress = row['progress'];
     if (typeof id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id) || ids.includes(id) ||
-      !['rename', 'move', 'copy', 'delete'].includes(row['action'] as string) ||
+      !['create', 'rename', 'move', 'copy', 'delete'].includes(row['action'] as string) ||
       !['unknown', 'accepted', 'completed', 'failed', 'partial', 'closed'].includes(row['state'] as string) ||
       typeof row['name'] !== 'string' || (row['name'] as string).length > 4096 ||
       typeof row['destination'] !== 'string' || (row['destination'] as string).length > 4096 ||
       typeof row['errorText'] !== 'string' || (row['errorText'] as string).length > 4096 ||
       resource['nasOrigin'] !== origin || resource['account'] !== account || typeof resource['fileId'] !== 'string' ||
       (taskId !== undefined && typeof taskId !== 'string') || (row['state'] === 'accepted' && taskId === undefined) ||
-      (row['action'] !== 'rename' && ['completed', 'partial'].includes(row['state'] as string) && taskId === undefined) ||
-      (row['action'] === 'rename' && (taskId !== undefined || row['state'] === 'accepted')) ||
+      (row['action'] !== 'rename' && row['action'] !== 'create' && ['completed', 'partial'].includes(row['state'] as string) && taskId === undefined) ||
+      ((row['action'] === 'rename' || row['action'] === 'create') && (taskId !== undefined || row['state'] === 'accepted')) ||
       (progress !== undefined && (typeof progress !== 'number' || !Number.isFinite(progress) || progress < 0 || progress > 100))) { throw invalid(); }
     ids.push(id);
     return { id, action: row['action'] as DriveAction, name: row['name'] as string, destination: row['destination'] as string,

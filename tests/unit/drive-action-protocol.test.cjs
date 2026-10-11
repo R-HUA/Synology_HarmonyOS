@@ -137,6 +137,32 @@ test('rename and target validation reject unsafe names, denied permissions and s
   assert.doesNotThrow(() => p.driveActionFields({ action: 'copy', entry: entry(), target: folder({ fileId: entry().parentId }) }));
 });
 
+test('folder creation uses Drive parent IDs, validates names and requires a writable folder', async () => {
+  const input = { action: 'create', entry: folder(), name: ' 新目录 ' };
+  assert.deepEqual(named(p.driveActionFields(input)), {
+    path: '"id:900000000000000003/新目录"', type: '"folder"', conflict_action: '"autorename"'
+  });
+  for (const name of ['', ' .. ', '.', 'a/b', 'a\\b', 'a\u0000b', 'a'.repeat(256)]) {
+    assert.throws(() => p.driveActionFields({ ...input, name }), isKind(K.InvalidInput));
+  }
+  assert.doesNotThrow(() => p.driveActionFields({ ...input, name: folder().name }));
+  for (const parent of [entry(), folder({ capabilities: { canRead: true } }), folder({ capabilities: { canWrite: true } })]) {
+    assert.throws(() => p.driveActionFields({ ...input, entry: parent }), isKind(K.Permission));
+  }
+  const created = { file_id: '900000000000000004', parent_id: folder().fileId, name: '新目录 (1)', type: 'dir' };
+  let calls = 0;
+  const adapter = new DriveActionAdapter({ async requestDrive(api, version, method, fields) {
+    calls++;
+    assert.equal(api, 'SYNO.SynologyDrive.Files'); assert.equal(version, 2); assert.equal(method, 'create');
+    assert.deepEqual(named(fields), named(p.driveActionFields(input)));
+    return created;
+  } });
+  assert.equal(await adapter.start(input), undefined); assert.equal(calls, 1);
+  for (const response of [{}, { ...created, type: 'file' }, { ...created, parent_id: '1' }, { ...created, file_id: folder().fileId }]) {
+    assert.throws(() => p.decodeDriveActionStart(response, input), isKind(K.Protocol));
+  }
+});
+
 test('only a matching renamed entry or valid async task is accepted as a write result', () => {
   const input = { action: 'rename', entry: entry(), name: '新名称' };
   assert.equal(p.decodeDriveActionStart({ file_id: entry().fileId, name: '新名称', type: 'file' }, input), undefined);
@@ -193,6 +219,9 @@ test('durable action records reject another account, duplicate records and unque
     state: 'accepted', taskId: 'task-1', errorText: '' };
   const read = records => state.decodeDriveActions(JSON.stringify({ version: 1, scope: 'scope', records }), 'scope', 'https://nas.test', 'alice');
   assert.equal(read([record])[0].taskId, 'task-1');
+  const created = { ...record, action: 'create', state: 'completed', taskId: undefined };
+  assert.equal(read([created])[0].action, 'create');
+  assert.throws(() => read([{ ...created, state: 'accepted', taskId: 'task-1' }]), isKind(K.Protocol));
   for (const records of [[record, record], [{ ...record, resource: { ...record.resource, account: 'bob' } }],
     [{ ...record, taskId: undefined }], [{ ...record, state: 'completed', taskId: undefined }]]) {
     assert.throws(() => read(records), isKind(K.Protocol));

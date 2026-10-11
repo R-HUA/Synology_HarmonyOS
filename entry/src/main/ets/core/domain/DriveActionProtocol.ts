@@ -1,17 +1,18 @@
 import { nasRecord, NasErrorKind, NasFailure } from './DsmProtocol';
 import type { NasFormField } from './DsmProtocol';
-import { decodeDriveEntry, validateDriveFileId } from './DriveProtocol';
+import { decodeDriveEntry, DriveEntryKind, validateDriveFileId } from './DriveProtocol';
 import type { DriveEntry } from './DriveProtocol';
 import { validateNasTransferFilename } from '../network/NasTransferTransport';
 
 export const DRIVE_TASKS_API = 'SYNO.SynologyDrive.Tasks';
-export type DriveAction = 'rename' | 'move' | 'copy' | 'delete';
+export type DriveAction = 'create' | 'rename' | 'move' | 'copy' | 'delete';
 export interface DriveActionInput { action: DriveAction; entry: DriveEntry; name?: string; target?: DriveEntry; }
 export interface DriveActionStatus { state: 'accepted' | 'completed' | 'failed' | 'partial'; progress?: number; }
 
 export function driveActionAllowed(entry: DriveEntry, action: DriveAction): boolean {
   if (!entry.capabilities.canRead) { return false; }
   switch (action) {
+    case 'create': return entry.kind === DriveEntryKind.Folder && entry.capabilities.canWrite;
     case 'rename': return entry.capabilities.canRename;
     case 'delete': return entry.capabilities.canDelete;
     // 当前 Drive 网页的 copy/move 权限规则，不再使用未证实的 can_organize 映射。
@@ -23,10 +24,15 @@ export function driveActionAllowed(entry: DriveEntry, action: DriveAction): bool
 export function driveActionFields(input: DriveActionInput, preview: boolean = false): NasFormField[] {
   const id = validateDriveFileId(input.entry.fileId);
   if (!driveActionAllowed(input.entry, input.action)) { throw new NasFailure(NasErrorKind.Permission, '没有权限执行此操作。'); }
-  if (input.action === 'rename') {
+  if (input.action === 'rename' || input.action === 'create') {
     const name: string = validateNasTransferFilename((input.name ?? '').trim());
-    if (name.length === 0 || name.length > 255 || name === input.entry.name) {
-      throw new NasFailure(NasErrorKind.InvalidInput, '请输入有效且不同的新名称。');
+    if (name.length > 255 || input.action === 'rename' && name === input.entry.name) {
+      throw new NasFailure(NasErrorKind.InvalidInput, input.action === 'create' ? '请输入有效的文件夹名称。' : '请输入有效且不同的新名称。');
+    }
+    if (input.action === 'create') {
+      // 官方 Drive 2.0.2 网页 createNode 使用父目录 ID 拼接名称，并由服务端处理重名。
+      return [{ name: 'path', content: JSON.stringify('id:' + id + '/' + name) },
+        { name: 'type', content: JSON.stringify('folder') }, { name: 'conflict_action', content: JSON.stringify('autorename') }];
     }
     return [{ name: 'path', content: JSON.stringify('id:' + id) }, { name: 'name', content: JSON.stringify(name) }];
   }
@@ -66,6 +72,13 @@ export function validateDriveTaskId(id: string): string {
 }
 
 export function decodeDriveActionStart(data: Record<string, Object>, input: DriveActionInput): string | undefined {
+  if (input.action === 'create') {
+    const entry: DriveEntry = decodeDriveEntry(data);
+    if (entry.kind !== DriveEntryKind.Folder || entry.parentId !== input.entry.fileId || entry.fileId === input.entry.fileId) {
+      throw new NasFailure(NasErrorKind.Protocol, '新建文件夹结果未能确认，请在 NAS 核对。');
+    }
+    return undefined;
+  }
   if (input.action === 'rename') {
     const entry: DriveEntry = decodeDriveEntry(data);
     if (entry.fileId !== input.entry.fileId || entry.name !== input.name?.trim()) {
