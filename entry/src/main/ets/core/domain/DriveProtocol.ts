@@ -40,7 +40,7 @@ export function driveViewLabel(view: DriveView): string {
     case DriveView.Recent: return '最近';
     case DriveView.Starred: return '星标';
     case DriveView.SharedWithMe: return '共享给我';
-    case DriveView.SharedWithOthers: return '我共享出去的';
+    case DriveView.SharedWithOthers: return '我共享的';
     case DriveView.Trash: return '回收站';
     case DriveView.Search: return '搜索结果';
   }

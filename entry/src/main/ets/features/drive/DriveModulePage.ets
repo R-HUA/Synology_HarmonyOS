@@ -7,7 +7,7 @@ import { canPreviewDriveOriginal, canPreviewDriveMedia } from '../../core/domain
 import { telemetryTimestamp } from '../../core/domain/TelemetryProtocol';
 import { driveFileLinkAllowed } from '../../core/domain/DriveCollaborationProtocol';
 import { ConnectionViewModel } from '../connection/ConnectionViewModel';
-import { WorkbenchMetrics, WorkbenchNotice, WorkbenchSectionTitle, WorkbenchActionRow,
+import { WorkbenchMetrics, WorkbenchNotice, WorkbenchActionRow,
   WorkbenchEntryRow, WorkbenchInfoRow } from '../workbench/WorkbenchUi';
 import { workbenchBytes } from '../workbench/WorkbenchPresentation';
 import type { DriveTrailItem } from './DriveBrowserModel';
@@ -32,10 +32,8 @@ export struct DriveModulePage {
   @Event onUploadTo: (entry: DriveEntry) => void = (_entry: DriveEntry): void => {};
   @Event onOpenAction: (action: DriveAction, entry?: DriveEntry) => void =
     (_action: DriveAction, _entry?: DriveEntry): void => {};
-  @Event onOpenActionRecords: () => void = (): void => {};
   @Event onOpenOriginal: (entry: DriveEntry) => void = (_entry: DriveEntry): void => {};
   @Event onOpenLinks: (entry?: DriveEntry) => void = (_entry?: DriveEntry): void => {};
-  @Event onOpenNotifications: () => void = (): void => {};
   @Event onCustomize: () => void = (): void => {};
   @Local private detailVisible: boolean = false;
   @Local private detailEntry: DriveEntry | undefined = undefined;
@@ -52,12 +50,6 @@ export struct DriveModulePage {
     return this.moreViews.filter((view: DriveView): boolean =>
       [DriveView.Recent, DriveView.Starred, DriveView.SharedWithMe, DriveView.SharedWithOthers,
         DriveView.Trash].includes(view) && this.model.drive.supportsView(view));
-  }
-
-  private refreshDrive(): void {
-    if (this.model.busy || this.model.drive.busy) { return; }
-    this.model.driveThumbnails.retryVisible();
-    this.model.drive.reload();
   }
 
   private exitDriveSearch(): void {
@@ -138,7 +130,7 @@ export struct DriveModulePage {
                 .enabled(!this.model.busy && !this.model.drive.busy).onClick(this.onBackToMore)
             }
             if (this.searchPage) { this.driveSearch() }
-            if (this.canRenderEntries()) {
+            if (this.canRenderEntries() && (this.model.drive.trail.length > 1 || this.searchPage)) {
               this.driveBreadcrumb()
             }
             this.driveNotices()
@@ -218,7 +210,6 @@ export struct DriveModulePage {
     Scroll(this.scroller) {
       Column({ space: WorkbenchMetrics.sectionGap }) {
         if (this.supportedMoreViews().length > 0) {
-          WorkbenchSectionTitle({ title: '文件视图' })
           Column() {
             ForEach(this.supportedMoreViews(), (view: DriveView): void => {
               WorkbenchActionRow({ label: driveViewLabel(view), icon: this.driveViewIcon(view),
@@ -227,35 +218,8 @@ export struct DriveModulePage {
             }, (view: DriveView): string => view)
           }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
         }
-        if (this.model.driveTransfers.available || this.model.driveTransfers.items.length > 0 ||
-          this.model.driveActions.available || this.model.driveActions.items.length > 0 ||
-          this.model.driveSharing.available || this.model.driveSharing.items.length > 0 || this.model.driveNotifications.available) {
-          WorkbenchSectionTitle({ title: '文件管理' })
-          Column() {
-            if (this.model.driveTransfers.available || this.model.driveTransfers.items.length > 0) {
-              WorkbenchActionRow({ label: 'Drive 传输', icon: $r('sys.symbol.arrow_down_circle'),
-                onAction: (): void => { this.openDriveTransfers(); } })
-            }
-            if (this.model.driveActions.available || this.model.driveActions.items.length > 0) {
-              WorkbenchActionRow({ label: '文件操作记录', icon: $r('sys.symbol.doc_text'), onAction: this.onOpenActionRecords })
-            }
-            if (this.model.driveSharing.available || this.model.driveSharing.items.length > 0) {
-              WorkbenchActionRow({ label: '文件链接', icon: $r('sys.symbol.link'), available: !this.model.driveSharing.busy,
-                onAction: (): void => { this.openDriveLinks(); } })
-            }
-            if (this.model.driveNotifications.available) {
-              WorkbenchActionRow({ label: '通知', icon: $r('sys.symbol.bell'), onAction: this.onOpenNotifications })
-            }
-          }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
-        }
-        WorkbenchSectionTitle({ title: '设置' })
         Column() {
           WorkbenchActionRow({ label: '底栏设置', icon: $r('sys.symbol.slider_horizontal_2'), onAction: this.onCustomize })
-          if (this.model.drive.supportsView(this.model.drive.view)) {
-            WorkbenchActionRow({ label: '刷新', icon: $r('sys.symbol.arrow_2_circlepath'),
-              showChevron: false,
-              available: !this.model.busy && !this.model.drive.busy, onAction: (): void => { this.refreshDrive(); } })
-          }
         }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
         this.driveNotices()
       }.width('100%').alignItems(HorizontalAlign.Start)

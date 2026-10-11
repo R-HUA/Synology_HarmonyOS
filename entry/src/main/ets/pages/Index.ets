@@ -363,7 +363,14 @@ struct Index {
 
   private pageTitle(): string {
     if (!this.model.authenticated) { return 'NAS 工作台'; }
-    if (this.module === 'drive') { return 'Synology Drive'; }
+    if (this.module === 'drive') {
+      if (this.driveTabId === DriveView.MyDrive) { return 'Synology Drive'; }
+      if (this.driveTabId === 'more') {
+        return this.driveMoreView.length > 0 ? driveViewLabel(this.driveMoreView as DriveView) :
+          this.visibleTabs()[this.activeTab].label;
+      }
+      return driveViewLabel(this.driveTabId as DriveView);
+    }
     if (this.module === 'photos') { return this.photoTabId === 'transfers' ? '照片传输' : '照片'; }
     return rootTabs()[this.activeTab].label;
   }
@@ -1306,7 +1313,8 @@ struct Index {
       Column({ space: WorkbenchMetrics.sectionGap }) {
         Text('选择常用功能加入底栏，最多显示 5 项。加入后，该功能会从“更多”中移除。')
           .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
-        if (driveTabs((view: DriveView): boolean => this.model.drive.supportsView(view), this.drivePinned).length > 0) {
+        if (this.module !== 'photos' &&
+          driveTabs((view: DriveView): boolean => this.model.drive.supportsView(view), this.drivePinned).length > 0) {
           WorkbenchSectionTitle({ title: 'Synology Drive' })
           Text('我的文件、团队文件和更多固定显示，可再加入 2 项。').fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
           Column() {
@@ -1316,7 +1324,7 @@ struct Index {
             }, (view: DriveView): string => view)
           }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
         }
-        if (this.supportsPhotos()) {
+        if (this.module !== 'drive' && this.supportsPhotos()) {
           WorkbenchSectionTitle({ title: '照片' })
           Column() {
             if (supportsPhotoSharing((api: string): boolean => this.model.supports(api))) {
@@ -1353,10 +1361,8 @@ struct Index {
         onOpenTransfers: (): void => { this.openDriveTransfers(); },
         onUploadTo: (entry: DriveEntry): void => { this.prepareDriveUpload(entry); },
         onOpenAction: (action: DriveAction, entry?: DriveEntry): void => { if (entry !== undefined) { this.prepareDriveAction(entry, action); } },
-        onOpenActionRecords: (): void => { this.taskSection = 'drive-actions'; this.switchTab(ROOT_TASK_TAB); },
         onOpenOriginal: (entry: DriveEntry): void => { this.openDriveOriginal(entry); },
         onOpenLinks: (entry?: DriveEntry): void => { this.openDriveLinks(entry); },
-        onOpenNotifications: (): void => { this.navStack.pushPathByName('drive-notifications', undefined); },
         onCustomize: (): void => { this.navStack.pushPathByName('module-tabs', undefined); } })
     } else if (this.module === 'photos') {
       if (tab.id === 'transfers') { this.tasksView() }
