@@ -1447,7 +1447,7 @@ struct Index {
         file !== undefined && this.model.supports('SYNO.FileStation.Download') && !this.model.fileOriginal.originalLoaded;
     const menu = source === 'photos' ? this.photoPreviewMenu() : source === 'drive' ? this.drivePreviewMenu() : this.filePreviewMenu();
     const id = source + '-preview-menu';
-    return [{ content: { label: this.previewText(video ? $r('app.string.preview_play_video') : source === 'photos' ?
+    const actions: HdsNavigationMenuItemOptions[] = [{ content: { label: this.previewText(video ? $r('app.string.preview_play_video') : source === 'photos' ?
         $r('app.string.preview_original_loaded') : $r('app.string.preview_original')),
       icon: video ? $r('sys.symbol.play') : source === 'photos' ? undefined :
         $r('sys.symbol.arrow_up_left_and_arrow_down_right'),
@@ -1464,6 +1464,7 @@ struct Index {
           this.openTitleMenu(id, menu.map((item: MenuElement): TitleMenuItem => new TitleMenuItem(
             typeof item.value === 'string' ? item.value : this.previewText(item.value), true, (): void => { item.action?.(); })));
         } } }];
+    return source === 'photos' && !video && this.model.photoLibrary.originalPath.length > 0 ? actions.slice(1) : actions;
   }
 
   private drivePreviewInfo(): PreviewInformation[] {
