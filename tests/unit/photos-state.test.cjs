@@ -29,6 +29,7 @@ const driveTransfer = load('core/domain/DriveTransferProtocol.ts', { './DsmProto
 const driveThumbnail = load('core/domain/DriveThumbnailProtocol.ts', { './DsmProtocol': dsm, './DriveProtocol': drive,
   './DriveTransferProtocol': driveTransfer });
 const connectorModule = load('core/network/NasConnector.ts', { '../domain/DsmProtocol': dsm,
+  '../domain/PhotoUpload': load('core/domain/PhotoUpload.ts', { './DsmProtocol': dsm }),
   '../domain/ExtensionProtocol': load('core/domain/ExtensionProtocol.ts', { './DsmProtocol': dsm }),
   './ApiVersionPolicy': load('core/network/ApiVersionPolicy.ts', { '../domain/DsmProtocol': dsm }),
   './SessionRegistry': load('core/network/SessionRegistry.ts', { '../domain/DsmProtocol': dsm }),
@@ -185,6 +186,15 @@ let nextScope = 1;
 const { PhotoLibrary } = load('features/photos/PhotoLibrary.ets', { '@kit.ArkTS': { util: { generateRandomUUID: () => '11111111-1111-4111-8111-' + String(nextScope++).padStart(12, '0') } }, '@kit.PerformanceAnalysisKit': log,
   '../../core/domain/DsmProtocol': dsm, '../../core/domain/PhotosProtocol': photos, '../../platform/PhotoExif': { readPhotoExif: async () => ({}) }, './PhotoMediaStore': { PhotoMediaStore: MockMedia } });
 function library(connector, expired = async () => {}) { connector.supportsPhotoAction ??= () => false; const model = new PhotoLibrary(); model.attach(connector, undefined, expired); return model; }
+
+test('photo selection retains selected identities while paging and clears on space navigation and account reset', async () => {
+  const model = library({ async photos(space, offset) { return { items: [item(offset === 0 ? 1 : 2, space)], hasMore: offset === 0 }; } });
+  await model.open(S.Personal, 'timeline'); model.beginSelection(); model.toggleSelection(model.items[0]);
+  await model.loadMore(); assert.deepEqual(Array.from(model.selectedItems(), entry => entry.id), [1]);
+  model.toggleSelection(model.items[1]); assert.deepEqual(Array.from(model.selectedItems(), entry => entry.id), [1, 2]);
+  await model.open(S.Shared, 'timeline'); assert.equal(model.selecting, false); assert.equal(model.selectedKeys.length, 0);
+  model.beginSelection(); model.toggleSelection(model.items[0]); model.reset(); assert.equal(model.selectedKeys.length, 0);
+});
 
 test('photo tabs retain pagination and selected albums without mixing a late response into another tab', async () => {
   const late = deferred(); let delayed = false;

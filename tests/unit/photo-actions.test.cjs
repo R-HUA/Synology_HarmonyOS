@@ -32,6 +32,20 @@ test('background receipt is accepted rather than completed; an uncorrelated resu
   assert.throws(() => decodePhotoActionResult(input, { task_info: { id: '12' } }));
 });
 
+test('bulk actions use one request and reject cross-space or duplicate selections', () => {
+  const items = [item, { ...item, id: 43 }];
+  for (const action of ['delete', 'move', 'copy']) {
+    const request = photoActionRequest({ action, item, items, targetId: 9 });
+    assert.equal(request.method, action); assert.equal(fields(request).item_id, '[42,43]');
+    if (action !== 'delete') { assert.equal(fields(request).action, '"skip"'); }
+    assert.equal(decodePhotoActionResult({ action, item, items }, { task_info: { id: 3 } }).completed, false);
+  }
+  assert.equal(fields(photoActionRequest({ action: 'share', item, items })).item, '[42,43]');
+  assert.equal(fields(photoActionRequest({ action: 'album', item, items, targetId: 2 })).item, '[42,43]');
+  assert.throws(() => photoActionRequest({ action: 'delete', item, items: [item, { ...item, id: 43, space: S.Shared }] }));
+  assert.throws(() => photoActionRequest({ action: 'delete', item, items: [item, item] }));
+});
+
 test('photo metadata accepts optional EXIF values and rejects malformed favorite flags', () => {
   const row = { id: 42, filename: item.filename, filesize: 8, type: 'photo', is_favorite: true,
     additional: { exif: { camera: '相机', iso: 500 }, description: '日落',
@@ -65,8 +79,8 @@ async function fixture() {
   const calls = [], replies = [];
   const capabilities = { 'SYNO.API.Auth': { path: 'auth.cgi', minVersion: 1, maxVersion: 6 } };
   for (const name of ['SYNO.Foto.BackgroundTask.Info', 'SYNO.Foto.Browse.Item', 'SYNO.Foto.Browse.NormalAlbum',
-    'SYNO.Foto.Sharing.Passphrase', 'SYNO.FileStation.Download', 'SYNO.FileStation.Thumb']) {
-    capabilities[name] = { path: 'entry.cgi', minVersion: 1, maxVersion: name === 'SYNO.Foto.Browse.Item' ? 7 : 2, requestFormat: 'JSON' };
+    'SYNO.Foto.Sharing.Passphrase', 'SYNO.FileStation.Download', 'SYNO.FileStation.Thumb', 'SYNO.Foto.Upload.Item', 'SYNO.Foto.Browse.Folder']) {
+    capabilities[name] = { path: 'entry.cgi', minVersion: 1, maxVersion: name === 'SYNO.Foto.Upload.Item' ? 8 : name === 'SYNO.Foto.Browse.Item' ? 7 : 2, requestFormat: 'JSON' };
   }
   const connector = new NasConnector({ async post(address, body) { calls.push({ address, body: new URLSearchParams(body) }); return replies.shift(); },
     close() {}, transfers: { async download(request, target, control, validate) {
@@ -79,6 +93,35 @@ async function fixture() {
   connector.restoreSession([{ name: 'FileStation', sid: 'synthetic-sid', synoToken: 'synthetic-token' }]);
   return { connector, calls, replies };
 }
+
+test('Photos creates missing path segments and uses a folder upload with no File Station fields', async () => {
+  const f = await fixture();
+  f.replies.push(ok({ folder: { id: 37 } }), ok({ list: [{ id: 10, name: '/PhotoLibrary' }] }), ok({ list: [] }), ok({ folder: { id: 11 } }),
+    ok({ list: [] }), ok({ folder: { id: 12 } }));
+  assert.equal(await f.connector.ensurePhotoDirectory(['PhotoLibrary', '2024', '01']), 12);
+  const folders = f.calls.filter(call => call.body.get('api') === 'SYNO.Foto.Browse.Folder');
+  assert.equal(folders[0].body.get('method'), 'get');
+  assert.equal(folders[0].body.get('id'), '0');
+  assert.equal(folders[1].body.get('id'), '37');
+  const creates = f.calls.filter(call => call.body.get('method') === 'create');
+  assert.deepEqual(creates.map(call => call.body.get('target_id')), ['10', '11']);
+  assert.deepEqual(creates.map(call => call.body.get('name')), ['"2024"', '"01"']);
+  assert.deepEqual(fields(f.connector.photoUploadPlan(12, '照片.jpg', 1704067200)), {
+    api: 'SYNO.Foto.Upload.Item', version: '8', method: 'upload_to_folder', target_folder_id: '12', name: '"照片.jpg"', mtime: '1704067200', duplicate: '"rename"',
+  });
+});
+
+test('Photos root listing resolves the actual folder ID and creation never targets the root lookup sentinel', async () => {
+  const f = await fixture();
+  f.replies.push(ok({ folder: { id: 37 } }), ok({ list: [] }));
+  assert.deepEqual(await f.connector.photoFolders(S.Personal, 0), []);
+  let calls = f.calls.filter(call => call.body.get('api') === 'SYNO.Foto.Browse.Folder');
+  assert.deepEqual(calls.map(call => [call.body.get('method'), call.body.get('id')]), [['get', '0'], ['list', '37']]);
+  f.replies.push(ok({ folder: { id: 37 } }), ok({ list: [] }), ok({ folder: { id: 38 } }));
+  assert.equal(await f.connector.ensurePhotoDirectory(['MobileBackup']), 38);
+  calls = f.calls.filter(call => call.body.get('method') === 'create');
+  assert.equal(calls[0].body.get('target_id'), '37');
+});
 
 test('v7 photo detail follows the web favorite default without hiding malformed metadata', async () => {
   const f = await fixture();

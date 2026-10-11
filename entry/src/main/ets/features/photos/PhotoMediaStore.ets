@@ -1,6 +1,7 @@
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
-import { fileIo, picker } from '@kit.CoreFileKit';
+import { fileIo, fileUri, picker } from '@kit.CoreFileKit';
+import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { NasErrorKind, NasFailure } from '../../core/domain/DsmProtocol';
@@ -246,6 +247,51 @@ export class PhotoMediaStore {
       catch { hilog.error(0x0000, 'NasPhotos', 'operation=export_cleanup result=failed'); }
       throw new NasFailure(error instanceof NasFailure ? error.kind : NasErrorKind.Protocol, '另存原图未完成，请检查目标文件后重试。');
     }
+  }
+
+  /** 由系统确认保存授权，逐个原文件拷贝；每批不超过相册创建接口的 100 项限制。 */
+  async saveToGallery(items: NasPhotoItem[], access?: NasPhotoMediaAccess): Promise<number> {
+    const ticket = this.generation;
+    const connector = this.requireConnector();
+    const helper = photoAccessHelper.getPhotoAccessHelper(this.context!);
+    let saved = 0;
+    const ensureCurrent = (): void => { if (ticket !== this.generation) { throw this.cancelled(); } };
+    try {
+      for (let start = 0; start < items.length; start += 100) {
+        const batch = items.slice(start, start + 100);
+        const paths: string[] = [];
+        const transport = new RcpNasTransport(this.insecureTls);
+        try {
+          for (const item of batch) {
+            ensureCurrent();
+            const destination = this.privatePath(); paths.push(destination);
+            await transport.downloadMedia(connector.photoOriginalPlan(item, access), destination, false, item.bytes,
+              (): boolean => ticket === this.generation);
+          }
+          const configs: photoAccessHelper.PhotoCreationConfig[] = batch.map((item: NasPhotoItem): photoAccessHelper.PhotoCreationConfig => {
+            const dot = item.filename.lastIndexOf('.');
+            if (dot <= 0) { throw new NasFailure(NasErrorKind.InvalidInput, '照片文件名称缺少扩展名。'); }
+            return { title: item.filename.substring(0, dot), fileNameExtension: item.filename.substring(dot + 1),
+              photoType: item.mediaType === 'video' ? photoAccessHelper.PhotoType.VIDEO : photoAccessHelper.PhotoType.IMAGE };
+          });
+          const destinations = await helper.showAssetsCreationDialog(paths.map((path: string): string => fileUri.getUriFromPath(path)), configs);
+          ensureCurrent();
+          if (destinations.length === 0) { return saved; }
+          if (destinations.length !== batch.length) { throw new NasFailure(NasErrorKind.Protocol, `已保存 ${saved} 项，相册保存回执不完整。`); }
+          const issues: string[] = [];
+          for (let index = 0; index < destinations.length; index++) {
+            if (!destinations[index].startsWith('file://')) { issues.push(batch[index].filename); continue; }
+            await copyTransferFile(paths[index], destinations[index], batch[index].bytes, ensureCurrent, true);
+            saved++;
+          }
+          if (issues.length > 0) { throw new NasFailure(NasErrorKind.Protocol, `已保存 ${saved} 项，${issues.length} 项保存失败：${issues[0]}`); }
+        } finally {
+          transport.close();
+          for (const path of paths) { this.removeFile(path); }
+        }
+      }
+      return saved;
+    } finally { await helper.release(); }
   }
 
   private drain(): void {

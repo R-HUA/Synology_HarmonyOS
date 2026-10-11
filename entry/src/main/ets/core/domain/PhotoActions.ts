@@ -1,8 +1,9 @@
 import { NasFormField, NasErrorKind, NasFailure, nasInteger, nasRecord, nasString } from './DsmProtocol';
 import { NasPhotoItem, PhotosSpace, validatePhotoIdentity } from './PhotosProtocol';
 
-export type PhotoAction = 'favorite' | 'delete' | 'album' | 'share' | 'copy';
-export interface PhotoActionInput { action: PhotoAction; item: NasPhotoItem; favorite?: boolean; targetId?: number; }
+export type PhotoAction = 'favorite' | 'delete' | 'album' | 'share' | 'copy' | 'move';
+/** 多选与详情共用写入契约，同一请求只接受同一空间的照片。 */
+export interface PhotoActionInput { action: PhotoAction; item: NasPhotoItem; items?: NasPhotoItem[]; favorite?: boolean; targetId?: number; }
 export interface PhotoActionRequest { api: string; version: number; method: string; fields: NasFormField[]; }
 export interface PhotoActionResult { completed: boolean; taskId?: number; sharePassphrase?: string; }
 export interface PhotoFolder { id: number; name: string; }
@@ -10,16 +11,24 @@ export interface PhotoFolder { id: number; name: string; }
 /** 写入只接受本人或共享空间身份，接收相册不推定修改权限。 */
 export function photoActionRequest(input: PhotoActionInput): PhotoActionRequest {
   validatePhotoIdentity(input.item);
+  const items = input.items ?? [input.item];
+  if (items.length === 0) { throw new NasFailure(NasErrorKind.InvalidInput, '请先选择照片。'); }
+  const seen = new Set<number>();
+  items.forEach((item: NasPhotoItem): void => {
+    validatePhotoIdentity(item);
+    if (item.space !== input.item.space || seen.has(item.id)) { throw new NasFailure(NasErrorKind.InvalidInput, '所选照片来源不一致或重复。'); }
+    seen.add(item.id);
+  });
   const prefix = input.item.space === PhotosSpace.Shared ? 'SYNO.FotoTeam.' : 'SYNO.Foto.';
-  const ids = JSON.stringify([input.item.id]);
+  const ids = JSON.stringify(items.map((item: NasPhotoItem): number => item.id));
   if (input.action === 'favorite') {
     if (typeof input.favorite !== 'boolean') { throw new NasFailure(NasErrorKind.InvalidInput, '收藏状态不正确。'); }
     return { api: prefix + 'Browse.Item', version: 7, method: 'set_favorite',
       fields: [{ name: 'id', content: ids }, { name: 'favorite', content: input.favorite.toString() }] };
   }
-  if (input.action === 'delete' || input.action === 'copy') {
+  if (input.action === 'delete' || input.action === 'copy' || input.action === 'move') {
     const fields: NasFormField[] = [{ name: 'item_id', content: ids }, { name: 'folder_id', content: '[]' }];
-    if (input.action === 'copy') {
+    if (input.action !== 'delete') {
       validateTarget(input.targetId);
       fields.push({ name: 'target_folder_id', content: input.targetId!.toString() }, { name: 'action', content: JSON.stringify('skip') });
     }
@@ -33,7 +42,7 @@ export function photoActionRequest(input: PhotoActionInput): PhotoActionRequest 
   }
   if (input.item.space !== PhotosSpace.Personal) { throw new NasFailure(NasErrorKind.Unsupported, '此空间暂不支持创建照片分享。'); }
   return { api: 'SYNO.Foto.Browse.NormalAlbum', version: 1, method: 'create', fields: [
-    { name: 'name', content: JSON.stringify(input.item.filename) }, { name: 'shared', content: 'true' }, { name: 'item', content: ids }] };
+    { name: 'name', content: JSON.stringify(items.length === 1 ? input.item.filename : '共享照片') }, { name: 'shared', content: 'true' }, { name: 'item', content: ids }] };
 }
 
 function validateTarget(id: number | undefined): void {
@@ -42,7 +51,7 @@ function validateTarget(id: number | undefined): void {
 
 /** 后台回执仅表示接受；持久记录须等 get_status 明确 done 后才能清除。 */
 export function decodePhotoActionResult(input: PhotoActionInput, data: Record<string, Object>): PhotoActionResult {
-  if (input.action === 'delete' || input.action === 'copy') {
+  if (input.action === 'delete' || input.action === 'copy' || input.action === 'move') {
     return { completed: false, taskId: nasInteger(nasRecord(data['task_info'])['id']) };
   }
   if (input.action === 'share') {

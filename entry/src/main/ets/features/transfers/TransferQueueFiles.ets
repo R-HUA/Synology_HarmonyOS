@@ -105,7 +105,7 @@ export async function readTransferPrefix(path: string, bytes: number): Promise<T
   finally { await closeFile(file, failed); }
 }
 
-/** 仅用于和 NAS 的文件摘要对照，以有界读块核对实际内容。 */
+/** 以有界读块核对 NAS 上传内容，并识别本机照片的内容版本。 */
 export async function hashTransferFile(path: string, bytes: number, current: () => void): Promise<string> {
   const file = await fileIo.open(path, fileIo.OpenMode.READ_ONLY);
   let failed = false;

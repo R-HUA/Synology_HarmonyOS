@@ -29,6 +29,7 @@ const driveTransfer = load('core/domain/DriveTransferProtocol.ts', { './DsmProto
 const driveThumbnail = load('core/domain/DriveThumbnailProtocol.ts', { './DsmProtocol': dsm, './DriveProtocol': drive,
   './DriveTransferProtocol': driveTransfer });
 const { NasConnector, NAS_DISCOVERY_QUERY } = load('core/network/NasConnector.ts', {
+  '../domain/PhotoUpload': load('core/domain/PhotoUpload.ts', { './DsmProtocol': dsm }),
   '../domain/ExtensionProtocol': load('core/domain/ExtensionProtocol.ts', { './DsmProtocol': dsm }),
   './ApiVersionPolicy': load('core/network/ApiVersionPolicy.ts', { '../domain/DsmProtocol': dsm }),
   './SessionRegistry': load('core/network/SessionRegistry.ts', { '../domain/DsmProtocol': dsm }),

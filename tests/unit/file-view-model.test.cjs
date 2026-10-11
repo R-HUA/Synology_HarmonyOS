@@ -93,6 +93,7 @@ async function fixture(options = {}) {
     './NasSessionStore': { NasSessionStore: MockSessionStore, NasSessionStoreFailure: class extends Error {} },
     '../../core/domain/PhotosProtocol': photos,
     '../photos/PhotoLibrary': { PhotoLibrary },
+    '../backup/AutomaticPhotoBackup': { AutomaticPhotoBackup: class { async attach() {} detach() {} } },
     '../telemetry/TelemetryMonitor': { TelemetryMonitor: class { attach() {} detach() {} } },
     './ConnectionAddressBook': { ConnectionAddressBook: class { ready = true; dispose() {} } },
     '../control/SystemControlModel': { SystemControlModel: class { deactivate() {} async open(_context, _connector, _origin, _tls, validate) { this.validate = validate; } } },

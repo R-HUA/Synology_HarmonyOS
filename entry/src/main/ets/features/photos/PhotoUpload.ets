@@ -2,16 +2,20 @@ import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo } from '@kit.CoreFileKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
+import { dataSharePredicates } from '@kit.ArkData';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { closeFile } from '../../platform/SdkFileIO';
-import { NasErrorKind, NasFailure, validateLogicalPath } from '../../core/domain/DsmProtocol';
+import { NasErrorKind, NasFailure } from '../../core/domain/DsmProtocol';
+import { NasConnector } from '../../core/network/NasConnector';
+import { photoDateDirectory } from '../../core/domain/PhotoUpload';
 import { TransferQueueItem, transferRemotePath, validateTransferName } from '../../core/domain/TransferQueueState';
-import { TransferQueue, TransferUploadSource } from '../transfers/TransferQueue';
+import { TransferQueue, TransferUploadSource, PhotoTransferSource } from '../transfers/TransferQueue';
 
 const MAX_SELECTED_FILES: number = 20;
 const MAX_FILE_BYTES: number = 256 * 1024 * 1024;
 const MAX_SELECTED_BYTES: number = 512 * 1024 * 1024;
 
-export interface PhotoBackupSource extends TransferUploadSource { bytes: number; }
+export interface PhotoUploadSource extends TransferUploadSource { bytes: number; takenAt: number; modifiedAt: number; }
 interface AcceptedBackupTarget { remotePath: string; name: string; }
 
 function selectionError(error: Error): string {
@@ -24,10 +28,10 @@ function selectionError(error: Error): string {
   return '无法读取所选照片或视频，请检查文件授权后重新选择。';
 }
 
-/** 只处理系统选择器授权的项目；私有副本与备份结果由传输队列负责。 */
+/** 手动上传只处理系统选择器授权的项目，目标固定为个人照片库。 */
 @ObservedV2
-export class PhotoBackup {
-  @Trace sources: PhotoBackupSource[] = [];
+export class PhotoUpload {
+  @Trace sources: PhotoUploadSource[] = [];
   @Trace selecting: boolean = false;
   @Trace submitting: boolean = false;
   @Trace status: string = '';
@@ -37,12 +41,12 @@ export class PhotoBackup {
   private accountGeneration: number = 0;
   private acceptedTargets: Map<string, AcceptedBackupTarget> = new Map<string, AcceptedBackupTarget>();
 
-  async select(_context: common.UIAbilityContext, queue?: TransferQueue): Promise<void> {
+  async select(context: common.UIAbilityContext, queue?: TransferQueue): Promise<void> {
     if (this.selecting || this.submitting) { return; }
     const ticket = this.ticket;
     this.selecting = true;
     this.errorText = '';
-    this.status = '请选择需要备份的照片或视频';
+    this.status = '请选择需要上传的照片或视频';
     try {
       const options = new photoAccessHelper.PhotoSelectOptions();
       options.MIMEType = photoAccessHelper.PhotoViewMIMETypes.IMAGE_VIDEO_TYPE;
@@ -55,44 +59,51 @@ export class PhotoBackup {
       }
       this.releaseClosedTargets(queue);
       const staged = this.sources.slice();
-      const seen = new Set<string>(staged.map((source: PhotoBackupSource): string => source.uri));
+      const seen = new Set<string>(staged.map((source: PhotoUploadSource): string => source.uri));
       const names = new Set<string>();
       this.acceptedTargets.forEach((target: AcceptedBackupTarget): void => { names.add(target.name); });
-      staged.forEach((source: PhotoBackupSource): void => { names.add(source.name); });
-      let totalBytes = staged.reduce((total: number, source: PhotoBackupSource): number => total + source.bytes, 0);
+      staged.forEach((source: PhotoUploadSource): void => { names.add(source.name); });
+      let totalBytes = staged.reduce((total: number, source: PhotoUploadSource): number => total + source.bytes, 0);
       let skippedDuplicates = 0;
       const issues: string[] = [];
-      for (const uri of selected.photoUris) {
-        this.ensureCurrent(ticket);
-        if (seen.has(uri) || this.acceptedTargets.has(uri)) { skippedDuplicates++; continue; }
-        seen.add(uri);
-        if (staged.length >= MAX_SELECTED_FILES) {
-          issues.push('每批最多选择 20 项，请先提交或清空当前选择。');
-          continue;
-        }
-        try {
-          const source = await this.readSource(uri, ticket);
+      const helper = photoAccessHelper.getPhotoAccessHelper(context);
+      try {
+        for (const uri of selected.photoUris) {
           this.ensureCurrent(ticket);
-          if (totalBytes + source.bytes > MAX_SELECTED_BYTES) {
-            throw new NasFailure(NasErrorKind.InvalidInput, '每批照片和视频的总大小不能超过 512 MiB。');
+          if (seen.has(uri) || this.acceptedTargets.has(uri)) { skippedDuplicates++; continue; }
+          seen.add(uri);
+          if (staged.length >= MAX_SELECTED_FILES) {
+            issues.push('每批最多选择 20 项，请先提交或清空当前选择。');
+            continue;
           }
-          // 不同授权 URI 的重名文件保留内容，以序号区分 NAS 目标名称。
-          source.name = this.availableName(source.name, names);
-          names.add(source.name);
-          staged.push(source);
-          totalBytes += source.bytes;
-        } catch (error) {
-          this.ensureCurrent(ticket);
-          issues.push(selectionError(error as Error));
+          try {
+            const source = await this.readSource(uri, ticket, helper);
+            this.ensureCurrent(ticket);
+            if (totalBytes + source.bytes > MAX_SELECTED_BYTES) {
+              throw new NasFailure(NasErrorKind.InvalidInput, '每批照片和视频的总大小不能超过 512 MiB。');
+            }
+            // 不同授权 URI 的重名文件保留内容，以序号区分 NAS 目标名称。
+            source.name = this.availableName(source.name, names);
+            names.add(source.name);
+            staged.push(source);
+            totalBytes += source.bytes;
+          } catch (error) {
+            this.ensureCurrent(ticket);
+            hilog.error(0x0000, 'PhotoUpload', 'operation=read_source result=failed code=%{public}s',
+              String((error as BusinessError).code ?? 'unknown'));
+            issues.push(selectionError(error as Error));
+          }
         }
-      }
+      } finally { await helper.release(); }
       this.ensureCurrent(ticket);
       this.sources = staged;
       this.errorText = issues.length === 0 ? '' : issues[0] + (issues.length > 1 ? ` 另有 ${issues.length - 1} 项未加入。` : '');
-      this.status = `已选择 ${staged.length} 项，提交后请在传输任务中查看备份结果。` +
+      this.status = `已选择 ${staged.length} 项，提交后请在传输任务中查看上传结果。` +
         (skippedDuplicates > 0 ? ` 已跳过 ${skippedDuplicates} 个重复或已入队项目。` : '');
     } catch (error) {
       if (this.ticket !== ticket) { return; }
+      hilog.error(0x0000, 'PhotoUpload', 'operation=select result=failed code=%{public}s',
+        String((error as BusinessError).code ?? 'unknown'));
       this.errorText = selectionError(error as Error);
       this.status = '选择未完成，已选内容已保留。';
     } finally {
@@ -100,35 +111,43 @@ export class PhotoBackup {
     }
   }
 
-  async submit(directory: string, queue: TransferQueue): Promise<void> {
+  async submit(connector: NasConnector, queue: TransferQueue): Promise<void> {
     if (this.selecting || this.submitting) { return; }
     if (this.sources.length === 0) {
-      this.errorText = '请先选择需要备份的照片或视频。';
+      this.errorText = '请先选择需要上传的照片或视频。';
       return;
     }
     const ticket = this.ticket;
     const accountGeneration = this.accountGeneration;
-    const snapshot = this.sources.map((source: PhotoBackupSource): PhotoBackupSource =>
-      ({ uri: source.uri, name: source.name, bytes: source.bytes }));
+    const snapshot = this.sources.slice();
     this.submitting = true;
     this.errorText = '';
     this.status = '正在将所选照片和视频交给传输队列…';
     try {
-      validateLogicalPath(directory);
-      const result = await queue.uploadSources(directory, snapshot, 'photoBackup');
+      const planned: PhotoTransferSource[] = [];
+      const directories = new Map<string, number>();
+      for (let index = 0; index < snapshot.length; index++) {
+        this.ensureCurrent(ticket);
+        const source = snapshot[index];
+        const relative = 'PhotoLibrary/' + photoDateDirectory(source.takenAt, source.modifiedAt);
+        let folderId = directories.get(relative);
+        if (folderId === undefined) { folderId = await connector.ensurePhotoDirectory(relative.split('/')); directories.set(relative, folderId); }
+        this.ensureCurrent(ticket);
+        planned.push({ uri: source.uri, name: source.name, bytes: source.bytes,
+          folderId, modifiedAt: source.modifiedAt, wifiOnly: false, directory: '/home/Photos/' + relative });
+      }
+      const result = await queue.uploadPhotos('/home/Photos', planned, false);
       if (this.accountGeneration !== accountGeneration) { return; }
       const accepted = new Set<number>(result.acceptedIndices);
-      snapshot.forEach((source: PhotoBackupSource, index: number): void => {
-        if (accepted.has(index)) {
-          this.acceptedTargets.set(source.uri, { remotePath: transferRemotePath(directory, source.name), name: source.name });
-        }
+      planned.forEach((source: PhotoTransferSource, index: number): void => {
+        if (accepted.has(index)) { this.acceptedTargets.set(source.uri, { remotePath: transferRemotePath(source.directory!, source.name), name: source.name }); }
       });
       // 清空选择时仍记录接管结果，防止同一账号重新选择后重复提交。
       if (this.ticket !== ticket) { return; }
-      this.sources = snapshot.filter((_source: PhotoBackupSource, index: number): boolean => !accepted.has(index));
+      this.sources = snapshot.filter((_source: PhotoUploadSource, index: number): boolean => !accepted.has(index));
       const acceptedCount = snapshot.length - this.sources.length;
       this.status = acceptedCount > 0 ?
-        `已将 ${acceptedCount} 项交给传输队列，备份结果请在传输任务中查看。` : '没有项目被传输队列接收。';
+        `已将 ${acceptedCount} 项交给传输队列，上传结果请在传输任务中查看。` : '没有项目被传输队列接收。';
       if (this.sources.length > 0) { this.status += ` 仍有 ${this.sources.length} 项待提交，可重试。`; }
       if (result.issues.length > 0) {
         this.errorText = result.issues[0].errorText + (acceptedCount > 0 ? ' 已入队项目的问题请在传输任务中处理。' : '');
@@ -137,7 +156,7 @@ export class PhotoBackup {
       }
     } catch (error) {
       if (this.ticket !== ticket || this.accountGeneration !== accountGeneration) { return; }
-      this.errorText = error instanceof NasFailure ? error.message : '无法提交备份，请检查连接和本机存储后重试。';
+      this.errorText = error instanceof NasFailure ? error.message : '无法提交上传，请检查连接和本机存储后重试。';
       this.status = '提交未完成，尚未接收的所选内容已保留。';
     } finally {
       if (this.accountGeneration === accountGeneration) { this.submitting = false; }
@@ -178,7 +197,7 @@ export class PhotoBackup {
     if (this.ticket !== ticket) { throw new NasFailure(NasErrorKind.Cancelled, '连接或所选内容已变化。'); }
   }
 
-  private async readSource(uri: string, ticket: number): Promise<PhotoBackupSource> {
+  private async readSource(uri: string, ticket: number, helper: photoAccessHelper.PhotoAccessHelper): Promise<PhotoUploadSource> {
     const file = await fileIo.open(uri, fileIo.OpenMode.READ_ONLY);
     let failed = false;
     try {
@@ -191,8 +210,21 @@ export class PhotoBackup {
       if (stat.size > MAX_FILE_BYTES) {
         throw new NasFailure(NasErrorKind.InvalidInput, '单个照片或视频不能超过 256 MiB。');
       }
-      // 从授权文件对象取得真实名称，不使用媒体 URI 的资源编号。
-      return { uri: uri, name: validateTransferName(file.name), bytes: stat.size };
+      // 按选择器授权的 URI 查询属性，图片和视频均无需解码来取得拍摄时间。
+      const predicates = new dataSharePredicates.DataSharePredicates();
+      predicates.equalTo(photoAccessHelper.PhotoKeys.URI, uri);
+      const result = await helper.getAssets({ predicates, fetchColumns: [photoAccessHelper.PhotoKeys.DATE_TAKEN_MS] });
+      try {
+        this.ensureCurrent(ticket);
+        if (result.getCount() === 0) { throw new NasFailure(NasErrorKind.InvalidInput, '所选照片或视频已不可用，请重新选择。'); }
+        const asset = await result.getFirstObject();
+        this.ensureCurrent(ticket);
+        const name = validateTransferName(asset.displayName);
+        const takenAt = Math.floor(Number(asset.get(photoAccessHelper.PhotoKeys.DATE_TAKEN_MS)) / 1000);
+        const modifiedAt = Math.floor(stat.mtime);
+        photoDateDirectory(takenAt, modifiedAt);
+        return { uri, name, bytes: stat.size, takenAt, modifiedAt };
+      } finally { result.close(); }
     } catch (error) { failed = true; throw error as Error; }
     finally { await closeFile(file, failed); }
   }

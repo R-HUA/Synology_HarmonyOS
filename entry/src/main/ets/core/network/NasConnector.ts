@@ -10,6 +10,7 @@ import type { NasPhotoMediaAccess, NasPhotoItem, NasPhotoAlbum, NasPhotoAlbumPag
   NasSharedAlbum, NasSharedAlbumPage } from '../domain/PhotosProtocol';
 import { photoActionRequest, decodePhotoActionResult, decodePhotoFolders } from '../domain/PhotoActions';
 import type { PhotoActionInput, PhotoActionResult, PhotoFolder } from '../domain/PhotoActions';
+import { photoUploadFields } from '../domain/PhotoUpload';
 import { assertFileOperationSuccess, decodeFileOperationEntry, decodeFileTask, decodeFileTaskStatus,
   NasFileSortBy, NasFileSortDirection, NasFileTaskKind,
   validateFileName, validateFileOperationPath, validateFileOperationPaths, validateFileTask } from '../domain/FileOperations';
@@ -50,7 +51,7 @@ export const NAS_DISCOVERY_QUERY = 'SYNO.API.Auth,SYNO.FileStation.List,SYNO.Fil
   'SYNO.DSM.Info,SYNO.Core.Package,SYNO.Foto.Sharing.Misc,SYNO.Core.Network,' +
   'SYNO.Foto.Browse.Album,SYNO.FotoTeam.Browse.Album,SYNO.Foto.Thumbnail,SYNO.FotoTeam.Thumbnail,SYNO.Foto.Download,SYNO.FotoTeam.Download,' +
   'SYNO.FileStation.Thumb,SYNO.Foto.Browse.NormalAlbum,SYNO.Foto.Browse.Folder,SYNO.FotoTeam.Browse.Folder,' +
-  'SYNO.Foto.BackgroundTask.File,SYNO.FotoTeam.BackgroundTask.File,SYNO.Foto.BackgroundTask.Info,SYNO.Foto.Sharing.Passphrase,' +
+  'SYNO.Foto.Upload.Item,SYNO.Foto.BackgroundTask.File,SYNO.FotoTeam.BackgroundTask.File,SYNO.Foto.BackgroundTask.Info,SYNO.Foto.Sharing.Passphrase,' +
   'SYNO.FileStation.CreateFolder,SYNO.FileStation.Rename,SYNO.FileStation.Delete,SYNO.FileStation.CopyMove,SYNO.FileStation.MD5,' +
   'SYNO.FileStation.Sharing,SYNO.DownloadStation.Task,' +
   // Drive 是独立套件，必须单独问；SYNO.API.Info 只回答被问到的名字。
@@ -557,11 +558,12 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
 
   async photoFolders(space: PhotosSpace, parentId?: number): Promise<PhotoFolder[]> {
     if (space === PhotosSpace.WithMe) { throw new NasFailure(NasErrorKind.Unsupported, '接收相册不支持目录操作。'); }
+    const folderId = parentId === undefined || parentId === 0 ? await this.photoRootFolderId(space) : parentId;
     const folders: PhotoFolder[] = [];
     let offset = 0;
     while (true) {
       const fields: NasFormField[] = [{ name: 'offset', content: offset.toString() }, { name: 'limit', content: '1000' },
-        { name: 'id', content: (parentId ?? 0).toString() }];
+        { name: 'id', content: folderId.toString() }];
       const page = decodePhotoFolders(await this.photosCall(this.photoApi(space, 'Browse.Folder'), 'list', fields));
       if (page.length > 1000) { throw new NasFailure(NasErrorKind.Protocol, '照片目录响应格式不正确。'); }
       folders.push(...page);
@@ -570,11 +572,52 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     }
   }
 
+  /** 标识 0 仅用于获取根目录，列举和创建必须使用服务端返回的实际标识。 */
+  private async photoRootFolderId(space: PhotosSpace): Promise<number> {
+    const data = await this.photosCall(this.photoApi(space, 'Browse.Folder'), 'get', [{ name: 'id', content: '0' }]);
+    return nasInteger(nasRecord(data['folder'])['id']);
+  }
+
   /** 添加目标仅列普通相册，条件相册不接受 add_item。 */
   async photoActionAlbums(offset: number): Promise<NasPhotoAlbumPage> {
     return decodePhotoAlbumPage(await this.photosCall('SYNO.Foto.Browse.NormalAlbum', 'list', [
       { name: 'offset', content: offset.toString() }, { name: 'limit', content: '20' }
     ]), PhotosSpace.Personal, offset, 20);
+  }
+
+  /** 逐级列出、创建个人空间目录，固定路径不依赖时间线上传的隐式分目录规则。 */
+  async ensurePhotoDirectory(segments: string[]): Promise<number> {
+    let parent = await this.photoRootFolderId(PhotosSpace.Personal);
+    for (const name of segments) {
+      validateFileName(name);
+      const existing = (await this.photoFolders(PhotosSpace.Personal, parent)).find((folder: PhotoFolder): boolean =>
+        folder.name.split('/').filter((part: string): boolean => part.length > 0).slice(-1)[0] === name);
+      if (existing !== undefined) { parent = existing.id; continue; }
+      const data = await this.photosCall('SYNO.Foto.Browse.Folder', 'create', [
+        { name: 'target_id', content: parent.toString() }, { name: 'name', content: JSON.stringify(name) }]);
+      parent = nasInteger(nasRecord(data['folder'])['id']);
+    }
+    return parent;
+  }
+
+  photoUploadPlan(folderId: number, name: string, modifiedAt: number): NasTransferPlan {
+    const session = this.requireSession();
+    const api = selectNasApi(this.capabilities, 'SYNO.Foto.Upload.Item', [8]);
+    return { address: this.origin + '/webapi/' + api.path, session, fields: [
+      { name: 'api', content: api.name }, { name: 'version', content: '8' }, { name: 'method', content: 'upload_to_folder' },
+      ...photoUploadFields(folderId, name, modifiedAt)] };
+  }
+
+  /** 照片文件上传复用当前连接，继承用户已确认的证书策略。 */
+  async uploadPhoto(folderId: number, name: string, modifiedAt: number, source: NasUploadSource,
+    control: NasTransferControl): Promise<NasHttpReply> {
+    const plan = this.photoUploadPlan(folderId, name, modifiedAt);
+    const scope = this.beginDriveTransfer(control);
+    try {
+      const reply = await scope.transport.upload({ ...plan, method: 'POST' }, source, name, scope.control);
+      this.checkDriveTransfer(scope);
+      return reply;
+    } finally { scope.dispose(); }
   }
 
   photoThumbnailPlan(item: NasPhotoItem, size: 'm' | 'xl' = 'm', access?: NasPhotoMediaAccess): NasTransferPlan {

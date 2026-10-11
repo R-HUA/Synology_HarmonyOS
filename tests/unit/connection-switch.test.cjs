@@ -305,6 +305,7 @@ async function fixture(options = {}) {
     './FileTaskStore': { FileTaskStore: MockFileTaskStore },
     '@kit.ArkTS': { util: { generateRandomUUID: () => '11111111-1111-4111-8111-111111111111' } },
     '../photos/PhotoLibrary': { PhotoLibrary: MockPhotos },
+    '../backup/AutomaticPhotoBackup': { AutomaticPhotoBackup: class { async attach() {} detach() {} } },
     '../telemetry/TelemetryMonitor': { TelemetryMonitor: MockTelemetry },
     './ConnectionAddressBook': { ConnectionAddressBook },
     '../control/SystemControlModel': { SystemControlModel: class { deactivate() {} } },

@@ -30,7 +30,7 @@ export function decodeExtensionWrites(text: string, scope: string): ExtensionPen
     const operation = nasString(record['operation']);
     const createdAt = nasInteger(record['createdAt']);
     if ((feature !== 'fileSharing' && feature !== 'nasDownloads' && feature !== 'photos') ||
-      !(feature === 'photos' ? ['favorite', 'delete', 'album', 'share', 'copy'] : ['create', 'edit', 'delete', 'pause', 'resume']).includes(operation) || createdAt < 1 ||
+      !(feature === 'photos' ? ['favorite', 'delete', 'album', 'share', 'copy', 'move'] : ['create', 'edit', 'delete', 'pause', 'resume']).includes(operation) || createdAt < 1 ||
       result.some((existing: ExtensionPendingWrite): boolean => existing.feature === feature)) {
       throw new NasFailure(NasErrorKind.Protocol, '扩展操作记录无效，暂不能提交新的操作。');
     }

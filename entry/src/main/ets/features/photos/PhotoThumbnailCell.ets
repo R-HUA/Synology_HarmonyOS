@@ -9,6 +9,8 @@ export struct PhotoThumbnailCell {
   @Require @Param library: PhotoLibrary;
   @Require @Param state: PhotoThumbnailState;
   @Param available: boolean = true;
+  @Param selecting: boolean = false;
+  @Param selected: boolean = false;
   @Local private decodedPath: string = '';
   @Event onOpen: (item: NasPhotoItem) => void = (_item: NasPhotoItem): void => {};
 
@@ -46,6 +48,10 @@ export struct PhotoThumbnailCell {
           .buttonStyle(ButtonStyleMode.TEXTUAL).enabled(this.available && !this.state.loading)
           .onClick((): void => { this.library.retryThumbnail(this.item); })
           .accessibilityDescription(this.state.errorText)
+      }
+      if (this.selecting) {
+        Checkbox().select(this.selected).hitTestBehavior(HitTestMode.None)
+          .position({ right: 4, top: 4 }).accessibilityLevel('no')
       }
     }.width('100%').aspectRatio(1).borderRadius(2).clip(true)
   }

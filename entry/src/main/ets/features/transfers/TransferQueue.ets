@@ -6,6 +6,7 @@ import { sdkTransferAgent } from '../../platform/SdkTransferAgent';
 import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { NasConnector, NasTransferPlan } from '../../core/network/NasConnector';
+import { NasTransferCancellation } from '../../core/network/NasTransferTransport';
 import { encodeNasForm, NasErrorKind, NasFailure, NasFileEntry, normalizeNasOrigin,
   validateLogicalPath } from '../../core/domain/DsmProtocol';
 import { acceptTransferUpload, checkTransferDownload, TransferChecksumStatus, TransferDirection, TransferSource, TransferQueueItem, TransferQueueRecord,
@@ -14,6 +15,9 @@ import { copyTransferFile, ensureTransferDirectory, hashTransferFile, readTransf
   saveTransferRecords, transferQueueDirectory } from './TransferQueueFiles';
 
 export interface TransferUploadSource { uri: string; name: string; bytes?: number; }
+export interface PhotoTransferSource extends TransferUploadSource {
+  folderId: number; modifiedAt: number; wifiOnly: boolean; backupKey?: string; directory?: string;
+}
 export interface TransferUploadIssue { index: number; errorText: string; }
 export interface TransferUploadBatchResult { acceptedIndices: number[]; issues: TransferUploadIssue[]; }
 interface QueueSession {
@@ -25,6 +29,7 @@ interface QueueSession {
   records: TransferQueueRecord[];
   loaded: boolean;
   canUpload: () => boolean;
+  insecureTls: boolean;
 }
 interface QueueMarker { transferQueue: string; transferScope: string; transferAttempt: string; spaceBytes: string; }
 interface TransferHeaders { Cookie: string; 'Cache-Control': string; 'X-SYNO-TOKEN'?: string; 'Content-Type'?: string; }
@@ -53,9 +58,12 @@ export class TransferQueue {
   private bindings: TaskBinding[] = [];
   private timer: number = -1;
   private polling: boolean = false;
+  private backupAllowed: boolean = false;
+  private photoUploads: Map<string, NasTransferCancellation> = new Map();
+  backupCompleted: ((key: string) => Promise<void>) | undefined = undefined;
 
   async attach(context: common.UIAbilityContext, connector: NasConnector, origin: string, account: string,
-    canUpload: () => boolean = (): boolean => true): Promise<void> {
+    canUpload: () => boolean = (): boolean => true, insecureTls: boolean = false): Promise<void> {
     this.detach();
     sdkTransferAgent.requireCapability();
     const generation = this.generation;
@@ -65,7 +73,7 @@ export class TransferQueue {
     await this.tail;
     if (this.generation !== generation) { throw new NasFailure(NasErrorKind.Cancelled, '连接已变化。'); }
     const session: QueueSession = { context: context, connector: connector, origin: normalized, scope: scope,
-      directory: transferQueueDirectory(context, scope), records: [], loaded: false, canUpload: canUpload };
+      directory: transferQueueDirectory(context, scope), records: [], loaded: false, canUpload: canUpload, insecureTls };
     this.session = session;
     try {
       await this.loadSession(session);
@@ -97,6 +105,9 @@ export class TransferQueue {
 
   /** 离开页面仅解除监听；账号退出需先 await stopAll()。 */
   detach(): void {
+    this.photoUploads.forEach((cancellation: NasTransferCancellation): void => cancellation.cancel());
+    this.photoUploads.clear();
+    this.backupAllowed = false;
     this.generation++;
     if (this.timer !== -1) { clearInterval(this.timer); this.timer = -1; }
     this.bindings.forEach((binding: TaskBinding): void => { binding.dispose(); });
@@ -135,6 +146,42 @@ export class TransferQueue {
   async uploadUris(directory: string, uris: string[]): Promise<void> {
     const session = this.requireSession();
     await this.operation(session, async (): Promise<void> => { this.requireUploadAdmission(session); await this.uploadSelected(session, directory, uris); });
+  }
+
+  /** 自动备份逐项接管，手动上传仍保留整批的部分成功回执。 */
+  async uploadPhotos(directory: string, sources: PhotoTransferSource[], automatic: boolean): Promise<TransferUploadBatchResult> {
+    const session = this.requireSession();
+    let result: TransferUploadBatchResult = { acceptedIndices: [], issues: [] };
+    await this.operation(session, async (): Promise<void> => {
+      this.requireUploadAdmission(session);
+      result = await this.enqueueUploads(session, directory, sources, automatic ? 'photoBackup' : 'photoUpload', sources);
+    });
+    return result;
+  }
+
+  /** 只暂停自动备份的同一个系统任务，条件恢复时 resume，不重复建立上传。 */
+  async setBackupAllowed(allowed: boolean): Promise<void> {
+    this.backupAllowed = allowed;
+    const session = this.session;
+    if (session === undefined || !session.loaded) { return; }
+    if (!allowed) {
+      session.records.filter((record: TransferQueueRecord): boolean => record.source === 'photoBackup')
+        .forEach((record: TransferQueueRecord): void => { this.photoUploads.get(record.id)?.cancel(); });
+    }
+    await this.operation(session, async (): Promise<void> => {
+      for (const record of session.records) {
+        if (record.protocol !== 'photos' || record.source !== 'photoBackup' || record.taskId.length === 0 ||
+          !['running', 'waiting'].includes(record.state)) { continue; }
+        const info = await sdkTransferAgent.show(record.taskId);
+        const task = await sdkTransferAgent.getTask(session.context, record.taskId);
+        if (!allowed && [request.agent.State.RUNNING, request.agent.State.WAITING, request.agent.State.RETRYING].includes(info.progress.state)) {
+          await sdkTransferAgent.pause(task); record.state = 'waiting';
+        } else if (allowed && info.progress.state === request.agent.State.PAUSED) {
+          await sdkTransferAgent.resume(task); record.state = 'running'; record.errorText = '';
+        }
+      }
+      await this.save(session);
+    }, false);
   }
 
   async download(entry: NasFileEntry): Promise<void> {
@@ -196,6 +243,7 @@ export class TransferQueue {
 
   async cancel(id: string): Promise<void> {
     const session = this.requireSession();
+    this.photoUploads.get(id)?.cancel();
     await this.operation(session, async (): Promise<void> => { await this.cancelRecord(session, this.find(session, id)); });
   }
 
@@ -204,6 +252,7 @@ export class TransferQueue {
     const session = this.session;
     if (session === undefined) { return; }
     if (!session.loaded) { throw queueFailure('传输记录尚未读取成功，无法确认后台任务已停止；请先在任务页重新加载。'); }
+    this.photoUploads.forEach((cancellation: NasTransferCancellation): void => cancellation.cancel());
     await this.operation(session, async (): Promise<void> => {
       // 先找回 create 返回后、taskId 保存前可能遗留的任务，再移除当前账号全部系统任务。
       for (const record of session.records) {
@@ -291,7 +340,7 @@ export class TransferQueue {
     if (result.issues.length > 0) { throw queueFailure(result.issues[0].errorText); }
   }
 
-  private async enqueueUploads(session: QueueSession, directory: string, sources: TransferUploadSource[], origin: TransferSource = 'fileUpload'): Promise<TransferUploadBatchResult> {
+  private async enqueueUploads(session: QueueSession, directory: string, sources: TransferUploadSource[], origin: TransferSource = 'fileUpload', photos?: PhotoTransferSource[]): Promise<TransferUploadBatchResult> {
     validateLogicalPath(directory);
     if (sources.length > 20) { throw queueFailure('每次最多选择 20 个文件。'); }
     const result: TransferUploadBatchResult = { acceptedIndices: [], issues: [] };
@@ -305,13 +354,18 @@ export class TransferQueue {
           try { bytes = (await fileIo.stat(file.fd)).size; } finally { await fileIo.close(file); }
         }
         if (!Number.isSafeInteger(bytes) || bytes < 0) { throw queueFailure('所选文件大小无效。'); }
-        const path = transferRemotePath(directory, source.name);
+        const path = transferRemotePath(photos?.[index].directory ?? directory, source.name);
         if (session.records.some((record: TransferQueueRecord): boolean => record.direction === 'upload' &&
           record.remotePath === path && !['completed', 'failed', 'cancelled', 'closed', 'clearing'].includes(record.state))) {
           throw queueFailure('这个文件已有上传任务，请先处理已有任务。');
         }
         const record = this.newRecord('upload', source.name, path, bytes);
         record.source = origin;
+        if (photos !== undefined) {
+          record.protocol = 'photos'; record.photoFolderId = photos[index].folderId;
+          record.photoModifiedAt = photos[index].modifiedAt; record.photoWifiOnly = photos[index].wifiOnly;
+          record.backupKey = photos[index].backupKey;
+        }
         this.addRecord(session, record);
         await this.save(session);
         try {
@@ -361,20 +415,29 @@ export class TransferQueue {
     if (record.direction === 'upload') {
       const stat = await fileIo.stat(this.localPath(session, record));
       if (stat.size !== record.bytes || stat.isDirectory()) { throw queueFailure('上传私有副本不可用，请重新选择。'); }
-      plan = session.connector.transferUploadPlan(record.remotePath.substring(0, record.remotePath.lastIndexOf('/')));
+      plan = record.protocol === 'photos' ? session.connector.photoUploadPlan(record.photoFolderId!, record.name, record.photoModifiedAt!) :
+        session.connector.transferUploadPlan(record.remotePath.substring(0, record.remotePath.lastIndexOf('/')));
     } else { plan = session.connector.transferDownloadPlan(record.remotePath); }
     // 传输计划必须属于 attach 的可信 origin，防止绑定错误账号/连接。
     if (!plan.address.startsWith(session.origin + '/webapi/')) { throw queueFailure('连接与传输账号不一致，请重新连接。'); }
+    if (record.protocol === 'photos' && session.insecureTls && session.origin.startsWith('https:')) {
+      await this.startPhotoUpload(session, record);
+      return;
+    }
     record.state = 'creating';
     await this.save(session);
     this.ensureCurrent(session);
     const marker: QueueMarker = { transferQueue: record.id, transferScope: session.scope, transferAttempt: record.attempts.toString(), spaceBytes: record.bytes.toString() };
-    // 系统后台传输代理没有跳过证书校验的开关：http 地址不受影响，
-    // 自签名证书的 https 地址只能在前台（rcp）路径使用，后台传输会因证书错误失败。
+    // 系统代理使用系统证书策略；Photos 的已确认例外由当前连接执行。
     const config: request.agent.Config = { action: record.direction === 'upload' ? request.agent.Action.UPLOAD : request.agent.Action.DOWNLOAD,
       url: plan.address, method: 'POST', mode: request.agent.Mode.BACKGROUND,
       title: record.direction === 'upload' ? '上传文件' : '下载文件', headers: this.headers(plan, record.direction === 'download'),
       retry: false, redirect: false, metered: false, roaming: false, gauge: true, extras: marker };
+    if (record.protocol === 'photos') {
+      config.metered = true;
+      config.roaming = !record.photoWifiOnly;
+      config.network = record.photoWifiOnly ? request.agent.Network.WIFI : request.agent.Network.ANY;
+    }
     if (record.direction === 'upload') {
       const fields: request.agent.FormItem[] = plan.fields.map((field): request.agent.FormItem => ({ name: field.name, value: field.content }));
       // DSM 要求文件部分排在普通字段之后，boundary 由系统生成。
@@ -418,6 +481,51 @@ export class TransferQueue {
     }
   }
 
+  /** 系统代理无法继承证书例外时，沿用连接的文件流上传；完成回执仍先落盘。 */
+  private async startPhotoUpload(session: QueueSession, record: TransferQueueRecord): Promise<void> {
+    const cancellation = new NasTransferCancellation();
+    record.startAttempted = true;
+    record.state = 'running';
+    await this.save(session);
+    this.ensureCurrent(session);
+    this.photoUploads.set(record.id, cancellation);
+    session.connector.uploadPhoto(record.photoFolderId!, record.name, record.photoModifiedAt!,
+      { path: this.localPath(session, record), bytes: record.bytes }, {
+        cancellation,
+        onProgress: (progress): void => {
+          if (this.session !== session) { return; }
+          record.processed = Math.max(0, Math.min(record.bytes, progress.processed));
+          this.publish(session);
+        },
+        checkNetwork: (): void => {
+          this.ensureCurrent(session);
+          if (record.source === 'photoBackup' && !this.backupAllowed) { cancellation.cancel(); cancellation.check(); }
+        }
+      }).then(async (reply): Promise<void> => {
+        if (this.session !== session) { return; }
+        await this.operation(session, async (): Promise<void> => {
+          record.httpStatus = reply.status;
+          acceptTransferUpload(reply.status, reply.text, true);
+          record.uploadAccepted = true;
+          await this.save(session);
+          await this.finishRecord(session, record);
+          hilog.info(0x0000, 'NasQueue', 'operation=photo_upload result=success bytes=%{public}d', record.bytes);
+        }, false);
+      }).catch(async (error: Error): Promise<void> => {
+        if (this.session !== session) { return; }
+        await this.operation(session, async (): Promise<void> => {
+          if (record.uploadAccepted || ['closed', 'cancelled', 'completed'].includes(record.state)) { throw error; }
+          const rejection = error instanceof NasFailure && record.httpStatus === 200 &&
+            ![NasErrorKind.Http, NasErrorKind.Protocol, NasErrorKind.Network, NasErrorKind.Cancelled].includes(error.kind);
+          record.state = rejection ? 'failed' : 'unknown';
+          record.errorText = transferError(error);
+          await this.save(session);
+          this.report(session, error);
+        }, false);
+      }).catch((error: Error): void => { this.report(session, error); })
+      .finally((): void => { this.photoUploads.delete(record.id); });
+  }
+
   private async reconcileSession(session: QueueSession, automatic: boolean = false): Promise<void> {
     for (const record of session.records.slice()) {
       this.ensureCurrent(session);
@@ -434,6 +542,15 @@ export class TransferQueue {
           await this.save(session); continue;
         }
         if (record.taskId.length === 0) {
+          if (this.photoUploads.has(record.id)) { continue; }
+          if (record.protocol === 'photos' && record.startAttempted) {
+            if (record.uploadAccepted) { await this.finishRecord(session, record); }
+            else {
+              record.state = 'unknown'; record.errorText = '未取得照片上传回执，请在相册核对结果；不会自动重传。';
+              await this.save(session);
+            }
+            continue;
+          }
           if (record.state === 'queued' && !record.startAttempted && record.localReady) {
             if (record.direction === 'download' || this.canStartQueuedUpload(session, record)) { await this.createTask(session, record); }
             continue;
@@ -446,11 +563,20 @@ export class TransferQueue {
         }
         const info = await sdkTransferAgent.show(record.taskId);
         this.ensureCurrent(session);
+        if (info.progress.state === request.agent.State.FAILED) {
+          hilog.error(0x0000, 'NasQueue', 'operation=task_status result=failed fault=%{public}d processed=%{public}d http=%{public}d',
+            info.faults, info.progress.processed, record.httpStatus);
+        }
         if (record.direction === 'download' && [request.agent.State.INITIALIZED, request.agent.State.RUNNING, request.agent.State.WAITING, request.agent.State.RETRYING].includes(info.progress.state)) {
           await sdkTransferAgent.restoreDownloadSpace(session.context, record.taskId, this.localPath(session, record), record.bytes, info.progress.processed);
           this.ensureCurrent(session);
         }
-        await this.acceptProgress(session, record, info.progress);
+        await this.acceptProgress(session, record, info.progress, info.faults);
+        if (record.protocol === 'photos' && record.source === 'photoBackup' && !this.backupAllowed &&
+          [request.agent.State.RUNNING, request.agent.State.WAITING, request.agent.State.RETRYING].includes(info.progress.state)) {
+          await sdkTransferAgent.pause(await sdkTransferAgent.getTask(session.context, record.taskId));
+          record.state = 'waiting'; await this.save(session); continue;
+        }
         if (info.progress.state === request.agent.State.INITIALIZED) {
           if (record.direction === 'upload' && !this.canStartQueuedUpload(session, record)) { continue; }
           // INITIALIZED 是尚未开始执行的系统任务；恢复同一个 ID，不建立新上传。
@@ -500,7 +626,8 @@ export class TransferQueue {
     if (found.length === 1) { record.taskId = found[0]; await this.save(session); }
   }
 
-  private async acceptProgress(session: QueueSession, record: TransferQueueRecord, progress: request.agent.Progress): Promise<void> {
+  private async acceptProgress(session: QueueSession, record: TransferQueueRecord, progress: request.agent.Progress,
+    faults?: request.agent.Faults): Promise<void> {
     this.ensureCurrent(session);
     record.processed = Math.max(0, Math.min(record.bytes, progress.processed));
     if (progress.state === request.agent.State.COMPLETED) {
@@ -520,7 +647,7 @@ export class TransferQueue {
             }
             if (!await this.verifyRecoveredContent(session, record)) { return; }
           } else {
-            try { acceptTransferUpload(record.httpStatus, body); }
+            try { acceptTransferUpload(record.httpStatus, body, record.protocol === 'photos'); }
             catch (error) {
               // 明确 DSM 拒绝可以由用户重试；HTTP/无法解析仍属未知写入结果。
               const failure = error as NasFailure;
@@ -531,9 +658,11 @@ export class TransferQueue {
             await this.save(session);
           }
         }
-        const target = await session.connector.getFileInfo(record.remotePath);
-        this.ensureCurrent(session);
-        if (target.isDirectory || target.bytes !== record.bytes) { throw queueFailure('NAS 目标文件大小不符，上传结果待确认。'); }
+        if (record.protocol !== 'photos') {
+          const target = await session.connector.getFileInfo(record.remotePath);
+          this.ensureCurrent(session);
+          if (target.isDirectory || target.bytes !== record.bytes) { throw queueFailure('NAS 目标文件大小不符，上传结果待确认。'); }
+        }
       } else {
         try {
           if (record.httpStatus === 0 && !record.contentVerified) {
@@ -555,11 +684,15 @@ export class TransferQueue {
     } else if ([request.agent.State.FAILED, request.agent.State.STOPPED, request.agent.State.REMOVED].includes(progress.state)) {
       record.state = record.direction === 'upload' && record.startAttempted ? 'unknown' : 'failed';
       record.errorText = record.state === 'unknown' ? '上传已中断，NAS 可能已收到内容；请核对后处理，系统不会自动重传。' : '下载已中断，请重试。';
+      if (progress.state === request.agent.State.FAILED && faults === request.agent.Faults.SSL && progress.processed === 0 && record.httpStatus === 0) {
+        record.state = 'failed';
+        record.errorText = '上传未能建立安全连接，请检查当前连接设置后重试。';
+      }
       if (record.direction === 'upload' && progress.state === request.agent.State.FAILED && record.httpStatus === 200) {
         const extra = progress.extras as Record<string, Object> | undefined;
         const body = extra === undefined ? undefined : extra['body'];
         if (typeof body === 'string') {
-          try { acceptTransferUpload(record.httpStatus, body); }
+          try { acceptTransferUpload(record.httpStatus, body, record.protocol === 'photos'); }
           catch (error) {
             // 只有明确的 DSM 拒绝能证明本次失败；取消/移除、解析失败和缺少 HTTP 均不开放重试。
             const failure = error as NasFailure;
@@ -572,7 +705,7 @@ export class TransferQueue {
       }
       await this.save(session); this.unbind(record.taskId);
     } else if (progress.state === request.agent.State.PAUSED) {
-      record.state = 'waiting'; record.errorText = '系统任务已暂停，请取消后重新处理。'; await this.save(session);
+      record.state = 'waiting'; record.errorText = record.protocol === 'photos' && record.source === 'photoBackup' ? '' : '系统任务已暂停，请取消后重新处理。'; await this.save(session);
     } else {
       const state = progress.state === request.agent.State.WAITING ? 'waiting' : 'running';
       if (record.state !== state) { record.state = state; record.errorText = ''; await this.save(session); }
@@ -608,6 +741,7 @@ export class TransferQueue {
   /** 回调证据缺失时用完整文件摘要核对内容，不能以同名同大小替代。 */
   private async verifyRecoveredContent(session: QueueSession, record: TransferQueueRecord): Promise<boolean> {
     this.ensureCurrent(session);
+    if (record.protocol === 'photos') { throw queueFailure('未取得照片上传回执，请在相册核对结果；不会自动重传。'); }
     if (!record.systemCompleted) { throw queueFailure('系统尚未确认传输完成，请先检查任务状态。'); }
     const remote = await session.connector.getFileInfo(record.remotePath);
     this.ensureCurrent(session);
@@ -644,6 +778,7 @@ export class TransferQueue {
   private async finishRecord(session: QueueSession, record: TransferQueueRecord): Promise<void> {
     record.state = 'completed'; record.processed = record.bytes; record.errorText = '';
     await this.save(session);
+    if (record.backupKey !== undefined && this.backupCompleted !== undefined) { await this.backupCompleted(record.backupKey); }
     this.unbind(record.taskId);
     // 先保存可验证结果，再释放含凭据的系统配置。
     if (record.taskId.length > 0) { await this.removeTask(record.taskId); record.taskId = ''; await this.save(session); }
@@ -686,7 +821,12 @@ export class TransferQueue {
       this.background(session, taskId, async (): Promise<void> => { await this.acceptProgress(session, record, value); });
     };
     const failed = (value: request.agent.Progress): void => {
-      this.background(session, taskId, async (): Promise<void> => { await this.acceptProgress(session, record, value); });
+      this.background(session, taskId, async (): Promise<void> => {
+        const info = await sdkTransferAgent.show(taskId);
+        hilog.error(0x0000, 'NasQueue', 'operation=task_status result=failed fault=%{public}d processed=%{public}d http=%{public}d',
+          info.faults, value.processed, record.httpStatus);
+        await this.acceptProgress(session, record, value, info.faults);
+      });
     };
     const dispose = sdkTransferAgent.observe(task, { response: response, progress: progress, completed: completed, failed: failed,
       error: (error: Error): void => this.report(session, error) });
@@ -716,6 +856,10 @@ export class TransferQueue {
   private async clearRecord(session: QueueSession, record: TransferQueueRecord): Promise<void> {
     this.ensureCurrent(session);
     if (!transferCanRemove(record)) { throw queueFailure('请先停止任务；结果待确认的上传需在 NAS 核对后关闭。'); }
+    if (record.backupKey !== undefined && record.state === 'completed') {
+      if (this.backupCompleted === undefined) { throw queueFailure('备份记录尚未读取，请稍后清理。'); }
+      await this.backupCompleted(record.backupKey);
+    }
     if (record.taskId.length > 0) { await this.removeTask(record.taskId); this.unbind(record.taskId); }
     await this.stopChecksum(session, record);
     record.taskId = '';
@@ -788,7 +932,7 @@ export class TransferQueue {
 
   /** 已接管的批次串行发送；未知写入阻止后续项目，无需重新提交整批。 */
   private canStartQueuedUpload(session: QueueSession, record: TransferQueueRecord): boolean {
-    return session.canUpload() && !session.records.some((item: TransferQueueRecord): boolean => item.id !== record.id &&
+    return (record.protocol !== 'photos' || record.source !== 'photoBackup' || this.backupAllowed) && session.canUpload() && !session.records.some((item: TransferQueueRecord): boolean => item.id !== record.id &&
       item.direction === 'upload' && !['preparing', 'queued', 'completed', 'failed', 'cancelled', 'closed', 'clearing'].includes(item.state));
   }
   private ensureCurrent(session: QueueSession): void {

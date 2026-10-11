@@ -52,6 +52,8 @@ function page() {
     tabsController: { changeIndex(index) { calls.push('index:' + index); } },
     updateTelemetryMode() {},
     model: { authenticated: true, directory: '/hidden', busy: false, supports: () => true, extensions: {}, queue: { ready: true },
+      photoBackup: { busy: false },
+      async submitPhotoUpload(upload) { calls.push('photos-upload'); await upload.submit(); },
       goBack() { calls.push('station-back'); this.directory = ''; },
       drive: { view: V.MyDrive, loaded: true, busy: false, available: true, trail: [{}], supportsView: () => true,
         activateView(view) { if (this.view !== view) { this.selectView(view); } },
@@ -111,10 +113,12 @@ test('File Station back exits multi-selection before leaving the current directo
   assert.equal(state.fileSelecting, false); assert.equal(state.selectedFiles.length, 0);
   assert.equal(state.model.directory, '/hidden'); assert.deepEqual(state.calls, []);
 });
-test('both directory pickers push independent destinations without replacing module tabs', () => {
+test('backup uses Photos folders and NAS downloads retain the File Station picker', () => {
   const state = page(); state.module = 'photos'; state.photoTabId = 'more'; state.activeTab = 3;
+  state.model.photoLibrary.loadActionTargets = mode => state.calls.push(['photo-target', mode]);
+  state.openPhotoDestination = method(index, 'openPhotoDestination');
   method(index, 'chooseBackupDirectory').call(state);
-  assert.deepEqual(state.calls, [['directory-picker', 'backup']]); assert.equal(state.module, 'photos'); assert.equal(state.activeTab, 3);
+  assert.deepEqual(state.calls, [['photo-actions', undefined], ['photo-target', 'backup']]); assert.equal(state.module, 'photos'); assert.equal(state.activeTab, 3);
   state.cancelDirectoryPicker(); state.calls.length = 0;
   method(index, 'chooseDownloadDirectory').call(state);
   assert.deepEqual(state.calls, [['directory-picker', 'download']]); assert.equal(state.model.extensions.downloadFormRequested, true);
@@ -128,10 +132,21 @@ test('picker back goes up the selected directory before returning to the existin
   method(index, 'onBackPress').call(state); assert.deepEqual(state.calls, ['station-back']); assert.equal(state.pickerMode, 'download');
   state.calls.length = 0; method(index, 'onBackPress').call(state); assert.deepEqual(state.calls, ['pop']); assert.equal(state.pickerMode, '');
 });
-test('backup confirmation opens global transfers only after the selected sources were submitted', async () => {
-  const state = page(); state.module = 'photos'; state.navStack.pushPathByName('directory-picker'); state.pickerMode = 'backup';
-  await method(index, 'submitBackup').call(state);
-  assert.equal(state.pickerMode, ''); assert.equal(state.module, 'root'); assert.equal(state.activeTab, 2); assert.equal(state.taskSection, 'transfers');
+test('manual photo upload submits the picker selection directly and cancellation cannot submit old choices', async () => {
+  const state = page(); state.module = 'photos';
+  state.backup.errorText = '';
+  state.backup.clear = function () { this.sources = []; state.calls.push('clear'); };
+  state.backup.select = async function () { state.calls.push('pick'); this.sources = [{}]; };
+  state.getUIContext = () => ({ getHostContext: () => ({}) });
+  state.showTitleMenuError = error => state.calls.push(error);
+  await method(index, 'selectBackup').call(state);
+  assert.deepEqual(state.calls, ['clear', 'pick', 'photos-upload']);
+  assert.equal(state.pickerMode, ''); assert.equal(state.module, 'photos'); assert.equal(state.navStack.size(), 0);
+  state.calls.length = 0; state.backup.sources = [{}];
+  state.backup.select = async () => state.calls.push('cancel');
+  await method(index, 'selectBackup').call(state);
+  assert.deepEqual(state.calls, ['clear', 'cancel']);
+  assert.equal(state.backup.sources.length, 0);
 });
 test('authentication loss resets module, search, picker and root selection', () => {
   const state = page(); state.model.authenticated = false; state.navStack.pushPathByName('drive-search'); state.pickerMode = 'backup';
@@ -217,7 +232,7 @@ test('one floating HdsTabs owns every module and file tools remain in the title 
   assert.match(index, /barPosition\(BarPosition.End\).*scrollable\(false\)/);
   assert.match(index, /barOverlap\(true\).vertical\(false\)/);
   assert.match(index, /barFloatingStyle\(\{ barBottomMargin: this.navigationInset/);
-  assert.match(index, /backIcon:[\s\S]*?icon: \$r\('sys.symbol.chevron_left'\)[\s\S]*?this.exitModule\(\)/);
+  assert.match(index, /backIcon:[\s\S]*?icon: this.navigationBackSymbol\(\)[\s\S]*?this.onBackPress\(\)/);
   assert.doesNotMatch(index, /backIcon:.*label: '返回'/);
   assert.doesNotMatch(filePage, /fileSourceSwitch|filePageActions|sortLabel|Button\('上传'\)/);
   assert.match(filePage, /workbenchBreadcrumbs\(this.model.directory\)/);
@@ -277,12 +292,12 @@ test('permitted media open thumbnail preview even when original downloading is f
 });
 
 
-test('photo backup home shortcut resets the hidden sharing subview before selecting media', () => {
+test('photo backup home shortcut opens backup settings without invoking manual selection', () => {
   const state = page(); state.module = 'root'; state.photoMoreShared = true;
   state.selectBackup = () => state.calls.push('choose-media');
   method(index, 'openPhotoBackup').call(state);
   assert.equal(state.module, 'photos'); assert.equal(state.photoTabId, 'more'); assert.equal(state.photoMoreShared, false);
-  assert.equal(state.effectivePhotoTab(), 'more'); assert.ok(state.calls.includes('choose-media'));
+  assert.equal(state.effectivePhotoTab(), 'more'); assert.ok(!state.calls.includes('choose-media'));
 });
 test('returning from the directory picker reopens the retained NAS download form once', () => {
   const source = fs.readFileSync(path.join(root, 'features/downloadStation/DownloadStationPage.ets'), 'utf8');

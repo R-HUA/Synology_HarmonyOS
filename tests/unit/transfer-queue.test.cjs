@@ -121,17 +121,20 @@ function fixture() {
   let remoteMd5 = '1'.repeat(32);
   let localMd5 = '1'.repeat(32);
   let downloadPrefix = 'downloaded bytes';
+  let photoUpload = async () => ({ status: 200, text: '{"success":true,"data":{}}' });
   const State = { INITIALIZED: 0, WAITING: 16, RUNNING: 32, RETRYING: 33, PAUSED: 48, STOPPED: 49, COMPLETED: 64, FAILED: 65, REMOVED: 80 };
   const util = {
     generateRandomUUID: () => `${(++uuid).toString().padStart(8, '0')}-1111-4111-8111-111111111111`,
     TextEncoder: class { encodeInto(text) { return new TextEncoder().encode(text); } },
   };
   const agent = {
-    State, Mode: { BACKGROUND: 0 }, Action: { UPLOAD: 0, DOWNLOAD: 1 },
+    State, Faults: { SSL: 112, OTHERS: 255 }, Mode: { BACKGROUND: 0 }, Action: { UPLOAD: 0, DOWNLOAD: 1 }, Network: { WIFI: 1, ANY: 0 },
     async create(context, config) {
       const task = { tid: `${tid++}`, config, state: State.INITIALIZED, handlers: new Map(),
         on(event, callback) { this.handlers.set(event, callback); }, off(event) { this.handlers.delete(event); },
         async start() { calls.push(`start:${this.tid}`); this.state = State.RUNNING; },
+        async pause() { calls.push(`pause:${this.tid}`); this.state = State.PAUSED; },
+        async resume() { calls.push(`resume:${this.tid}`); this.state = State.RUNNING; },
       };
       tasks.set(task.tid, task);
       calls.push(`create:${task.tid}`);
@@ -141,8 +144,8 @@ function fixture() {
     async show(id) {
       const task = tasks.get(id);
       if (!task) throw Object.assign(new Error('missing task'), { code: 21900006 });
-      return { tid: id, extras: task.config.extras,
-        progress: { state: task.state, processed: 37, extras: task.progressExtras || (task.body ? { body: task.body } : undefined) } };
+      return { tid: id, extras: task.config.extras, faults: task.faults ?? 255,
+        progress: { state: task.state, processed: task.processed ?? 37, extras: task.progressExtras || (task.body ? { body: task.body } : undefined) } };
     },
     async getTask(context, id) { return tasks.get(id); },
     async search() { return [...tasks.keys()]; },
@@ -178,6 +181,10 @@ function fixture() {
     async rename(source, target) { files.set(target, files.get(source)); files.delete(source); },
   };
   const connector = {
+    async uploadPhoto(...args) { calls.push('photo-rcp'); return photoUpload(...args); },
+    photoUploadPlan: (id, name, modifiedAt) => ({ address: 'https://nas.example/webapi/entry.cgi',
+      fields: [{ name: 'api', content: 'SYNO.Foto.Upload.Item' }, { name: 'target_folder_id', content: id.toString() }, { name: 'mtime', content: modifiedAt.toString() }],
+      session: { sid: 'PRIVATE-SID', synoToken: 'PRIVATE-TOKEN' } }),
     transferUploadPlan: directory => ({ address: 'https://nas.example/webapi/entry.cgi',
       fields: [{ name: 'path', content: directory }], session: { sid: 'PRIVATE-SID', synoToken: 'PRIVATE-TOKEN' } }),
     transferDownloadPlan: remote => ({ address: 'https://nas.example/webapi/entry.cgi',
@@ -196,14 +203,16 @@ function fixture() {
     },
     '@kit.CryptoArchitectureKit': { cryptoFramework: { createMd() {
       let data; return { async update(blob) { data = blob.data; }, async digest() { return { data: new Uint8Array(crypto.createHash('sha256').update(data).digest()) }; } };
-    } } }, '@kit.ArkTS': { util }, '@kit.PerformanceAnalysisKit': { hilog: { error() {} } },
+    } } }, '@kit.ArkTS': { util }, '@kit.PerformanceAnalysisKit': { hilog: { error() {}, info() {} } },
+    '../../core/network/NasTransferTransport': require('../../work/core-build/network/NasTransferTransport.js'),
     '../../core/network/NasConnector': {}, '../../core/domain/DsmProtocol': protocol,
     '../../core/domain/TransferQueueState': state, './TransferQueueFiles': helper,
   });
   const queue = new TransferQueue();
   const context = { filesDir: '/files' };
   return { queue, context, connector, tasks, snapshots, files, calls, State,
-    attach: account => queue.attach(context, connector, 'https://nas.example', account),
+    attach: (account, insecureTls = false) => queue.attach(context, connector, 'https://nas.example', account, () => true, insecureTls),
+    setPhotoUpload: action => { photoUpload = action; },
     setFailIdSave: () => { failIdSave = true; }, setStopFailure: () => { stopFailure = true; },
     setCreateFailure: value => { createFailure = value; },
     setReadFailure: value => { readFailure = value; }, setClearFailure: value => { clearFailure = value; },
@@ -222,6 +231,110 @@ test('task ID reaches durable storage before start; multipart file is last and c
     assert.doesNotMatch(snapshot, /PRIVATE-SID|PRIVATE-TOKEN|Cookie|file:\/\/selected|webapi/);
   }
   f.queue.detach();
+});
+
+test('Photos queue uses its own protocol, pauses and resumes the same automatic task, and confirms only the Photos receipt', async () => {
+  const f = fixture(); await f.attach('alice');
+  await f.queue.setBackupAllowed(true);
+  await f.queue.uploadPhotos('/home/Photos/MobileBackup/Phone', [{ uri: 'selected', name: '照片.jpg', bytes: 37,
+    folderId: 12, modifiedAt: 1704067200, wifiOnly: true, backupKey: 'asset-version-target' }], true);
+  const task = f.tasks.get('100');
+  assert.equal(task.config.network, 1); assert.equal(task.config.metered, true);
+  assert.equal(task.config.data[0].value, 'SYNO.Foto.Upload.Item'); assert.equal(task.config.data.at(-1).name, 'file');
+  await f.queue.setBackupAllowed(false); assert.equal(task.state, f.State.PAUSED);
+  await f.queue.setBackupAllowed(true); assert.equal(task.state, f.State.RUNNING);
+  assert.equal(f.calls.filter(call => call.startsWith('create:')).length, 1);
+  const completed = [];
+  f.queue.backupCompleted = async key => { completed.push(key); };
+  task.state = f.State.COMPLETED; task.body = '{"success":true,"data":{}}';
+  task.handlers.get('response')({ statusCode: 200, headers: new Map() }); await new Promise(resolve => setImmediate(resolve));
+  await f.queue.reconcile(); assert.equal(f.queue.items[0].state, 'completed');
+  assert.deepEqual(completed, ['asset-version-target']); assert.ok(!f.calls.includes('hash'));
+  f.queue.detach();
+});
+
+test('Photos certificate exception uses the current connection upload and completes only after its receipt', async () => {
+  const f = fixture(); await f.attach('alice', true);
+  let complete;
+  f.setPhotoUpload((folder, name, modified, source) => {
+    assert.equal(folder, 12); assert.equal(name, '照片.jpg'); assert.equal(modified, 1704067200);
+    assert.equal(source.bytes, 37); assert.ok(source.path.startsWith('/files/transfers/'));
+    return new Promise(resolve => { complete = resolve; });
+  });
+  await f.queue.uploadPhotos('/home/Photos/PhotoLibrary/2024/01', [{ uri: 'selected', name: '照片.jpg', bytes: 37,
+    folderId: 12, modifiedAt: 1704067200, wifiOnly: false }], false);
+  assert.equal(f.tasks.size, 0); assert.equal(f.queue.items[0].state, 'running');
+  await f.queue.reconcile(); assert.equal(f.queue.items[0].state, 'running');
+  complete({ status: 200, text: '{"success":true,"data":{}}' });
+  await new Promise(resolve => setImmediate(resolve)); await f.queue.tail;
+  assert.equal(f.queue.items[0].state, 'completed');
+  const saved = [...f.snapshots.values()].join('');
+  assert.doesNotMatch(saved, /PRIVATE-SID|PRIVATE-TOKEN|entry.cgi/);
+  f.queue.detach();
+});
+
+test('Photos connection upload rejects DSM failure and freezes missing or malformed receipts', async () => {
+  for (const [reply, expected] of [
+    [{ status: 200, text: '{"success":false,"error":{"code":119}}' }, 'failed'],
+    [{ status: 200, text: '<html>login</html>' }, 'unknown'],
+    [{ status: 502, text: 'gateway' }, 'unknown'],
+  ]) {
+    const f = fixture(); await f.attach('alice', true); f.setPhotoUpload(async () => reply);
+    await f.queue.uploadPhotos('/home/Photos', [{ uri: 'selected', name: '照片.jpg', bytes: 37,
+      folderId: 12, modifiedAt: 1704067200, wifiOnly: false }], false);
+    await new Promise(resolve => setImmediate(resolve)); await f.queue.tail;
+    assert.equal(f.queue.items[0].state, expected); assert.equal(f.queue.items[0].canRetry, expected === 'failed');
+    f.queue.detach();
+  }
+});
+
+test('interrupted connection upload restores as unknown and never submits a second request', async () => {
+  const f = fixture(); await f.attach('alice', true);
+  f.setPhotoUpload((folder, name, modified, source, control) => new Promise((resolve, reject) => {
+    control.cancellation.subscribe(() => reject(new protocol.NasFailure(protocol.NasErrorKind.Cancelled, '已取消')));
+  }));
+  await f.queue.uploadPhotos('/home/Photos', [{ uri: 'selected', name: '照片.jpg', bytes: 37,
+    folderId: 12, modifiedAt: 1704067200, wifiOnly: false }], false);
+  await f.attach('alice', true);
+  assert.equal(f.queue.items[0].state, 'unknown'); assert.equal(f.queue.items[0].canRetry, false);
+  assert.equal(f.calls.filter(call => call === 'photo-rcp').length, 1); assert.equal(f.tasks.size, 0);
+  f.queue.detach();
+});
+
+test('cancel interrupts the active connection upload while keeping its result pending verification', async () => {
+  const f = fixture(); await f.attach('alice', true);
+  let interrupted = false;
+  f.setPhotoUpload((folder, name, modified, source, control) => new Promise((resolve, reject) => {
+    control.cancellation.subscribe(() => { interrupted = true; reject(new protocol.NasFailure(protocol.NasErrorKind.Cancelled, '已取消')); });
+  }));
+  await f.queue.uploadPhotos('/home/Photos', [{ uri: 'selected', name: '照片.jpg', bytes: 37,
+    folderId: 12, modifiedAt: 1704067200, wifiOnly: false }], false);
+  await f.queue.cancel(f.queue.items[0].id);
+  await new Promise(resolve => setImmediate(resolve)); await f.queue.tail;
+  assert.equal(interrupted, true); assert.equal(f.queue.items[0].state, 'unknown');
+  assert.equal(f.queue.items[0].canRetry, false); f.queue.detach();
+});
+
+test('only SSL failure before any sent bytes or HTTP response is eligible for explicit retry', async () => {
+  for (const [faults, processed, httpStatus, expected] of [[112, 0, 0, 'failed'], [112, 1, 0, 'unknown'], [112, 0, 200, 'unknown'], [255, 0, 0, 'unknown']]) {
+    const f = fixture(); await f.attach('alice');
+    await f.queue.uploadPhotos('/home/Photos', [{ uri: 'selected', name: '照片.jpg', bytes: 37,
+      folderId: 12, modifiedAt: 1704067200, wifiOnly: false }], false);
+    const task = f.tasks.get('100'); task.state = f.State.FAILED; task.faults = faults; task.processed = processed;
+    f.queue.session.records[0].httpStatus = httpStatus;
+    await f.queue.reconcile(); assert.equal(f.queue.items[0].state, expected);
+    assert.equal(f.queue.items[0].canRetry, expected === 'failed'); f.queue.detach();
+  }
+});
+
+test('Photos recovery without a receipt remains unknown, even when a File Station checksum could match', async () => {
+  const f = fixture(); await f.attach('alice'); f.setChecksum();
+  await f.queue.uploadPhotos('/home/Photos/PhotoLibrary/2024/01', [{ uri: 'selected', name: '照片.jpg', bytes: 37,
+    folderId: 12, modifiedAt: 1704067200, wifiOnly: false }], false);
+  assert.equal(f.tasks.get('100').config.metered, true);
+  f.tasks.get('100').state = f.State.COMPLETED;
+  await f.queue.reconcile(); assert.equal(f.queue.items[0].state, 'unknown');
+  assert.ok(!f.calls.some(call => call.startsWith('checksum:'))); f.queue.detach();
 });
 
 test('failed task-ID persistence removes the unstarted system task', async () => {

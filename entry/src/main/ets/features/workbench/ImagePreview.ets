@@ -32,6 +32,8 @@ export struct ImagePreview {
   @Param canDownload: boolean = true;
   @Param video: boolean = false;
   @Param photos: boolean = false;
+  @Param controlsVisible: boolean = true;
+  @Param navigationInset: number = 0;
   @Param itemKey: string = '';
   @Param canNavigate: boolean = true;
   @Param favorite: boolean = false;
@@ -48,6 +50,7 @@ export struct ImagePreview {
   @Event onDecodeError: () => void = (): void => {};
   @Event onViewport: (width: number, height: number) => void = (): void => {};
   @Event onRefine: (scale: number) => void = (): void => {};
+  @Event onToggleControls: () => void = (): void => {};
   @Local scaleValue: number = 1;
   @Local initialScale: number = 1;
   @Local offsetX: number = 0;
@@ -115,7 +118,7 @@ export struct ImagePreview {
       Stack({ alignContent: Alignment.Center }) {
         if (this.source !== '') {
           if (this.video && this.original && typeof this.source === 'string') {
-            Video({ src: this.source }).width('100%').height('100%').autoPlay(false).controls(true)
+            Video({ src: this.source }).width('100%').height('100%').autoPlay(false).controls(this.controlsVisible)
               .onError((): void => { this.onDecodeError(); })
           } else {
             Image(this.source).width('100%').height('100%').objectFit(ImageFit.Contain)
@@ -124,8 +127,8 @@ export struct ImagePreview {
               .accessibilityText(this.name).onError((): void => { this.onDecodeError(); })
           }
         }
-        if (this.busy) { LoadingProgress().width(32).height(32).align(Alignment.Center).hitTestBehavior(HitTestMode.None) }
-        else if (this.source === '' && this.errorText.length === 0) {
+        if (this.busy && this.controlsVisible) { LoadingProgress().width(32).height(32).align(Alignment.Center).hitTestBehavior(HitTestMode.None) }
+        else if (this.controlsVisible && this.source === '' && this.errorText.length === 0) {
           Text($r('app.string.preview_unavailable')).fontColor($r('sys.color.font_secondary'))
         }
       }.width('100%').layoutWeight(1).clip(true)
@@ -152,11 +155,14 @@ export struct ImagePreview {
                 this.onNavigate(event.offsetX < 0 ? 1 : -1);
               }
             }),
-          TapGesture({ count: 2 }).onAction((): void => { this.resetView(); this.onRefine(1); })
+          GestureGroup(GestureMode.Exclusive,
+            TapGesture({ count: 2 }).onAction((): void => { this.resetView(); this.onRefine(1); }),
+            TapGesture({ count: 1 }).onAction((): void => { if (this.photos) { this.onToggleControls(); } })
+          )
         ))
-      WorkbenchNotice({ text: this.errorText, warning: true })
-    // 悬浮栏不占布局空间，图片视口需让出栏高及底部间距才能在操作区之间居中。
-    }.width('100%').height('100%').padding({ bottom: 68 })
+      if (this.controlsVisible) { WorkbenchNotice({ text: this.errorText, warning: true }) }
+    // 照片在悬浮控件下保持完整比例，文件预览沿用原有操作区间距。
+    }.width('100%').height('100%').padding({ bottom: this.photos ? 0 : 68 })
   }
 
   @Builder
@@ -176,17 +182,25 @@ export struct ImagePreview {
     }.padding({ left: 4, right: 4 }).width(224).height(48).justifyContent(FlexAlign.Center)
   }
 
-  build() {
-    // 预览内容直接复用主页面的悬浮底栏，按钮仅执行操作，不切换内容。
+  @Builder
+  previewTabs() {
     HdsTabs({ index: 0 }) {
-      TabContent() { this.content() }.tabBar(this.actionBar())
-    }.width('100%').height('100%').barPosition(BarPosition.End).scrollable(false)
+      TabContent() { if (!this.photos) { this.content() } }.tabBar(this.actionBar())
+    }.width('100%').height(this.photos ? 68 + this.navigationInset : '100%').barPosition(BarPosition.End).scrollable(false)
       .barOverlap(true).vertical(false).barHeight(56)
-      .barFloatingStyle({ barWidth: { smallWidth: 224, mediumWidth: 224, largeWidth: 224 }, barBottomMargin: 12,
+      .barFloatingStyle({ barWidth: { smallWidth: 224, mediumWidth: 224, largeWidth: 224 }, barBottomMargin: this.photos ? this.navigationInset : 12,
         gradientMask: { maskColor: Color.Transparent, maskHeight: 0 },
         systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE },
         thermoCtrl: true })
-      .backgroundColor($r('app.color.workbench_background'))
+      .backgroundColor(this.photos ? Color.Transparent : $r('app.color.workbench_background'))
+  }
+
+  build() {
+    // 照片视口独立于操作栏，隐藏控件不会重建图片或改变缩放。
+    Stack({ alignContent: Alignment.Bottom }) {
+      if (this.photos) { this.content() }
+      if (!this.photos || this.controlsVisible) { this.previewTabs() }
+    }.width('100%').height('100%')
       .bindSheet($$this.infoVisible, this.details(), { height: SheetSize.FIT_CONTENT,
         title: { title: $r('app.string.preview_information') }, showClose: true,
         backgroundColor: this.materialAvailable ? Color.Transparent : $r('app.color.workbench_surface'), systemMaterial: this.material })

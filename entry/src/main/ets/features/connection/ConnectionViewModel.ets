@@ -11,6 +11,8 @@ import { SharedUploadFile, SharedUploadInbox, sharedUploadInbox } from '../shari
 import { FileTaskStore } from './FileTaskStore';
 import { util } from '@kit.ArkTS';
 import { PhotoLibrary } from '../photos/PhotoLibrary';
+import { PhotoUpload } from '../photos/PhotoUpload';
+import { AutomaticPhotoBackup } from '../backup/AutomaticPhotoBackup';
 import { TelemetryMonitor } from '../telemetry/TelemetryMonitor';
 import { ConnectionAddressBook } from './ConnectionAddressBook';
 import { SystemControlModel } from '../control/SystemControlModel';
@@ -62,6 +64,7 @@ export class ConnectionViewModel {
   readonly queue: TransferQueue = new TransferQueue();
   readonly sharedInbox: SharedUploadInbox = sharedUploadInbox;
   readonly photoLibrary: PhotoLibrary = new PhotoLibrary();
+  readonly photoBackup: AutomaticPhotoBackup = new AutomaticPhotoBackup();
   readonly telemetry: TelemetryMonitor = new TelemetryMonitor();
   readonly addressBook: ConnectionAddressBook = new ConnectionAddressBook();
   readonly systemControl: SystemControlModel = new SystemControlModel();
@@ -906,11 +909,20 @@ export class ConnectionViewModel {
     if (ticket !== this.generation) { return; }
     await this.attachFileTasks();
     if (ticket !== this.generation) { return; }
-    try { await this.queue.attach(this.context, connector, this.address, this.account.trim(),
-      (): boolean => ticket === this.generation && connector === this.connector && this.canWriteAccount('transferQueue')); }
+    try {
+      await this.queue.attach(this.context, connector, this.address, this.account.trim(),
+        (): boolean => ticket === this.generation && connector === this.connector && this.canWriteAccount('transferQueue'), this.insecureTls);
+      if (ticket !== this.generation) { return; }
+      await this.photoBackup.attach(this.context, connector, this.queue, this.address, this.account.trim());
+    }
     catch (error) {
       this.errorText = error instanceof NasFailure ? error.message : '无法读取传输记录，请在任务页重试。';
     }
+  }
+
+  async submitPhotoUpload(upload: PhotoUpload): Promise<void> {
+    if (this.connector === undefined || !this.authenticated || this.busy) { return; }
+    await upload.submit(this.connector, this.queue);
   }
 
   private async attachFileTasks(): Promise<void> {
@@ -982,6 +994,7 @@ export class ConnectionViewModel {
       this.sessionTransition = false;
       return;
     }
+    this.photoBackup.detach();
     this.queue.detach();
     const oldConnector = this.connector;
     this.connector = undefined;
@@ -1058,6 +1071,7 @@ export class ConnectionViewModel {
   dispose(): void {
     this.addressBook.dispose();
     this.generation++;
+    this.photoBackup.detach();
     this.queue.detach();
 
     this.connector?.close();
@@ -1113,6 +1127,7 @@ export class ConnectionViewModel {
     this.deviceModel = '';
     this.deviceName = '';
     this.telemetry.detach();
+    this.photoBackup.detach();
     this.queue.detach();
     this.drive.detach();
     this.driveTransfers.detach();

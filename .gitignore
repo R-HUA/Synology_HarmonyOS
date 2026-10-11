@@ -18,3 +18,4 @@
 *.cer
 /build-profile.json5
 /docs/
+/.codex-remote-attachments/

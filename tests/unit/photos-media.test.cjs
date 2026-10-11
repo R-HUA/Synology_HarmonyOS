@@ -25,6 +25,31 @@ const { PhotosSpace: S } = photos;
 const isKind = kind => error => error instanceof NasFailure && error.kind === kind;
 const failure = kind => new NasFailure(kind, '失败');
 const turn = () => new Promise(resolve => setImmediate(resolve));
+test('photo properties retain available values and allow images without camera metadata', async () => {
+  for (const properties of [{ MAKE: '相机', MODEL: '型号' }, {}]) {
+    let released = false;
+    const keys = new Proxy({}, { get: (_, key) => key });
+    const { readPhotoExif } = load('platform/PhotoExif.ets', { '@kit.ImageKit': { image: {
+      PropertyKey: keys, createImageSource: () => ({
+        async getImageProperty(key, options) { assert.equal(options.defaultValue, ' '); assert.equal(options.index, 0); return properties[key] || options.defaultValue; },
+        async release() { released = true; }
+      })
+    } } });
+    assert.deepEqual(JSON.parse(JSON.stringify(await readPhotoExif('/cache/original'))), properties);
+    assert.equal(released, true);
+  }
+});
+test('photo property read errors remain visible and release the image source', async () => {
+  let released = false;
+  const expected = new Error('读取失败');
+  const { readPhotoExif } = load('platform/PhotoExif.ets', { '@kit.ImageKit': { image: {
+    PropertyKey: new Proxy({}, { get: (_, key) => key }), createImageSource: () => ({
+      async getImageProperty() { throw expected; }, async release() { released = true; }
+    })
+  } } });
+  await assert.rejects(readPhotoExif('/cache/original'), error => error === expected);
+  assert.equal(released, true);
+});
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 const jpeg = new Uint8Array([255, 216, 255, 224, 0, 0, 0, 0]);
 const item = id => ({ id, space: S.Personal, filename: '照片-' + id + '.jpg', bytes: 8,
@@ -242,6 +267,7 @@ function storeFixture(globals = {}) {
   const disk = storage(); const jobs = []; let id = 1, concurrent = 0, maximum = 0, changed = 0;
   const diagnostics = []; let honourCancellation = true;
   let destinations = [], copyFailure, copies = 0;
+  const galleryCalls = [];
   class MockTransport {
     closed = false;
     async downloadMedia(plan, destination, thumbnail, expected, current) {
@@ -259,7 +285,11 @@ function storeFixture(globals = {}) {
   const connector = { photoThumbnailPlan: item => ({ ...plan(), itemId: item.id }), photoOriginalPlan: () => plan('SYNO.Foto.Download'),
     async photoMediaFailure(error) { throw error; } };
   const { PhotoMediaStore } = load('features/photos/PhotoMediaStore.ets', {
-    '@kit.CoreFileKit': { fileIo: disk.io, picker: { DocumentSaveOptions: class {}, DocumentViewPicker: class { async save() { return destinations; } } } },
+    '@kit.CoreFileKit': { fileIo: disk.io, fileUri: { getUriFromPath: path => 'file://' + path },
+      picker: { DocumentSaveOptions: class {}, DocumentViewPicker: class { async save() { return destinations; } } } },
+    '@kit.MediaLibraryKit': { photoAccessHelper: { PhotoType: { IMAGE: 1, VIDEO: 2 }, getPhotoAccessHelper() { return {
+      async showAssetsCreationDialog(uris, configs) { galleryCalls.push({ uris, configs }); return typeof destinations === 'function' ? destinations(uris, configs) : destinations; }, async release() {},
+    }; } } },
     '@kit.ArkTS': { util: { generateRandomUUID: () => '11111111-1111-4111-8111-' + String(id++).padStart(12, '0') } },
     '@kit.PerformanceAnalysisKit': { hilog: { error(...args) { diagnostics.push(args); } } }, '../../core/domain/DsmProtocol': dsm,
     '../../core/domain/PhotosProtocol': photos, '../../core/network/RcpNasTransport': { RcpNasTransport: MockTransport },
@@ -270,7 +300,7 @@ function storeFixture(globals = {}) {
     } },
   }, globals);
   const store = new PhotoMediaStore(); store.attach({ cacheDir: '/cache/alice' }, connector, () => { changed++; });
-  return { store, jobs, disk, connector, PhotoMediaStore, diagnostics,
+  return { store, jobs, disk, connector, PhotoMediaStore, diagnostics, galleryCalls,
     ignoreCancellation: () => { honourCancellation = false; }, max: () => maximum, change: () => changed,
     select: value => { destinations = value; }, failCopy: value => { copyFailure = value; }, copies: () => copies };
 }
@@ -289,6 +319,28 @@ test('a failed cache directory creation is not reused on the next thumbnail atte
   fixture.jobs[0].gate.resolve(8);
   await next;
   fixture.store.reset();
+});
+
+test('bulk originals save in gallery batches of at most 100, with individual source files and no ZIP', async () => {
+  const f = storeFixture(); f.select(uris => uris.map((_, i) => 'file://gallery/' + i));
+  const saving = f.store.saveToGallery(Array.from({ length: 101 }, (_, i) => item(i)));
+  for (let i = 0; i < 101; i++) { await turn(); assert.ok(f.jobs[i]); f.jobs[i].gate.resolve(8); }
+  assert.equal(await saving, 101);
+  assert.deepEqual(f.galleryCalls.map(call => call.uris.length), [100, 1]);
+  assert.equal(f.copies(), 101); assert.equal(f.max(), 1);
+  assert.ok(f.galleryCalls.every(call => call.configs.every(config => config.fileNameExtension === 'jpg')));
+  f.store.reset();
+});
+
+test('gallery cancellation copies nothing and partial URI rejection reports saved and failed counts', async () => {
+  const f = storeFixture();
+  const cancelled = f.store.saveToGallery([item(1)]); await turn(); f.jobs[0].gate.resolve(8);
+  assert.equal(await cancelled, 0); assert.equal(f.copies(), 0);
+  f.select(['file://gallery/one', '-2004']);
+  const partial = f.store.saveToGallery([item(2), item(3)]);
+  await turn(); f.jobs[1].gate.resolve(8); await turn(); f.jobs[2].gate.resolve(8);
+  await assert.rejects(partial, error => /已保存 1 项，1 项保存失败/.test(error.message));
+  assert.equal(f.copies(), 1); f.store.reset();
 });
 
 test('thumbnail work is deduplicated, capped at three active requests and caches stay bounded by count and bytes', async () => {

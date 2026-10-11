@@ -2,7 +2,7 @@ import { decodeNasResponse, dsmFailure, NasErrorKind, NasFailure, nasInteger, na
   validateLogicalPath } from './DsmProtocol';
 
 export type TransferDirection = 'upload' | 'download';
-export type TransferSource = 'fileUpload' | 'shareUpload' | 'photoBackup' | 'download' | 'legacy';
+export type TransferSource = 'fileUpload' | 'shareUpload' | 'photoUpload' | 'photoBackup' | 'download' | 'legacy';
 export type TransferState = 'preparing' | 'queued' | 'creating' | 'running' | 'waiting' |
   'verifying' | 'completed' | 'failed' | 'unknown' | 'cancelled' | 'closed' | 'clearing';
 
@@ -32,6 +32,11 @@ export interface TransferQueueRecord {
   localMd5: string;
   checksumTaskId: string;
   systemCompleted: boolean;
+  protocol?: 'photos';
+  photoFolderId?: number;
+  photoModifiedAt?: number;
+  photoWifiOnly?: boolean;
+  backupKey?: string;
 }
 
 export interface TransferQueueItem {
@@ -50,6 +55,7 @@ export interface TransferQueueItem {
   canExport: boolean;
   canClose: boolean;
   canRemove: boolean;
+  backupKey?: string;
 }
 
 export interface TransferQueueSnapshot { version: number; scope: string; records: TransferQueueRecord[]; }
@@ -125,7 +131,7 @@ export function transferItem(record: TransferQueueRecord): TransferQueueItem {
     bytes: record.bytes, processed: record.processed, state: record.state, stateText: text,
     errorText: record.errorText, canCancel: !['completed', 'cancelled', 'failed', 'unknown', 'closed', 'clearing'].includes(record.state),
     canRetry: transferCanRetry(record), canExport: record.direction === 'download' && record.state === 'completed',
-    canClose: record.direction === 'upload' && record.state === 'unknown', canRemove: transferCanRemove(record) };
+    canClose: record.direction === 'upload' && record.state === 'unknown', canRemove: transferCanRemove(record), backupKey: record.backupKey };
 }
 
 export function decodeTransferQueue(text: string, scope: string): TransferQueueRecord[] {
@@ -152,7 +158,7 @@ export function decodeTransferQueue(text: string, scope: string): TransferQueueR
     const systemCompleted = row['systemCompleted'] === undefined ? false : row['systemCompleted'];
     if (!/^[0-9a-f-]{36}$/.test(id) || ids.includes(id) ||
       !['upload', 'download'].includes(direction as string) ||
-      !['fileUpload', 'shareUpload', 'photoBackup', 'download', 'legacy'].includes(source as string) ||
+      !['fileUpload', 'shareUpload', 'photoUpload', 'photoBackup', 'download', 'legacy'].includes(source as string) ||
       direction === 'download' && source !== 'download' && source !== 'legacy' || direction === 'upload' && source === 'download' ||
       !['preparing', 'queued', 'creating', 'running', 'waiting', 'verifying', 'completed', 'failed', 'unknown', 'cancelled', 'closed', 'clearing'].includes(state as string) ||
       localName !== id + '-' + attempts.toString() + '.bin' || attempts < 1 ||
@@ -168,6 +174,10 @@ export function decodeTransferQueue(text: string, scope: string): TransferQueueR
     ids.push(id);
     const httpStatus = nasInteger(row['httpStatus']);
     if (httpStatus !== 0 && (httpStatus < 100 || httpStatus > 599)) { throw invalidRecord(); }
+    if (row['protocol'] !== undefined && (row['protocol'] !== 'photos' || direction !== 'upload' ||
+      !Number.isSafeInteger(row['photoFolderId']) || (row['photoFolderId'] as number) < 0 ||
+      !Number.isSafeInteger(row['photoModifiedAt']) || (row['photoModifiedAt'] as number) <= 0 || typeof row['photoWifiOnly'] !== 'boolean')) { throw invalidRecord(); }
+    if (row['backupKey'] !== undefined && (typeof row['backupKey'] !== 'string' || source !== 'photoBackup' || row['protocol'] !== 'photos')) { throw invalidRecord(); }
     return { id: id, direction: direction as TransferDirection, source: source as TransferSource, name: validateTransferName(nasString(row['name'])),
       remotePath: validateLogicalPath(nasString(row['remotePath'])), bytes: nasInteger(row['bytes']),
       localName: localName, localReady: row['localReady'] as boolean, state: state as TransferState,
@@ -176,14 +186,17 @@ export function decodeTransferQueue(text: string, scope: string): TransferQueueR
       attachmentName: attachmentName as string,
       processed: nasInteger(row['processed']), createdAt: nasInteger(row['createdAt']),
       updatedAt: nasInteger(row['updatedAt']), errorText: errorText as string, contentVerified: contentVerified as boolean,
-      localMd5: localMd5 as string, checksumTaskId: checksumTaskId as string, systemCompleted: systemCompleted as boolean };
+      localMd5: localMd5 as string, checksumTaskId: checksumTaskId as string, systemCompleted: systemCompleted as boolean,
+      protocol: row['protocol'] as 'photos' | undefined, photoFolderId: row['photoFolderId'] as number | undefined,
+      photoModifiedAt: row['photoModifiedAt'] as number | undefined, photoWifiOnly: row['photoWifiOnly'] as boolean | undefined,
+      backupKey: row['backupKey'] as string | undefined };
   });
 }
 
 /** 缺少响应不能以系统 completed 或同名同大小文件推断上传成功。 */
-export function acceptTransferUpload(status: number, body: string): void {
+export function acceptTransferUpload(status: number, body: string, photos: boolean = false): void {
   if (status !== 200) { throw new NasFailure(NasErrorKind.Http, '上传 HTTP 响应未成功，结果待确认。', status); }
-  decodeNasResponse('SYNO.FileStation.Upload', status, body);
+  decodeNasResponse(photos ? 'SYNO.Foto.Upload.Item' : 'SYNO.FileStation.Upload', status, body);
 }
 
 /** RFC 5987 文件名优先；返回空串表示未取得可核对的附件文件名。 */

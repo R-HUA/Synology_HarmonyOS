@@ -49,7 +49,7 @@ export function supportsPhotos(supports: (api: string) => boolean): boolean {
 }
 
 export function supportsPhotoBackup(supports: (api: string) => boolean): boolean {
-  return supportsPhotos(supports) && supports('SYNO.FileStation.Upload');
+  return supports('SYNO.Foto.Browse.Item') && supports('SYNO.Foto.Upload.Item') && supports('SYNO.Foto.Browse.Folder');
 }
 
 export function photoTabs(supports: (api: string) => boolean, showShared: boolean, pinned: string[]): ModuleTab[] {

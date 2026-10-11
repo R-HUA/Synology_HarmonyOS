@@ -1,12 +1,12 @@
 import { util } from '@kit.ArkTS';
 import { NasPhotoAlbum, NasPhotoItem, PhotosSpace } from '../../core/domain/PhotosProtocol';
-import { PhotoBackup, PhotoBackupSource } from '../backup/PhotoBackup';
+import { PhotoBackupSettingsPage } from '../backup/PhotoBackupSettingsPage';
 import { ConnectionViewModel } from '../connection/ConnectionViewModel';
 import { PhotoLibrary, PhotoLibrarySection } from './PhotoLibrary';
 import { PhotoThumbnailCell } from './PhotoThumbnailCell';
 import { PhotoAlbumRow, PhotoTimelineRow, photoAlbumColumns, photoAlbumRows, photoGridColumns,
-  photoTimelineRows, workbenchBytes } from '../workbench/WorkbenchPresentation';
-import { WorkbenchActionRow, WorkbenchChoice, WorkbenchIconTile, WorkbenchMetrics, WorkbenchNotice,
+  photoTimelineRows } from '../workbench/WorkbenchPresentation';
+import { WorkbenchActionRow, WorkbenchChoice, WorkbenchMetrics, WorkbenchNotice,
   WorkbenchSectionTitle } from '../workbench/WorkbenchUi';
 import { supportsPhotoBackup } from '../workbench/ModuleNavigation';
 import { ExtensionStatusPanel } from '../extensions/ExtensionStatusPanel';
@@ -14,7 +14,6 @@ import { ExtensionStatusPanel } from '../extensions/ExtensionStatusPanel';
 @ComponentV2
 export struct PhotoModulePage {
   @Param model: ConnectionViewModel = new ConnectionViewModel();
-  @Param backup: PhotoBackup = new PhotoBackup();
   @Param tabId: string = 'photos';
   @Param scroller: Scroller = new Scroller();
   @Param topInset: number = 0;
@@ -27,9 +26,8 @@ export struct PhotoModulePage {
   @Param showTransfersInMore: boolean = true;
   @Event onSelectSpace: (space: PhotosSpace) => void = (_space: PhotosSpace): void => {};
   @Event onOpenPhoto: (item: NasPhotoItem) => void = (_item: NasPhotoItem): void => {};
-  @Event onSelectBackup: () => void = (): void => {};
-  @Event onChooseBackup: () => void = (): void => {};
-  @Event onShowBackupContents: () => void = (): void => {};
+  @Event onChooseBackupDirectory: () => void = (): void => {};
+  @Event onOpenBackup: () => void = (): void => {};
   @Event onOpenTransfers: () => void = (): void => {};
   @Event onOpenShared: () => void = (): void => {};
   @Event onCustomize: () => void = (): void => {};
@@ -159,10 +157,6 @@ export struct PhotoModulePage {
       this.model.photoLibrary.selectedAlbum !== undefined) ? this.model.photoLibrary.items : [];
   }
 
-  private backupSize(): string {
-    return workbenchBytes(this.backup.sources.reduce((bytes: number, item: PhotoBackupSource): number => bytes + item.bytes, 0));
-  }
-
   @Builder
   emptyState(title: string, description: string) {
     Column({ space: 8 }) {
@@ -184,49 +178,7 @@ export struct PhotoModulePage {
   @Builder
   backupCard() {
     if (supportsPhotoBackup((api: string): boolean => this.model.supports(api))) {
-      if (this.backup.sources.length === 0) {
-        Column() {
-          WorkbenchActionRow({ icon: $r('sys.symbol.arrow_up_circle'), label: '照片备份',
-            available: this.active && !this.backup.selecting && !this.backup.submitting && !this.model.busy,
-            onAction: (): void => { this.onSelectBackup(); } })
-          WorkbenchNotice({ text: this.backup.errorText, warning: true })
-          WorkbenchNotice({ text: this.backup.status })
-        }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).clip(true).backgroundColor($r('app.color.workbench_surface'))
-      } else {
-        Column({ space: WorkbenchMetrics.itemGap }) {
-          Row({ space: WorkbenchMetrics.itemGap }) {
-            WorkbenchIconTile({ icon: $r('sys.symbol.arrow_up_circle'), iconSize: 22, tileSize: 40,
-              tileRadius: WorkbenchMetrics.innerRadius, iconColor: $r('sys.color.icon_emphasize'),
-              tileColor: $r('app.color.workbench_subtle') })
-            Column({ space: 2 }) {
-              Text('备份照片与视频').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
-              Text('已选择 ' + this.backup.sources.length.toString() + ' 项 · ' + this.backupSize() + '，等待确认')
-                .fontSize(14).fontColor($r('sys.color.font_secondary'))
-            }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-          }.width('100%')
-          WorkbenchNotice({ text: this.backup.errorText, warning: true })
-          WorkbenchNotice({ text: this.backup.status })
-          Flex({ wrap: FlexWrap.Wrap }) {
-            Button(this.backup.selecting ? '正在选择…' : '继续选择')
-              .constraintSize({ minHeight: WorkbenchMetrics.touchSize })
-              .enabled(this.active && !this.backup.selecting && !this.backup.submitting && !this.model.busy)
-              .onClick((): void => { this.onSelectBackup(); })
-            Button('选择备份位置').constraintSize({ minHeight: WorkbenchMetrics.touchSize })
-              .buttonStyle(ButtonStyleMode.TEXTUAL).enabled(this.active && !this.backup.submitting && !this.backup.selecting)
-              .onClick((): void => { this.onChooseBackup(); })
-            Button('清空选择').constraintSize({ minHeight: WorkbenchMetrics.touchSize })
-              .buttonStyle(ButtonStyleMode.TEXTUAL).enabled(this.active && !this.backup.submitting)
-              .onClick((): void => { this.backup.clear(); })
-          }.width('100%')
-          Text(this.backup.sources.map((item: PhotoBackupSource): string => item.name).join('、'))
-            .fontSize(12).maxLines(3).textOverflow({ overflow: TextOverflow.Ellipsis })
-            .fontColor($r('sys.color.font_secondary')).width('100%')
-          Button('查看所选内容').constraintSize({ minHeight: WorkbenchMetrics.touchSize })
-            .buttonStyle(ButtonStyleMode.TEXTUAL).enabled(this.active)
-            .onClick((): void => { this.onShowBackupContents(); })
-        }.width('100%').padding(WorkbenchMetrics.pageMargin).borderRadius(WorkbenchMetrics.innerRadius)
-          .backgroundColor($r('app.color.workbench_surface'))
-      }
+      PhotoBackupSettingsPage({ backup: this.model.photoBackup, onChooseDirectory: (): void => { this.onChooseBackupDirectory(); } })
     } else if (this.tabId === 'backup') {
       this.emptyState('照片备份暂不可用', '当前账号未提供可用的文件上传服务。')
     }
@@ -244,8 +196,13 @@ export struct PhotoModulePage {
   @Builder
   photoCard(item: NasPhotoItem) {
     PhotoThumbnailCell({ item: item, library: this.model.photoLibrary,
-      state: this.model.photoLibrary.thumbnailState(item), available: this.canShowLibrary(),
-      onOpen: (photo: NasPhotoItem): void => { if (this.canShowLibrary()) { this.onOpenPhoto(photo); } } }).layoutWeight(1)
+      state: this.model.photoLibrary.thumbnailState(item), available: this.canShowLibrary() && !this.model.photoLibrary.selectionBusy && !this.model.extensions.busy,
+      selecting: this.model.photoLibrary.selecting, selected: this.model.photoLibrary.isSelected(item),
+      onOpen: (photo: NasPhotoItem): void => {
+        if (!this.canShowLibrary()) { return; }
+        if (this.model.photoLibrary.selecting) { this.model.photoLibrary.toggleSelection(photo); }
+        else { this.onOpenPhoto(photo); }
+      } }).layoutWeight(1)
   }
 
   @Builder
@@ -286,7 +243,7 @@ export struct PhotoModulePage {
         if (this.model.photoLibrary.selectedAlbum !== undefined) {
           Row({ space: 8 }) {
             Button() {
-              SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(20).fontColor([$r('sys.color.icon_primary')])
+              SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(24).fontColor([$r('sys.color.font_primary')])
             }.width(48).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).type(ButtonType.Normal)
               .padding(0).backgroundColor(Color.Transparent).accessibilityText('返回相册').enabled(!this.model.photoLibrary.busy)
               .onClick((): void => {
@@ -302,6 +259,7 @@ export struct PhotoModulePage {
           WorkbenchSectionTitle({ title: '与你共享的相册' })
         }
         WorkbenchNotice({ text: this.model.photoLibrary.thumbnailErrorText })
+        WorkbenchNotice({ text: this.model.photoLibrary.selectionNotice })
         if (this.model.photoLibrary.errorText.length > 0) {
           WorkbenchNotice({ text: this.model.photoLibrary.errorText, warning: true })
           Button('重试读取').constraintSize({ minHeight: WorkbenchMetrics.touchSize })
@@ -324,8 +282,11 @@ export struct PhotoModulePage {
             .onClick((): void => { this.model.extensions.refreshPhotoTask(); })
         }
       }
-      if (this.showBackupInMore) { this.backupCard() }
       Column() {
+        if (this.showBackupInMore && supportsPhotoBackup((api: string): boolean => this.model.supports(api))) {
+          WorkbenchActionRow({ icon: $r('sys.symbol.arrow_up_circle'), label: this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.photos_album_backup').id),
+            available: this.active, onAction: (): void => { this.onOpenBackup(); } })
+        }
         if (this.showTransfersInMore) {
           WorkbenchActionRow({ icon: $r('sys.symbol.arrow_down_circle'), label: '传输任务', available: this.active,
             onAction: (): void => { this.onOpenTransfers(); } })

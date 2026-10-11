@@ -59,6 +59,10 @@ export class PhotoLibrary {
   @Trace actionFolders: PhotoFolder[] = [];
   @Trace targetsBusy: boolean = false;
   @Trace targetsError: string = '';
+  @Trace selecting: boolean = false;
+  @Trace selectedKeys: string[] = [];
+  @Trace selectionBusy: boolean = false;
+  @Trace selectionNotice: string = '';
   private thumbnails: Map<string, PhotoThumbnailState> = new Map();
   private itemByKey: Map<string, NasPhotoItem> = new Map();
   private connector: NasConnector | undefined = undefined;
@@ -98,6 +102,7 @@ export class PhotoLibrary {
   }
 
   reset(): void {
+    this.endSelection();
     this.tabContexts.clear(); this.activeTab = ''; this.loaded = false;
     this.generation++;
     this.requestGeneration++;
@@ -127,6 +132,7 @@ export class PhotoLibrary {
   }
 
   async open(space: PhotosSpace = this.space, section: PhotoLibrarySection = this.section): Promise<void> {
+    this.endSelection();
     if (![PhotosSpace.Personal, PhotosSpace.Shared, PhotosSpace.WithMe].includes(space) ||
       !['timeline', 'albums', 'sharedByMe'].includes(section) || section === 'sharedByMe' && space !== PhotosSpace.Personal) {
       this.errorText = '照片空间或视图不正确。'; return;
@@ -154,6 +160,7 @@ export class PhotoLibrary {
   /** 相册和照片页各自保留浏览进度，授权只在当前账号内存中保存。 */
   async activateTab(key: string, space: PhotosSpace, section: PhotoLibrarySection): Promise<void> {
     if (key === this.activeTab && space === this.space && (this.loaded || this.busy)) { return; }
+    this.endSelection();
     if (this.loaded && this.activeTab.length > 0) {
       this.tabContexts.set(this.activeTab, { space: this.space, section: this.section, items: this.items.slice(),
         albums: this.albums.slice(), selectedAlbum: this.selectedAlbum, selectedAccess: this.selectedAccess,
@@ -178,6 +185,7 @@ export class PhotoLibrary {
 
   async refresh(): Promise<void> {
     if (this.busy) { return; }
+    this.endSelection();
     this.loaded = false;
     this.requestGeneration++;
     this.closeDetail();
@@ -199,6 +207,7 @@ export class PhotoLibrary {
   }
 
   async openAlbum(album: NasPhotoAlbum): Promise<void> {
+    this.endSelection();
     const trusted = this.albums.find((entry: NasPhotoAlbum): boolean => entry.id === album.id && entry.space === album.space);
     if (trusted === undefined || album.space !== this.space) { this.errorText = '相册来源已变化，请刷新后重试。'; return; }
     this.requestGeneration++;
@@ -323,8 +332,9 @@ export class PhotoLibrary {
       }
     } catch (error) {
       if (this.currentDetail(ticket, detailTicket)) {
-        this.mediaErrorText = this.message(error as Error, '原图读取未完成，请重试。');
-        await this.handleFailure(error as Error, ticket, 'original');
+        const metadata = this.originalPath.length > 0;
+        this.mediaErrorText = this.message(error as Error, metadata ? '照片信息读取失败，请重试。' : '原图读取未完成，请重试。');
+        await this.handleFailure(error as Error, ticket, metadata ? 'metadata' : 'original');
       }
     } finally { if (this.currentDetail(ticket, detailTicket)) { this.loadingMedia = false; } }
   }
@@ -362,9 +372,9 @@ export class PhotoLibrary {
   }
 
   /** 目标只从当前会话读取，照片身份与目标不能沿用上次连接。 */
-  async loadActionTargets(mode: 'album' | 'copy', parentId: number = 0): Promise<void> {
-    const connector = this.connector, item = this.detail;
-    if (connector === undefined || item === undefined || this.targetsBusy) { return; }
+  async loadActionTargets(mode: 'album' | 'copy' | 'move' | 'backup', parentId: number = 0): Promise<void> {
+    const connector = this.connector, item = this.detail ?? this.selectedItems()[0];
+    if (connector === undefined || (item === undefined && mode !== 'backup') || this.targetsBusy) { return; }
     const ticket = this.generation, detailTicket = this.detailGeneration;
     this.targetsBusy = true; this.targetsError = ''; this.actionAlbums = []; this.actionFolders = [];
     try {
@@ -378,7 +388,7 @@ export class PhotoLibrary {
         }
         this.actionAlbums = albums;
       } else {
-        const folders = await connector.photoFolders(item.space, parentId);
+        const folders = await connector.photoFolders(mode === 'backup' ? PhotosSpace.Personal : item!.space, parentId);
         if (this.currentDetail(ticket, detailTicket)) { this.actionFolders = folders; }
       }
     } catch (error) {
@@ -387,6 +397,32 @@ export class PhotoLibrary {
         await this.handleFailure(error as Error, ticket, 'targets');
       }
     } finally { if (this.currentDetail(ticket, detailTicket)) { this.targetsBusy = false; } }
+  }
+
+  beginSelection(): void {
+    if (this.busy) { return; }
+    this.selecting = true; this.selectedKeys = []; this.selectionNotice = '';
+  }
+  endSelection(): void { this.selecting = false; this.selectedKeys = []; this.selectionNotice = ''; }
+  selectedItems(): NasPhotoItem[] {
+    return this.items.filter((item: NasPhotoItem): boolean => this.selectedKeys.includes(this.itemKey(item)));
+  }
+  isSelected(item: NasPhotoItem): boolean { return this.selectedKeys.includes(this.itemKey(item)); }
+  toggleSelection(item: NasPhotoItem): void {
+    if (!this.selecting || this.selectionBusy) { return; }
+    const key = this.itemKey(item);
+    this.selectedKeys = this.selectedKeys.includes(key) ? this.selectedKeys.filter((value: string): boolean => value !== key) : [...this.selectedKeys, key];
+  }
+  async downloadSelection(): Promise<void> {
+    if (this.selectionBusy || this.selectedKeys.length === 0) { return; }
+    const ticket = this.generation;
+    this.selectionBusy = true; this.selectionNotice = '';
+    try {
+      const saved = await this.media.saveToGallery(this.selectedItems(), this.selectedAccess);
+      if (ticket === this.generation) { this.selectionNotice = `已保存 ${saved} 项到系统相册`; }
+    } catch (error) {
+      if (ticket === this.generation) { this.selectionNotice = this.message(error as Error, '照片下载未完成，请重试。'); }
+    } finally { if (ticket === this.generation) { this.selectionBusy = false; } }
   }
 
   thumbnailPath(item: NasPhotoItem): string {

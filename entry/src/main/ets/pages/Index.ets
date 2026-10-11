@@ -22,7 +22,8 @@ import { uniformTypeDescriptor } from '@kit.ArkData';
 import { takeDriveTransferIntent } from '../features/drive/DriveTransferIntent';
 import { DriveSharingPage, DriveNotificationsPage } from '../features/drive/DriveCollaborationUi';
 import { NasPhotoAlbum, NasPhotoItem, PhotosSpace } from '../core/domain/PhotosProtocol';
-import { PhotoBackup } from '../features/backup/PhotoBackup';
+import { PhotoUpload } from '../features/photos/PhotoUpload';
+import { PhotoBackupSettingsPage } from '../features/backup/PhotoBackupSettingsPage';
 import { TransferUploadSource } from '../features/transfers/TransferQueue';
 import { TransferQueueItem } from '../core/domain/TransferQueueState';
 import { ConnectionViewModel, FileTaskItem } from '../features/connection/ConnectionViewModel';
@@ -77,6 +78,7 @@ struct Index {
   @Local private photoTabId: string = 'photos';
   @Local private driveMoreView: string = '';
   private driveSearchScroller: Scroller = new Scroller();
+  private photoBackupScroller: Scroller = new Scroller();
   @Local private photoMoreShared: boolean = false;
   @Local private photoSpace: PhotosSpace = PhotosSpace.Personal;
   @Local private albumSpace: PhotosSpace = PhotosSpace.Personal;
@@ -96,6 +98,10 @@ struct Index {
   @Local private bootEscapable: boolean = false;
   private bootTimer: number = -1;
   private mainWindow: window.Window | undefined = undefined;
+  @Local private photoPreviewOpened: boolean = false;
+  @Local private photoControlsVisible: boolean = true;
+  private normalWindowFullScreen: boolean = false;
+  private photoWindowUpdate: Promise<void> = Promise.resolve();
   private pageActive: boolean = false;
   private foreground: boolean = true;
   private abilityContext: common.UIAbilityContext | undefined = undefined;
@@ -147,7 +153,7 @@ struct Index {
   @Local private transferSubmitting: boolean = false;
   @Local private transferErrorText: string = '';
   private titleMenuContent: ComponentContent<TitleMenuItem[]> | undefined = undefined;
-  @Local private backup: PhotoBackup = new PhotoBackup();
+  @Local private backup: PhotoUpload = new PhotoUpload();
   @Local private contentWidth: number = 360;
   @Local private windowWidth: number = 360;
   @Local private windowHeight: number = 800;
@@ -164,7 +170,8 @@ struct Index {
   /** 设备是否支持 ImmersiveMaterial；不支持时退回不透明背板，避免得到一块全透明的弹层。 */
   private sheetMaterialAvailable: boolean = uiMaterial.isImmersiveMaterialSupported();
   @Local private taskSection: string = 'transfers';
-  @Local private photoDestinationMode: 'album' | 'copy' = 'album';
+  @Local private photoDestinationMode: 'album' | 'copy' | 'move' | 'backup' = 'album';
+  @Local private photoBatchDestination: boolean = false;
   @Local private photoFolderTrail: PhotoFolder[] = [];
   /** 未收录型号联网取回的产品图路径；为空时用内置图。 */
   @Local private deviceArtworkPath: string = '';
@@ -195,13 +202,16 @@ struct Index {
     window.getLastWindow(context).then((mainWindow: window.Window): void => {
       if (!this.pageActive) { return; }
       this.mainWindow = mainWindow;
+      this.normalWindowFullScreen = mainWindow.getWindowProperties().isLayoutFullScreen;
       this.navigationInset = this.getUIContext().px2vp(mainWindow.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR).bottomRect.height);
       this.statusInset = this.getUIContext().px2vp(mainWindow.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM).topRect.height);
       mainWindow.on('avoidAreaChange', this.navigationAreaChanged);
+      if (this.photoPreviewOpened) { this.updatePhotoPreviewWindow(); }
     }).catch((): void => { hilog.error(0x0000, 'NasLayout', 'operation=navigation_avoid_area result=failed'); });
   }
   aboutToDisappear(): void {
     this.closeTitleMenu();
+    if (this.photoPreviewOpened) { this.photoPreviewOpened = false; this.updatePhotoPreviewWindow(); }
     this.pageActive = false;
     this.stopBootTimer();
     this.updateTelemetryMode();
@@ -257,6 +267,7 @@ struct Index {
       this.exitModule(); return true;
     }
     if (this.model.authenticated && this.module === 'photos') {
+      if (this.model.photoLibrary.selecting) { if (!this.model.photoLibrary.selectionBusy) { this.model.photoLibrary.endSelection(); } return true; }
       if (this.model.photoLibrary.selectedAlbum !== undefined && ['photos', 'albums', 'shared'].includes(this.effectivePhotoTab())) {
         if (!this.model.photoLibrary.busy) { this.model.photoLibrary.backToLibrary(); } return true;
       }
@@ -362,6 +373,9 @@ struct Index {
   }
 
   private pageTitle(): string {
+    if (this.module === 'photos' && this.model.photoLibrary.selecting) {
+      return this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.photos_selected_count').id, this.model.photoLibrary.selectedKeys.length);
+    }
     if (!this.model.authenticated) { return 'NAS 工作台'; }
     if (this.module === 'drive') {
       if (this.driveTabId === DriveView.MyDrive) { return 'Synology Drive'; }
@@ -448,20 +462,32 @@ struct Index {
   }
 
   private async selectBackup(): Promise<void> {
-    if (!supportsPhotoBackup((api: string): boolean => this.model.supports(api))) { return; }
+    if (!supportsPhotoBackup((api: string): boolean => this.model.supports(api)) || !this.model.queue.ready || this.model.busy ||
+      this.backup.selecting || this.backup.submitting) { return; }
+    this.backup.clear();
     await this.backup.select(this.getUIContext().getHostContext() as common.UIAbilityContext, this.model.queue);
+    let errorText = this.backup.errorText;
+    if (this.backup.sources.length > 0) {
+      await this.model.submitPhotoUpload(this.backup);
+      if (this.backup.errorText.length > 0 && this.backup.errorText !== errorText) {
+        errorText += (errorText.length > 0 ? ' ' : '') + this.backup.errorText;
+      }
+    }
+    if (errorText.length > 0) { this.showTitleMenuError(errorText); }
   }
 
-  private async submitBackup(): Promise<void> {
-    if (!supportsPhotoBackup((api: string): boolean => this.model.supports(api)) || this.model.directory.length === 0 || !this.model.queue.ready || this.model.busy) { return; }
-    await this.backup.submit(this.model.directory, this.model.queue);
-    if (this.backup.sources.length === 0) {
-      this.pickerMode = ''; this.navStack.pop(); this.taskSection = 'transfers'; this.switchTab(ROOT_TASK_TAB);
-    }
+  private openPhotosTitleMenu(): void {
+    this.openTitleMenu('photos-tools-menu', [
+      new TitleMenuItem(this.previewText($r('app.string.photos_select')), this.model.photoLibrary.items.length > 0,
+        (): void => { this.model.photoLibrary.beginSelection(); }),
+      new TitleMenuItem(this.previewText($r('app.string.photos_upload')), supportsPhotoBackup((api: string): boolean => this.model.supports(api)) &&
+        this.model.queue.ready && !this.model.busy && !this.backup.selecting && !this.backup.submitting,
+        (): void => { this.selectBackup(); })]);
   }
 
   private filteredTasks(): TransferQueueItem[] {
-    return this.model.queue.items.filter((item: TransferQueueItem): boolean => (this.taskSource === 'all' || item.source === this.taskSource) && (this.taskFilter === 'all' ||
+    return this.model.queue.items.filter((item: TransferQueueItem): boolean => (this.taskSource === 'all' || item.source === this.taskSource ||
+      this.taskSource === 'photos' && ['photoUpload', 'photoBackup'].includes(item.source)) && (this.taskFilter === 'all' ||
       (this.taskFilter === 'finished' ? ['completed', 'cancelled', 'failed', 'closed', 'clearing'].includes(item.state) :
         !['completed', 'cancelled', 'failed', 'closed', 'clearing'].includes(item.state))));
   }
@@ -475,6 +501,7 @@ struct Index {
   }
 
   private bottomInset(): number {
+    if (this.module === 'photos' && this.model.photoLibrary.selecting) { return 16; }
     return workbenchBottomInset(this.navigationInset);
   }
 
@@ -732,7 +759,7 @@ struct Index {
       if (view !== undefined) { this.model.drive.activateView(view); }
     } else if (this.module === 'photos') {
       this.photoTabId = tab.id;
-      if (tab.id === 'transfers') { this.taskSection = 'transfers'; this.taskSource = 'photoBackup'; }
+      if (tab.id === 'transfers') { this.taskSection = 'transfers'; this.taskSource = 'photos'; }
       this.ensurePhotosOpen();
     } else { this.rootTab = index; this.taskSource = 'all'; }
   }
@@ -801,7 +828,7 @@ struct Index {
     this.photoTabId = photoTabs((api: string): boolean => this.model.supports(api), this.showPhotoShared, this.photoPinned)
       .some((tab: ModuleTab): boolean => tab.id === 'backup') ? 'backup' : 'more';
     this.enterModule('photos');
-    if (this.module === 'photos') { this.selectBackup(); }
+    if (this.photoTabId === 'more') { this.navStack.pushPathByName('photo-backup', undefined); }
   }
 
   private openPhotoShared(): void {
@@ -811,9 +838,8 @@ struct Index {
   }
 
   private chooseBackupDirectory(): void {
-    if (this.navigationBusy() || this.backup.selecting || this.backup.submitting || this.backup.sources.length === 0) { return; }
-    this.pendingEntries = []; this.pendingOperation = '';
-    this.pickerMode = 'backup'; this.navStack.pushPathByName('directory-picker', 'backup');
+    if (this.navigationBusy() || this.model.photoBackup.busy) { return; }
+    this.openPhotoDestination('backup');
   }
 
   private cancelDirectoryPicker(): void {
@@ -892,6 +918,15 @@ struct Index {
           isEnabled: !this.navigationBusy(), action: (): void => { this.openDriveTitleMenu(); } } });
       }
       return items;
+    }
+    if (this.module === 'photos' && ['photos', 'albums', 'shared'].includes(this.effectivePhotoTab()) &&
+      (this.effectivePhotoTab() === 'photos' || this.model.photoLibrary.section === 'timeline' || this.model.photoLibrary.selectedAlbum !== undefined)) {
+      if (this.model.photoLibrary.selecting) {
+        return [{ content: { label: this.previewText($r('app.string.action_cancel')), type: TextStyleMode.NORMAL,
+          isEnabled: !this.model.photoLibrary.selectionBusy, action: (): void => { this.model.photoLibrary.endSelection(); } } }];
+      }
+      return [{ content: { label: this.previewText($r('app.string.photos_more')), icon: $r('sys.symbol.more'), componentId: 'photos-tools-menu',
+        type: IconStyleMode.SMALL, isEnabled: !this.navigationBusy(), action: (): void => { this.openPhotosTitleMenu(); } } }];
     }
     if (this.module === 'photos' && ['albums', 'shared'].includes(this.effectivePhotoTab()) &&
       this.model.photoLibrary.selectedAlbum === undefined) {
@@ -1384,12 +1419,12 @@ struct Index {
         Column() {
           if (tab.id === 'more' && this.photoMoreShared) {
             Button() {
-              SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(20).fontColor([$r('sys.color.icon_primary')])
+              SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(24).fontColor([$r('sys.color.font_primary')])
             }.type(ButtonType.Normal).backgroundColor(Color.Transparent).width(48).padding(0)
               .constraintSize({ minHeight: WorkbenchMetrics.touchSize }).accessibilityText('返回更多')
               .onClick((): void => { this.photoMoreShared = false; }).margin({ top: this.contentTopInset() + 8 })
           }
-          PhotoModulePage({ model: this.model, backup: this.backup, tabId: tab.id === 'more' && this.photoMoreShared ? 'shared' : tab.id,
+          PhotoModulePage({ model: this.model, tabId: tab.id === 'more' && this.photoMoreShared ? 'shared' : tab.id,
             active: tab.id === this.photoTabId, scroller: this.photoScrollerFor(tab.id),
             topInset: tab.id === 'more' && this.photoMoreShared ? 0 : this.contentTopInset(), bottomInset: this.bottomInset(),
             expectedSpace: this.expectedPhotoSpace(tab.id === 'more' && this.photoMoreShared ? 'shared' : tab.id),
@@ -1399,9 +1434,10 @@ struct Index {
             showSharedInMore: !this.showPhotoShared,
             showTransfersInMore: !this.visibleTabs().some((item: ModuleTab): boolean => item.id === 'transfers'),
             onSelectSpace: (space: PhotosSpace): void => { this.selectPhotoSpace(this.effectivePhotoTab(), space); },
-            onOpenPhoto: (item: NasPhotoItem): void => { this.openPhoto(item); }, onSelectBackup: (): void => { this.selectBackup(); },
-            onChooseBackup: (): void => { this.chooseBackupDirectory(); }, onShowBackupContents: (): void => { this.openForm('backup'); },
-            onOpenTransfers: (): void => { this.taskSection = 'transfers'; this.switchTab(ROOT_TASK_TAB); },
+            onOpenPhoto: (item: NasPhotoItem): void => { this.openPhoto(item); },
+            onChooseBackupDirectory: (): void => { this.chooseBackupDirectory(); },
+            onOpenBackup: (): void => { this.navStack.pushPathByName('photo-backup', undefined); },
+            onOpenTransfers: (): void => { this.taskSection = 'transfers'; this.taskSource = 'photos'; this.switchTab(ROOT_TASK_TAB); },
             onOpenShared: (): void => { this.openPhotoShared(); },
             onCustomize: (): void => { this.navStack.pushPathByName('module-tabs', 'photos'); } })
         }.width('100%').height('100%')
@@ -1648,17 +1684,19 @@ struct Index {
   }
 
   private photoCan(action: PhotoAction): boolean {
-    const item = this.model.photoLibrary.detail;
+    const item = this.model.photoLibrary.detail ?? this.model.photoLibrary.selectedItems()[0];
     if (item === undefined || item.space === PhotosSpace.WithMe) { return false; }
-    return this.model.extensions.canPhotoAction({ action, item, favorite: !item.favorite, targetId: 0 });
+    return this.model.extensions.canPhotoAction({ action, item, items: this.model.photoLibrary.selecting ? this.model.photoLibrary.selectedItems() : undefined,
+      favorite: !item.favorite, targetId: 0 });
   }
 
   private async photoAction(action: PhotoAction, targetId?: number): Promise<void> {
-    const item = this.model.photoLibrary.detail;
+    const batch = this.model.photoLibrary.selecting;
+    const item = this.model.photoLibrary.detail ?? this.model.photoLibrary.selectedItems()[0];
     if (item === undefined) { return; }
-    const input: PhotoActionInput = { action, item, targetId, favorite: !item.favorite };
+    const input: PhotoActionInput = { action, item, items: batch ? this.model.photoLibrary.selectedItems() : undefined, targetId, favorite: !item.favorite };
     const confirmed = await this.model.extensions.performPhotoAction(input);
-    if (this.model.photoLibrary.detail !== item) { return; }
+    if (!batch && this.model.photoLibrary.detail !== item) { return; }
     if (confirmed && action === 'favorite') { this.model.photoLibrary.confirmFavorite(item, input.favorite!); }
     if (confirmed && action === 'album' && this.navStack.getAllPathName().slice(-1)[0] === 'photo-actions') { this.navStack.pop(); }
     if (confirmed && action === 'share') {
@@ -1669,12 +1707,13 @@ struct Index {
           previewMode: systemShare.SharePreviewMode.DEFAULT });
       } catch { this.showTitleMenuError(this.previewText($r('app.string.preview_share_failed'))); }
     }
-    if (action === 'delete' || action === 'copy') {
+    if (action === 'delete' || action === 'copy' || action === 'move') {
+      this.photoBatchDestination = batch;
       if (!confirmed && !this.model.extensions.hasPending('photos')) {
         this.showTitleMenuError(this.model.extensions.photoError); return;
       }
       await this.refreshPhotoPreviewTask();
-      if (this.model.photoLibrary.detail !== item) { return; }
+      if (!batch && this.model.photoLibrary.detail !== item) { return; }
       if (this.model.extensions.hasPending('photos') && this.navStack.getAllPathName().slice(-1)[0] !== 'photo-actions') {
         this.navStack.pushPathByName('photo-actions', undefined);
       }
@@ -1687,6 +1726,12 @@ struct Index {
     await this.model.extensions.refreshPhotoTask();
     if (record === undefined || this.model.extensions.hasPending('photos') || this.model.photoLibrary.detail !== item) { return; }
     if (this.navStack.getAllPathName().slice(-1)[0] === 'photo-actions') { this.navStack.pop(); }
+    if (this.photoBatchDestination) {
+      this.photoBatchDestination = false;
+      if (record.operation === 'delete' || record.operation === 'move') { await this.model.photoLibrary.refresh(); }
+      else { this.model.photoLibrary.selectionNotice = this.model.extensions.photoNotice; }
+      return;
+    }
     if (record.operation === 'delete' && item !== undefined && item.id === record.photoId && item.space === record.photoSpace) {
       if (this.navStack.getAllPathName().slice(-1)[0] === 'photo-detail') { this.navStack.pop(); }
       this.model.photoLibrary.refresh();
@@ -1708,7 +1753,40 @@ struct Index {
     return menu;
   }
 
-  private openPhotoDestination(mode: 'album' | 'copy'): void {
+  private deletePhotoSelection(): void {
+    this.getUIContext().showAlertDialog({ title: $r('app.string.preview_delete'),
+      message: this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.photos_delete_count').id, this.model.photoLibrary.selectedKeys.length),
+      primaryButton: { value: $r('app.string.action_cancel'), action: (): void => {} },
+      secondaryButton: { value: $r('app.string.preview_delete'), action: (): void => { this.photoAction('delete'); } } });
+  }
+
+  private openPhotoSelectionMenu(): void {
+    const items = [
+      new TitleMenuItem(this.previewText($r('app.string.photos_move')), this.photoCan('move'), (): void => { this.openPhotoDestination('move'); }),
+      new TitleMenuItem(this.previewText($r('app.string.preview_copy')), this.photoCan('copy'), (): void => { this.openPhotoDestination('copy'); }),
+      new TitleMenuItem(this.previewText($r('app.string.preview_download')), !this.model.photoLibrary.selectionBusy,
+        (): void => { this.model.photoLibrary.downloadSelection(); })];
+    this.openTitleMenu('photos-selection-menu', items);
+  }
+
+  @Builder
+  photoSelectionBar() {
+    Row({ space: 4 }) {
+      Button($r('app.string.preview_share')).layoutWeight(1).buttonStyle(ButtonStyleMode.TEXTUAL)
+        .enabled(this.photoCan('share')).onClick((): void => { this.photoAction('share'); })
+      Button($r('app.string.preview_album')).layoutWeight(1).buttonStyle(ButtonStyleMode.TEXTUAL)
+        .enabled(this.photoCan('album')).onClick((): void => { this.openPhotoDestination('album'); })
+      Button($r('app.string.preview_delete')).layoutWeight(1).buttonStyle(ButtonStyleMode.TEXTUAL)
+        .enabled(this.photoCan('delete')).onClick((): void => { this.deletePhotoSelection(); })
+      Button($r('app.string.photos_more')).layoutWeight(1).buttonStyle(ButtonStyleMode.TEXTUAL).id('photos-selection-menu')
+        .enabled(this.model.photoLibrary.selectedKeys.length > 0 && !this.model.photoLibrary.selectionBusy && !this.model.extensions.busy)
+        .onClick((): void => { this.openPhotoSelectionMenu(); })
+    }.width('100%').constraintSize({ minHeight: 56 }).padding({ left: 8, right: 8, bottom: this.navigationInset })
+      .backgroundColor($r('app.color.workbench_surface'))
+  }
+
+  private openPhotoDestination(mode: 'album' | 'copy' | 'move' | 'backup'): void {
+    this.photoBatchDestination = this.model.photoLibrary.selecting;
     this.photoDestinationMode = mode; this.photoFolderTrail = [];
     this.navStack.pushPathByName('photo-actions', undefined); this.model.photoLibrary.loadActionTargets(mode);
   }
@@ -1722,7 +1800,7 @@ struct Index {
       if (this.model.extensions.hasPending('photos')) {
         Button($r('app.string.preview_check_task')).enabled(!this.model.extensions.busy)
           .onClick((): void => { this.refreshPhotoPreviewTask(); })
-      } else if (this.model.photoLibrary.detail !== undefined) {
+      } else if (this.model.photoLibrary.detail !== undefined || this.model.photoLibrary.selecting || this.photoDestinationMode === 'backup') {
         WorkbenchNotice({ text: this.model.photoLibrary.targetsError, warning: true })
         if (this.model.photoLibrary.targetsBusy) { LoadingProgress().width(32).height(32) }
         List() {
@@ -1734,16 +1812,23 @@ struct Index {
           } else {
             ForEach(this.model.photoLibrary.actionFolders, (folder: PhotoFolder): void => {
               ListItem() { Button(folder.name).width('100%').buttonStyle(ButtonStyleMode.TEXTUAL)
-                .onClick((): void => { this.photoFolderTrail = [...this.photoFolderTrail, folder]; this.model.photoLibrary.loadActionTargets('copy', folder.id); }) }
+                .onClick((): void => { this.photoFolderTrail = [...this.photoFolderTrail, folder]; this.model.photoLibrary.loadActionTargets(this.photoDestinationMode, folder.id); }) }
             })
           }
         }.width('100%').layoutWeight(1)
-        if (this.photoDestinationMode === 'copy' && this.photoFolderTrail.length > 0) {
+        if (this.photoDestinationMode !== 'album') {
           Text(this.photoFolderTrail.map((folder: PhotoFolder): string => folder.name).join(' / ')).width('100%')
-          Button($r('app.string.preview_copy_here')).enabled(!this.model.photoLibrary.targetsBusy && !this.model.extensions.busy)
-            .onClick((): void => { this.photoAction('copy', this.photoFolderTrail[this.photoFolderTrail.length - 1].id); })
+          Button($r('app.string.photos_use_folder')).enabled(!this.model.photoLibrary.targetsBusy && !this.model.extensions.busy &&
+            (this.photoDestinationMode !== 'backup' || this.photoFolderTrail.length > 0))
+            .onClick((): void => {
+              if (this.photoDestinationMode === 'backup') {
+                this.model.photoBackup.configure(this.model.photoBackup.settings.mode, true,
+                  this.photoFolderTrail.map((folder: PhotoFolder): string => folder.name.split('/').filter((name: string): boolean => name.length > 0).slice(-1)[0]).join('/'))
+                  .then((): void => { if (this.model.photoBackup.errorText.length === 0) { this.navStack.pop(); } });
+              } else { this.photoAction(this.photoDestinationMode, this.photoFolderTrail[this.photoFolderTrail.length - 1]?.id ?? 0); }
+            })
           Button($r('app.string.preview_parent')).buttonStyle(ButtonStyleMode.TEXTUAL)
-            .onClick((): void => { this.photoFolderTrail = this.photoFolderTrail.slice(0, -1); this.model.photoLibrary.loadActionTargets('copy', this.photoFolderTrail[this.photoFolderTrail.length - 1]?.id ?? 0); })
+            .enabled(this.photoFolderTrail.length > 0).onClick((): void => { this.photoFolderTrail = this.photoFolderTrail.slice(0, -1); this.model.photoLibrary.loadActionTargets(this.photoDestinationMode, this.photoFolderTrail[this.photoFolderTrail.length - 1]?.id ?? 0); })
         }
       }
     }.width('100%').height('100%').padding(16)
@@ -1754,6 +1839,11 @@ struct Index {
     ImagePreview({ source: this.model.photoLibrary.originalPath.length > 0 ? fileUri.getUriFromPath(this.model.photoLibrary.originalPath) :
         this.model.photoLibrary.previewPath.length > 0 ? fileUri.getUriFromPath(this.model.photoLibrary.previewPath) : '',
       name: this.model.photoLibrary.detail?.filename ?? '', photos: true, video: this.model.photoLibrary.detail?.mediaType === 'video',
+      controlsVisible: this.photoControlsVisible, navigationInset: this.navigationInset,
+      onToggleControls: (): void => {
+        this.photoControlsVisible = !this.photoControlsVisible;
+        this.updatePhotoPreviewWindow();
+      },
       itemKey: this.model.photoLibrary.detail === undefined ? '' :
         this.model.photoLibrary.detail.space.toString() + ':' + this.model.photoLibrary.detail.id.toString(),
       canNavigate: !this.model.extensions.busy && !this.model.extensions.hasPending('photos'),
@@ -1769,25 +1859,45 @@ struct Index {
       onDecodeError: (): void => { this.showTitleMenuError(this.previewText($r('app.string.preview_decode_failed'))); } })
   }
 
+  /** 照片预览始终占满窗口；顺序恢复系统栏，避免返回后留下隐藏状态。 */
+  private updatePhotoPreviewWindow(): void {
+    const mainWindow = this.mainWindow;
+    if (mainWindow === undefined) { return; }
+    const opened = this.photoPreviewOpened;
+    const visible = !opened || this.photoControlsVisible;
+    this.photoWindowUpdate = this.photoWindowUpdate.then(async (): Promise<void> => {
+      await mainWindow.setSpecificSystemBarEnabled('status', visible);
+      await mainWindow.setSpecificSystemBarEnabled('navigation', visible);
+      await mainWindow.setSpecificSystemBarEnabled('navigationIndicator', visible);
+      await mainWindow.setWindowLayoutFullScreen(opened || this.normalWindowFullScreen);
+    }).catch((error: BusinessError): void => {
+      hilog.error(0x0000, 'NasLayout', 'operation=photo_preview_window result=failed code=%{public}d', error.code);
+      if (this.pageActive) { this.showTitleMenuError(this.previewText($r('app.string.preview_display_failed'))); }
+    });
+  }
+
+  /** 返回箭头沿用系统模板尺寸，材质按钮保持常规文字颜色。 */
+  private navigationBackSymbol(): SymbolGlyphModifier {
+    return new SymbolGlyphModifier($r('sys.symbol.chevron_left')).fontSize(24).fontColor([$r('sys.color.font_primary')]);
+  }
+
   @Builder
   destinationBuilder(name: string, parameter: Object) {
     if (name === 'module-tabs') {
       HdsNavDestination() { this.tabSettingsView(parameter as WorkbenchModule) }
         .backgroundColor($r('app.color.workbench_background'))
-        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: '模块底栏' } } })
+        .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: '模块底栏' } } })
         .bindToScrollable([this.tabSettingsScroller])
     } else if (name === 'directory-picker') {
       HdsNavDestination() {
         FileStationPage({ model: this.model, scroller: this.pickerScroller, topInset: 0, bottomInset: this.navigationInset + 16,
-          pickerMode: this.pickerMode, selectionCount: this.backup.sources.length, pickerBusy: this.backup.submitting,
-          pickerError: this.pickerMode === 'backup' ? this.backup.errorText : '', errorText: this.visibleError(),
-          canConfirm: this.model.directory.length > 0 && !this.model.busy && (this.pickerMode !== 'backup' ||
-            supportsPhotoBackup((api: string): boolean => this.model.supports(api)) && this.backup.sources.length > 0 && this.model.queue.ready && !this.model.queue.busy && !this.backup.submitting),
+          pickerMode: this.pickerMode, errorText: this.visibleError(),
+          canConfirm: this.model.directory.length > 0 && !this.model.busy,
           onNavigateBreadcrumb: (target: string): void => { this.navigateBreadcrumb(target); },
-          onConfirm: (): void => { if (this.pickerMode === 'backup') { this.submitBackup(); } else { this.useDownloadDirectory(); } },
+          onConfirm: (): void => { this.useDownloadDirectory(); },
           onCancel: (): void => { this.cancelDirectoryPicker(); } })
       }.backgroundColor($r('app.color.workbench_background'))
-        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: this.pickerMode === 'backup' ? '备份位置' : '下载保存目录' } } })
+        .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: '下载保存目录' } } })
         .bindToScrollable([this.pickerScroller])
         .onBackPressed((): boolean => {
           if (this.backup.submitting) { return true; }
@@ -1806,7 +1916,7 @@ struct Index {
           onOpenLinks: (entry?: DriveEntry): void => { this.openDriveLinks(entry); },
           onUploadTo: (entry: DriveEntry): void => { this.prepareDriveUpload(entry); } })
       }.backgroundColor($r('app.color.workbench_background'))
-        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: $r('app.string.drive_search_title') } },
+        .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: $r('app.string.drive_search_title') } },
           style: { systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE,
             materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE },
             scrollEffectOpts: { enableScrollEffect: true, scrollEffectType: ScrollEffectType.GRADIENT_BLUR } } })
@@ -1818,13 +1928,13 @@ struct Index {
           onCancel: (): void => { this.navStack.pop(); } })
       }
         .backgroundColor($r('app.color.workbench_background'))
-        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: 'Drive 文件链接' } } })
+        .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: 'Drive 文件链接' } } })
         .bindToScrollable([this.driveLinksScroller])
         .onHidden((): void => { this.model.driveSharing.clearDraft(); })
     } else if (name === 'drive-notifications') {
       HdsNavDestination() { DriveNotificationsPage({ model: this.model.driveNotifications, scroller: this.driveNotificationsScroller }) }
         .backgroundColor($r('app.color.workbench_background'))
-        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: 'Drive 通知' } } })
+        .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: 'Drive 通知' } } })
         .bindToScrollable([this.driveNotificationsScroller])
         .onShown((): void => { this.model.driveNotifications.refresh(); })
     } else if (name === 'drive-original') {
@@ -1837,7 +1947,7 @@ struct Index {
         onDelete: (): void => { this.deleteDrivePreview(); },
         onShare: (): void => { const entry = this.model.driveOriginal.entry; if (entry !== undefined) { this.openDriveLinks(entry); } } }) }
         .backgroundColor($r('app.color.workbench_background'))
-        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: this.model.driveOriginal.entry?.name || '原图' },
+        .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: this.model.driveOriginal.entry?.name || '原图' },
           menu: { value: this.previewMenus('drive'), maxCount: 2 } },
           style: { systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE } } })
         .onHidden((): void => {
@@ -1856,7 +1966,7 @@ struct Index {
           onViewport: (width: number, height: number): void => { this.model.fileOriginal.setViewport(width, height); },
           onRefine: (scale: number): void => { this.model.fileOriginal.refine(scale); } })
       }.backgroundColor($r('app.color.workbench_background'))
-        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: this.model.fileOriginal.fileEntry?.name ?? '' },
+        .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: this.model.fileOriginal.fileEntry?.name ?? '' },
           menu: { value: this.previewMenus('file'), maxCount: 2 } },
           style: { systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE } } })
         .onHidden((): void => { if (!this.navStack.getAllPathName().includes('file-preview')) { this.model.fileOriginal.close(); } })
@@ -1867,13 +1977,13 @@ struct Index {
           onCancel: (): void => { this.model.driveActions.clearDraft(); this.navStack.pop(); } })
       }
         .backgroundColor($r('app.color.workbench_background'))
-        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: 'Drive 文件操作' } } })
+        .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: 'Drive 文件操作' } } })
         .bindToScrollable([this.driveActionScroller])
         .onHidden((): void => { this.model.driveActions.clearDraft(); })
     } else if (name === 'share-links') {
       HdsNavDestination() { ShareLinksPage({ model: this.model.extensions, scroller: this.sharesScroller }) }
         .backgroundColor($r('app.color.workbench_background'))
-        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: '我的分享' } } })
+        .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: '我的分享' } } })
         .bindToScrollable([this.sharesScroller])
         .onShown((): void => { this.extensionsOpened = true; this.updateTelemetryMode(); this.model.extensions.refreshShares(); })
         .onHidden((): void => { this.extensionsOpened = false; this.updateTelemetryMode(); })
@@ -1884,7 +1994,7 @@ struct Index {
           onAuthenticate: (): void => { this.model.authenticateDownloads(); } })
       }
         .backgroundColor($r('app.color.workbench_background'))
-        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: 'NAS 下载' } } })
+        .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: 'NAS 下载' } } })
         .bindToScrollable([this.downloadsScroller])
         .onShown((): void => { this.downloadsVisible = true; this.extensionsOpened = true; this.updateTelemetryMode(); this.model.extensions.refreshDownloads(); })
         .onHidden((): void => { this.downloadsVisible = false; this.extensionsOpened = false; this.updateTelemetryMode(); })
@@ -1895,7 +2005,7 @@ struct Index {
       }
         .backgroundColor($r('app.color.workbench_background'))
         // 内容需滚入标题栏下方，供沉浸材质取样；首项让位由详情页按实际视口位置计算。
-        .titleBar({ enableComponentSafeArea: false, content: { title: { mainTitle: '资源监控' } },
+        .titleBar({ enableComponentSafeArea: false, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: '资源监控' } },
           style: { scrollEffectOpts: { enableScrollEffect: false, scrollEffectType: ScrollEffectType.GRADIENT_BLUR },
             systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE,
               materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE },
@@ -1912,7 +2022,7 @@ struct Index {
           onUseAddress: (address: NasConnectionAddress): void => { this.confirmUseAddress(address); } })
       }
         .backgroundColor($r('app.color.workbench_background'))
-        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: $r('app.string.connection_addresses') } },
+        .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: $r('app.string.connection_addresses') } },
           style: { systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE,
             materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE },
             scrollEffectOpts: { enableScrollEffect: true, scrollEffectType: ScrollEffectType.GRADIENT_BLUR } } })
@@ -1930,7 +2040,7 @@ struct Index {
           onSubmit: (): void => { this.model.submitSystemControl(); } })
       }
         .backgroundColor($r('app.color.workbench_background'))
-        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: '系统控制' } } })
+        .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: '系统控制' } } })
         .bindToScrollable([this.systemControlScroller])
         .onShown((): void => {
           this.systemControlOpened = true;
@@ -1945,15 +2055,42 @@ struct Index {
     } else if (name === 'photo-detail') {
       HdsNavDestination() { this.photoDetailView() }
         .backgroundColor($r('app.color.workbench_background'))
-        .titleBar({ enableComponentSafeArea: true, content: {
+        .hideTitleBar(!this.photoControlsVisible)
+        .titleBar({ enableComponentSafeArea: false, avoidLayoutSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL },
           menu: { value: this.previewMenus('photos'), maxCount: 2 } },
-          style: { systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE } } })
-        .onHidden((): void => { if (!this.navStack.getAllPathName().includes('photo-detail')) { this.model.photoLibrary.closeDetail(); } })
+          style: { scrollEffectOpts: { enableScrollEffect: false, scrollEffectType: ScrollEffectType.IMMERSIVE_GRADIENT_BLUR },
+            systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE },
+            originalStyle: { backgroundStyle: { blurRadius: 12, maskExtraHeight: 16 } } } })
+        .onShown((): void => {
+          this.photoPreviewOpened = true;
+          this.photoControlsVisible = true;
+          this.updatePhotoPreviewWindow();
+        })
+        .onHidden((): void => {
+          this.photoPreviewOpened = false;
+          this.photoControlsVisible = true;
+          this.updatePhotoPreviewWindow();
+          if (!this.navStack.getAllPathName().includes('photo-detail')) { this.model.photoLibrary.closeDetail(); }
+        })
+    } else if (name === 'photo-backup') {
+      HdsNavDestination() {
+        Scroll(this.photoBackupScroller) {
+          PhotoBackupSettingsPage({ backup: this.model.photoBackup, onChooseDirectory: (): void => { this.chooseBackupDirectory(); } })
+            .padding({ left: 16, right: 16, top: 16, bottom: this.navigationInset + 16 })
+        }.width('100%').height('100%')
+      }.backgroundColor($r('app.color.workbench_background'))
+        .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: $r('app.string.photos_album_backup') } },
+          style: { systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE },
+            scrollEffectOpts: { enableScrollEffect: true, scrollEffectType: ScrollEffectType.GRADIENT_BLUR } } })
+        .bindToScrollable([this.photoBackupScroller])
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.BOTTOM])
     } else if (name === 'photo-actions') {
       HdsNavDestination() { this.photoActionsView() }
         .backgroundColor($r('app.color.workbench_background'))
-        .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: this.model.extensions.hasPending('photos') ?
-          $r('app.string.preview_photo_task') : this.photoDestinationMode === 'album' ? $r('app.string.preview_album') : $r('app.string.preview_copy') } },
+        .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: this.model.extensions.hasPending('photos') ?
+          $r('app.string.preview_photo_task') : this.photoDestinationMode === 'album' ? $r('app.string.preview_album') :
+            this.photoDestinationMode === 'backup' ? $r('app.string.photos_backup_location') :
+              this.photoDestinationMode === 'move' ? $r('app.string.photos_move') : $r('app.string.preview_copy') } },
           style: { systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE } } })
     }
   }
@@ -2058,8 +2195,8 @@ struct Index {
         if (this.module === 'photos') {
           ListItem() {
             Row() {
-              WorkbenchChoice({ label: '照片备份', selected: this.taskSource === 'photoBackup',
-                onSelect: (): void => { this.taskSource = 'photoBackup'; this.taskSection = 'transfers'; } })
+              WorkbenchChoice({ label: '照片', selected: this.taskSource === 'photos',
+                onSelect: (): void => { this.taskSource = 'photos'; this.taskSection = 'transfers'; } })
               WorkbenchChoice({ label: '全部任务', selected: this.taskSource === 'all',
                 onSelect: (): void => { this.taskSource = 'all'; } })
             }.width('100%')
@@ -2485,7 +2622,13 @@ struct Index {
           } else {
             this.sharedInboxCard()
             if (this.model.authenticated) {
-              HdsTabs({ controller: this.tabsController, index: this.activeTab }) {
+              if (this.module === 'photos' && this.model.photoLibrary.selecting) {
+                Column() {
+                  this.modulePage(this.visibleTabs()[this.activeTab])
+                }.width('100%').layoutWeight(1)
+                this.photoSelectionBar()
+              } else {
+                HdsTabs({ controller: this.tabsController, index: this.activeTab }) {
                 ForEach(this.visibleTabs(), (tab: ModuleTab): void => {
                   TabContent() { this.modulePage(tab) }
                     .tabBar(new BottomTabBarStyle({ normal: new SymbolGlyphModifier(this.tabIcon(tab.id)) }, tab.label))
@@ -2499,6 +2642,7 @@ struct Index {
                   if (index === this.activeTab) { this.activeScrollers()[0].scrollTo({ xOffset: 0, yOffset: 0 }); }
                 })
                 .onChange((index: number): void => { this.selectModuleTab(index); })
+              }
             } else { this.loginView() }
           }
         }.width('100%').height('100%')
@@ -2508,7 +2652,7 @@ struct Index {
         .navDestination(this.destinationBuilder).bindToScrollable(this.activeScrollers())
         .titleMode(HdsNavigationTitleMode.MINI).titleBar({ enableComponentSafeArea: false,
           content: { title: { mainTitle: this.pageTitle() },
-            backIcon: this.module === 'root' ? undefined : { icon: $r('sys.symbol.chevron_left'),
+            backIcon: this.module === 'root' ? undefined : { icon: this.navigationBackSymbol(),
               action: (): void => { this.onBackPress(); }, type: IconStyleMode.SMALL },
             menu: { value: this.pageMenu(), maxCount: 2 } },
           style: { scrollEffectOpts: { enableScrollEffect: false, scrollEffectType: ScrollEffectType.GRADIENT_BLUR },
