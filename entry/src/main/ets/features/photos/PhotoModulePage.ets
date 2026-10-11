@@ -279,13 +279,12 @@ export struct PhotoModulePage {
   @Builder
   libraryHeader() {
     Column({ space: WorkbenchMetrics.sectionGap }) {
-      Flex({ wrap: FlexWrap.Wrap }) {
-        if (this.tabId !== 'shared' && this.supportsSpace(PhotosSpace.Personal)) {
-          this.photoSpaceButton(PhotosSpace.Personal, '个人空间')
-        }
-        if (this.supportsSpace(PhotosSpace.Shared)) { this.photoSpaceButton(PhotosSpace.Shared, '共享空间') }
-        if (this.supportsSpace(PhotosSpace.WithMe)) { this.photoSpaceButton(PhotosSpace.WithMe, '与我共享') }
-      }.width('100%')
+      if (this.tabId === 'shared') {
+        Flex({ wrap: FlexWrap.Wrap }) {
+          if (this.supportsSpace(PhotosSpace.Shared)) { this.photoSpaceButton(PhotosSpace.Shared, '共享空间') }
+          if (this.supportsSpace(PhotosSpace.WithMe)) { this.photoSpaceButton(PhotosSpace.WithMe, '与我共享') }
+        }.width('100%')
+      }
       if (this.canShowLibrary()) {
         if (this.model.photoLibrary.selectedAlbum !== undefined) {
           Row({ space: 8 }) {
