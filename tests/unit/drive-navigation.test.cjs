@@ -44,7 +44,7 @@ function page() {
     calls, module: 'drive', activeTab: 0, rootTab: 1, driveTabId: 'mydrive', photoTabId: 'photos',
     driveMoreView: '', photoMoreShared: false, photosInitialized: true,
     drivePinned: [], photoPinned: [], showPhotoShared: true, pickerMode: '', bootPending: false,
-    sheetVisible: false, formSubmitting: false, pendingEntry: undefined, pageActive: true,
+    sheetVisible: false, formSubmitting: false, pendingEntries: [], fileSelecting: false, selectedFiles: [], pageActive: true,
     photoSpace: P.Personal, albumSpace: P.Personal, sharedSpace: P.Shared,
     navStack: { size: () => paths.length, getAllPathName: () => paths, pop() { calls.push('pop'); paths.pop(); },
       clear() { paths.length = 0; }, pushPathByName(name, parameter) { paths.push(name); calls.push([name, parameter]); } },
@@ -69,7 +69,7 @@ function page() {
   };
   for (const name of ['switchTab', 'exitModule', 'enterModule', 'selectModuleTab', 'navigationBusy', 'visibleTabs',
     'expectedPhotoSpace', 'expectedPhotoSection', 'ensurePhotosOpen', 'effectivePhotoTab', 'exitDriveSearch',
-    'backToDriveMore', 'driveViewMatches', 'selectDriveMore', 'selectPhotoSpace', 'cancelDirectoryPicker']) state[name] = method(index, name);
+    'backToDriveMore', 'driveViewMatches', 'selectDriveMore', 'selectPhotoSpace', 'cancelDirectoryPicker', 'cancelFileSelection']) state[name] = method(index, name);
   return state;
 }
 
@@ -104,6 +104,13 @@ test('File Station root back and global task index retain the new root navigatio
   method(index, 'openDriveTransfers').call(state);
   assert.equal(state.activeTab, 2); assert.equal(state.taskSection, 'drive');
 });
+test('File Station back exits multi-selection before leaving the current directory', () => {
+  const state = page(); state.module = 'root'; state.activeTab = 1;
+  state.fileSelecting = true; state.selectedFiles = [{ path: '/hidden/a' }, { path: '/hidden/b' }];
+  method(index, 'onBackPress').call(state);
+  assert.equal(state.fileSelecting, false); assert.equal(state.selectedFiles.length, 0);
+  assert.equal(state.model.directory, '/hidden'); assert.deepEqual(state.calls, []);
+});
 test('both directory pickers push independent destinations without replacing module tabs', () => {
   const state = page(); state.module = 'photos'; state.photoTabId = 'more'; state.activeTab = 3;
   method(index, 'chooseBackupDirectory').call(state);
@@ -128,9 +135,11 @@ test('backup confirmation opens global transfers only after the selected sources
 });
 test('authentication loss resets module, search, picker and root selection', () => {
   const state = page(); state.model.authenticated = false; state.navStack.pushPathByName('drive-search'); state.pickerMode = 'backup';
+  state.fileSelecting = true; state.selectedFiles = [{ path: '/hidden/a' }];
   method(index, 'authenticationChanged').call(state);
   assert.equal(state.module, 'root'); assert.equal(state.activeTab, 0); assert.equal(state.rootTab, 0);
   assert.equal(state.navStack.size(), 0); assert.equal(state.pickerMode, '');
+  assert.equal(state.fileSelecting, false); assert.equal(state.selectedFiles.length, 0);
 });
 test('module entry captures the root and only loads a mismatched Drive view', () => {
   const state = page(); state.module = 'root'; state.activeTab = 3; state.enterModule('drive');
@@ -306,8 +315,8 @@ test('failed Drive view switches cannot navigate or search the hidden old folder
 
 
 test('module back preserves a pending File Station operation in the hidden root page', () => {
-  const state = page(); const pending = { path: '/a' }; state.pendingEntry = pending; state.pendingOperation = 'copy';
+  const state = page(); const pending = [{ path: '/a' }, { path: '/b' }]; state.pendingEntries = pending; state.pendingOperation = 'copy';
   method(index, 'onBackPress').call(state);
-  assert.equal(state.module, 'root'); assert.equal(state.pendingEntry, pending); assert.equal(state.pendingOperation, 'copy');
-  method(index, 'onBackPress').call(state); assert.equal(state.pendingEntry, undefined); assert.equal(state.pendingOperation, '');
+  assert.equal(state.module, 'root'); assert.equal(state.pendingEntries, pending); assert.equal(state.pendingOperation, 'copy');
+  method(index, 'onBackPress').call(state); assert.equal(state.pendingEntries.length, 0); assert.equal(state.pendingOperation, '');
 });

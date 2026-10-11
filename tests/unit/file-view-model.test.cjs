@@ -284,6 +284,25 @@ test('copy, move and delete keep their IDs after 15 seconds and only query statu
   }
 });
 
+test('multi-selection submits all paths once and persists them in a single file task', async () => {
+  const entries = [entry, { name: '目录', path: '/share/目录', isDirectory: true }];
+  for (const [method, action] of [['copyEntries', 'copyFiles'], ['moveEntries', 'moveFiles'], ['deleteEntries', 'deleteFiles']]) {
+    const { model, connector, saved } = await fixture({ status: () => ({ finished: true }) });
+    let starts = 0;
+    const original = connector[action];
+    connector[action] = async (paths, directory) => {
+      starts++;
+      assert.deepEqual(plain(paths), entries.map(item => item.path));
+      if (action !== 'deleteFiles') assert.equal(directory, '/other');
+      return original();
+    };
+    assert.equal(await model[method](entries, '/other'), 'completed');
+    assert.equal(starts, 1);
+    assert.deepEqual(plain(model.fileTasks[0].sources), entries.map(item => item.path));
+    assert.equal([...saved.values()][0].length, 1);
+  }
+});
+
 test('network failure after start leaves an unknown task; successful later queries never restart it', async () => {
   const { model, calls, options } = await fixture({ status: () => { throw failure(K.Network); } });
   assert.equal(await model.copyEntry(entry, '/other'), 'pending');

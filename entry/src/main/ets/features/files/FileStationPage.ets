@@ -11,7 +11,9 @@ export struct FileStationPage {
   @Param topInset: number = 0;
   @Param bottomInset: number = 0;
   @Param errorText: string = '';
-  @Param pendingEntry: NasFileEntry | undefined = undefined;
+  @Param pendingEntries: NasFileEntry[] = [];
+  @Param selecting: boolean = false;
+  @Param selectedPaths: string[] = [];
   @Param pendingOperation: string = '';
   @Param canUseDestination: boolean = false;
   @Param pickerMode: string = '';
@@ -26,6 +28,10 @@ export struct FileStationPage {
   @Event onCancelDestination: () => void = (): void => {};
   @Event onConfirm: () => void = (): void => {};
   @Event onCancel: () => void = (): void => {};
+  @Event onToggleSelection: (entry: NasFileEntry) => void = (): void => {};
+  @Event onSelectAll: () => void = (): void => {};
+  @Event onCancelSelection: () => void = (): void => {};
+  @Event onSelectionAction: (kind: string) => void = (): void => {};
 
   @Builder
   breadcrumbBar() {
@@ -48,9 +54,12 @@ export struct FileStationPage {
 
   @Builder
   destinationBar() {
-    if (this.pendingEntry !== undefined) {
+    if (this.pendingEntries.length > 0) {
       Column({ space: 4 }) {
-        Text((this.pendingOperation === 'copy' ? '复制“' : '移动“') + this.pendingEntry.name + '”')
+        Text(this.pendingEntries.length === 1 ?
+          (this.pendingOperation === 'copy' ? '复制“' : '移动“') + this.pendingEntries[0].name + '”' :
+          this.pendingOperation === 'copy' ? $r('app.string.file_copy_selected', this.pendingEntries.length) :
+          $r('app.string.file_move_selected', this.pendingEntries.length))
           .fontSize(14).width('100%').fontColor($r('sys.color.font_secondary')).maxLines(2)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
         if (this.model.directory.length === 0) {
@@ -64,6 +73,34 @@ export struct FileStationPage {
         }.width('100%')
       }.width('100%').padding(12).borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_subtle'))
         .alignItems(HorizontalAlign.Start)
+    }
+  }
+
+  @Builder
+  selectionBar() {
+    if (this.selecting) {
+      Column() {
+        Row() {
+          Text($r('app.string.file_selected_count', this.selectedPaths.length)).layoutWeight(1)
+            .fontSize(14).fontColor($r('sys.color.font_secondary'))
+          Button($r('app.string.file_select_loaded')).buttonStyle(ButtonStyleMode.TEXTUAL)
+            .constraintSize({ minHeight: WorkbenchMetrics.touchSize }).enabled(!this.model.busy).onClick(this.onSelectAll)
+          Button($r('app.string.action_cancel')).buttonStyle(ButtonStyleMode.TEXTUAL)
+            .constraintSize({ minHeight: WorkbenchMetrics.touchSize }).enabled(!this.model.busy).onClick(this.onCancelSelection)
+        }.width('100%')
+        Row({ space: 12 }) {
+          if (this.model.supports('SYNO.FileStation.CopyMove')) {
+            Button($r('app.string.file_copy')).layoutWeight(1).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
+              .enabled(!this.model.busy && this.selectedPaths.length > 0).onClick((): void => { this.onSelectionAction('copy'); })
+            Button($r('app.string.file_move')).layoutWeight(1).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
+              .enabled(!this.model.busy && this.selectedPaths.length > 0).onClick((): void => { this.onSelectionAction('move'); })
+          }
+          if (this.model.supports('SYNO.FileStation.Delete')) {
+            Button($r('app.string.file_delete')).layoutWeight(1).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
+              .enabled(!this.model.busy && this.selectedPaths.length > 0).onClick((): void => { this.onSelectionAction('delete'); })
+          }
+        }.width('100%')
+      }.width('100%')
     }
   }
 
@@ -134,6 +171,7 @@ export struct FileStationPage {
             this.breadcrumbBar()
             this.destinationBar()
             this.pickerBar()
+            this.selectionBar()
             WorkbenchNotice({ text: this.errorText, warning: true })
             if (this.errorText.length === 0) { WorkbenchNotice({ text: this.model.actionNotice }) }
           }.width('100%').padding({ left: 16, right: 16, top: this.topInset + 4, bottom: 8 })
@@ -146,27 +184,32 @@ export struct FileStationPage {
         }
         ForEach(this.visibleEntries(), (entry: NasFileEntry): void => {
           ListItem() {
-            WorkbenchEntryRow({ title: entry.name, subtitle: entry.isDirectory ? '文件夹' : workbenchBytes(entry.bytes),
-              icon: entry.isDirectory ? $r('sys.symbol.folder') : $r('sys.symbol.doc'),
-              iconColor: entry.isDirectory ? $r('sys.color.icon_emphasize') : $r('sys.color.font_secondary'),
-              available: !this.model.busy, menuAvailable: !this.model.busy,
-              menu: this.pickerMode.length === 0 ? this.entryMenu(entry) : [],
-              onOpen: (): void => {
-                if (entry.isDirectory) { this.model.openDirectory(entry); }
-                else if (/\.(?:jpe?g|png|gif|webp|bmp|heic|heif|tiff?|dng|avif|avis)$/i.test(entry.name)) { this.onOpenImage(entry); }
-                else { this.onOpenForm('detail', entry); }
-              } })
+            Row() {
+              if (this.selecting) {
+                Checkbox().select(this.selectedPaths.includes(entry.path)).enabled(!this.model.busy)
+                  .margin({ left: 16, right: 0 }).width(24).height(24).accessibilityText(entry.name)
+                  .onChange((selected: boolean): void => {
+                    if (selected !== this.selectedPaths.includes(entry.path)) { this.onToggleSelection(entry); }
+                  })
+              }
+              WorkbenchEntryRow({ title: entry.name, subtitle: entry.isDirectory ? '文件夹' : workbenchBytes(entry.bytes),
+                icon: entry.isDirectory ? $r('sys.symbol.folder') : $r('sys.symbol.doc'),
+                iconColor: entry.isDirectory ? $r('sys.color.icon_emphasize') : $r('sys.color.font_secondary'),
+                available: !this.model.busy, menuAvailable: !this.model.busy,
+                menu: this.pickerMode.length === 0 && !this.selecting ? this.entryMenu(entry) : [],
+                onOpen: (): void => {
+                  if (this.selecting) { this.onToggleSelection(entry); }
+                  else if (entry.isDirectory) { this.model.openDirectory(entry); }
+                  else if (/\.(?:jpe?g|png|gif|webp|bmp|heic|heif|tiff?|dng|avif|avis)$/i.test(entry.name)) { this.onOpenImage(entry); }
+                  else { this.onOpenForm('detail', entry); }
+                } }).layoutWeight(1)
+            }.width('100%')
           }
         }, (entry: NasFileEntry): string => this.model.address + ':' + this.model.account + ':' + entry.path)
-        if (this.model.entries.length > 0) {
+        if (this.model.listLoading === 'more') {
           ListItem() {
             Row({ space: 8 }) {
-              if (this.model.listLoading === 'more') {
-                LoadingProgress().width(24).height(24).accessibilityText($r('app.string.file_list_loading'))
-              } else {
-                Text(this.model.entries.length.toString() + ' / ' + this.model.total.toString() + ' 项')
-                  .fontSize(12).fontColor($r('sys.color.font_secondary'))
-              }
+              LoadingProgress().width(24).height(24).accessibilityText($r('app.string.file_list_loading'))
             }.width('100%').height(50).justifyContent(FlexAlign.Center)
           }
         }

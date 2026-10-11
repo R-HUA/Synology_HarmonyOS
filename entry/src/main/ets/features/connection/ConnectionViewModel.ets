@@ -579,24 +579,45 @@ export class ConnectionViewModel {
   }
 
   async deleteEntry(entry: NasFileEntry): Promise<FileEditResult> {
+    return this.deleteEntries([entry]);
+  }
+
+  /** 多选共用一次服务端任务，保留所有源路径供结果核对。 */
+  async deleteEntries(entries: NasFileEntry[]): Promise<FileEditResult> {
     const connector = this.connector;
     if (connector === undefined || this.directory.length === 0 || !this.canStartFileTask()) { return 'failed'; }
+    const paths = entries.map((entry: NasFileEntry): string => entry.path);
     return this.editFiles(async (): Promise<FileEditResult> =>
-      this.startFileTask(connector, (): Promise<NasFileTask> => connector.deleteFiles([entry.path]), '删除 ' + entry.name, 'delete', [entry.path]), '删除已完成');
+      this.startFileTask(connector, (): Promise<NasFileTask> => connector.deleteFiles(paths),
+        '删除 ' + (entries.length === 1 ? entries[0].name : entries.length.toString() + ' 项'), 'delete', paths), '删除已完成');
   }
 
   async copyEntry(entry: NasFileEntry, directory: string): Promise<FileEditResult> {
+    return this.copyEntries([entry], directory);
+  }
+
+  /** 所有选中项一次提交，避免前一项未完成时阻断后续项。 */
+  async copyEntries(entries: NasFileEntry[], directory: string): Promise<FileEditResult> {
     const connector = this.connector;
     if (connector === undefined || !this.canStartFileTask()) { return 'failed'; }
+    const paths = entries.map((entry: NasFileEntry): string => entry.path);
     return this.editFiles(async (): Promise<FileEditResult> =>
-      this.startFileTask(connector, (): Promise<NasFileTask> => connector.copyFiles([entry.path], directory), '复制 ' + entry.name, 'copy', [entry.path], directory), '复制已完成');
+      this.startFileTask(connector, (): Promise<NasFileTask> => connector.copyFiles(paths, directory),
+        '复制 ' + (entries.length === 1 ? entries[0].name : entries.length.toString() + ' 项'), 'copy', paths, directory), '复制已完成');
   }
 
   async moveEntry(entry: NasFileEntry, directory: string): Promise<FileEditResult> {
+    return this.moveEntries([entry], directory);
+  }
+
+  /** 批量移动沿用单项操作的任务持久化与查询流程。 */
+  async moveEntries(entries: NasFileEntry[], directory: string): Promise<FileEditResult> {
     const connector = this.connector;
     if (connector === undefined || !this.canStartFileTask()) { return 'failed'; }
+    const paths = entries.map((entry: NasFileEntry): string => entry.path);
     return this.editFiles(async (): Promise<FileEditResult> =>
-      this.startFileTask(connector, (): Promise<NasFileTask> => connector.moveFiles([entry.path], directory), '移动 ' + entry.name, 'move', [entry.path], directory), '移动已完成');
+      this.startFileTask(connector, (): Promise<NasFileTask> => connector.moveFiles(paths, directory),
+        '移动 ' + (entries.length === 1 ? entries[0].name : entries.length.toString() + ' 项'), 'move', paths, directory), '移动已完成');
   }
 
   private canStartFileTask(): boolean {

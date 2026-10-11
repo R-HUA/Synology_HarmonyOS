@@ -140,7 +140,9 @@ struct Index {
   @Local private selectedEntry: NasFileEntry | undefined = undefined;
   @Local private formName: string = '';
   @Local private formSubmitting: boolean = false;
-  @Local private pendingEntry: NasFileEntry | undefined = undefined;
+  @Local private pendingEntries: NasFileEntry[] = [];
+  @Local private fileSelecting: boolean = false;
+  @Local private selectedFiles: NasFileEntry[] = [];
   @Local private pendingOperation: string = '';
   @Local private transferSubmitting: boolean = false;
   @Local private transferErrorText: string = '';
@@ -247,7 +249,8 @@ struct Index {
       }
       this.navStack.pop(); return true;
     }
-    if (this.module === 'root' && this.activeTab === 1 && this.pendingEntry !== undefined) { this.pendingEntry = undefined; this.pendingOperation = ''; return true; }
+    if (this.module === 'root' && this.activeTab === 1 && this.fileSelecting) { this.cancelFileSelection(); return true; }
+    if (this.module === 'root' && this.activeTab === 1 && this.pendingEntries.length > 0) { this.pendingEntries = []; this.pendingOperation = ''; return true; }
     if (this.model.authenticated && this.module === 'drive') {
       if (this.driveViewMatches() && this.model.drive.trail.length > 1 && this.model.drive.canGoUp()) { if (!this.model.drive.busy) { this.model.drive.goUp(); } return true; }
       if (this.driveTabId === 'more' && this.driveMoreView.length > 0) { this.backToDriveMore(); return true; }
@@ -285,7 +288,8 @@ struct Index {
       this.selectedEntry = undefined;
       this.selectedTaskId = '';
       this.deviceInfo = [];
-      this.pendingEntry = undefined;
+      this.pendingEntries = [];
+      this.cancelFileSelection();
       this.pendingOperation = '';
       this.formName = '';
       this.transferErrorText = '';
@@ -298,6 +302,43 @@ struct Index {
   @Monitor('model.busy')
   private pageLoadFinished(): void {
     if (!this.model.busy && this.model.authenticated && this.module === 'photos') { this.ensurePhotosOpen(); }
+  }
+
+  @Monitor('model.directory', 'module', 'activeTab')
+  private fileSelectionLocationChanged(): void { this.cancelFileSelection(); }
+
+  @Monitor('model.entries')
+  private fileSelectionEntriesChanged(): void {
+    this.selectedFiles = this.model.entries.filter((entry: NasFileEntry): boolean =>
+      this.selectedFiles.some((selected: NasFileEntry): boolean => selected.path === entry.path));
+  }
+
+  private cancelFileSelection(): void { this.fileSelecting = false; this.selectedFiles = []; }
+
+  private toggleFileSelection(entry: NasFileEntry): void {
+    this.selectedFiles = this.selectedFiles.some((selected: NasFileEntry): boolean => selected.path === entry.path) ?
+      this.selectedFiles.filter((selected: NasFileEntry): boolean => selected.path !== entry.path) : this.selectedFiles.concat([entry]);
+  }
+
+  /** 批量动作复用文件任务流程，确认删除前保留选择。 */
+  private selectedFileAction(kind: string): void {
+    if (this.model.busy || this.selectedFiles.length === 0) { return; }
+    if (kind === 'delete') {
+      const entries = this.selectedFiles.slice();
+      this.getUIContext().showAlertDialog({ title: $r('app.string.file_delete_selected'),
+        message: $r('app.string.file_delete_selected_confirm', entries.length),
+        primaryButton: { value: $r('app.string.action_cancel'), action: (): void => {} },
+        secondaryButton: { value: $r('app.string.file_delete'), action: (): void => {
+          this.model.deleteEntries(entries).then((result): void => {
+            if (result !== 'failed') { this.cancelFileSelection(); }
+            if (result === 'pending') { this.taskSection = 'files'; this.switchTab(ROOT_TASK_TAB); }
+          });
+        } } });
+    } else {
+      this.pendingEntries = this.selectedFiles.slice();
+      this.pendingOperation = kind;
+      this.cancelFileSelection();
+    }
   }
 
   @Monitor('model.deviceModel')
@@ -590,21 +631,20 @@ struct Index {
 
   private chooseDestination(entry: NasFileEntry, operation: string): void {
     this.sheetVisible = false;
-    this.pendingEntry = entry;
+    this.pendingEntries = [entry];
     this.pendingOperation = operation;
   }
 
   private destinationAllowed(): boolean {
-    const entry = this.pendingEntry;
-    return entry !== undefined && workbenchCanUseDestination(entry.path, entry.isDirectory, this.model.directory);
+    return this.pendingEntries.length > 0 && this.pendingEntries.every((entry: NasFileEntry): boolean =>
+      workbenchCanUseDestination(entry.path, entry.isDirectory, this.model.directory));
   }
 
   private async applyDestination(): Promise<void> {
-    const entry = this.pendingEntry;
-    if (entry === undefined || this.model.busy || !this.destinationAllowed()) { return; }
-    const result = this.pendingOperation === 'copy' ? await this.model.copyEntry(entry, this.model.directory) :
-      await this.model.moveEntry(entry, this.model.directory);
-    if (result !== 'failed') { this.pendingEntry = undefined; this.pendingOperation = ''; }
+    if (this.model.busy || !this.destinationAllowed()) { return; }
+    const result = this.pendingOperation === 'copy' ? await this.model.copyEntries(this.pendingEntries, this.model.directory) :
+      await this.model.moveEntries(this.pendingEntries, this.model.directory);
+    if (result !== 'failed') { this.pendingEntries = []; this.pendingOperation = ''; }
     if (result === 'pending') { this.taskSection = 'files'; this.switchTab(ROOT_TASK_TAB); }
   }
 
@@ -762,7 +802,7 @@ struct Index {
 
   private chooseBackupDirectory(): void {
     if (this.navigationBusy() || this.backup.selecting || this.backup.submitting || this.backup.sources.length === 0) { return; }
-    this.pendingEntry = undefined; this.pendingOperation = '';
+    this.pendingEntries = []; this.pendingOperation = '';
     this.pickerMode = 'backup'; this.navStack.pushPathByName('directory-picker', 'backup');
   }
 
@@ -850,7 +890,7 @@ struct Index {
     }
     if (this.module === 'root' && this.activeTab === 1) {
       const items: HdsNavigationMenuItemOptions[] = [];
-      if (this.model.supports('SYNO.FileStation.Upload') || this.model.supports('SYNO.FileStation.CreateFolder')) {
+      if (!this.fileSelecting && (this.model.supports('SYNO.FileStation.Upload') || this.model.supports('SYNO.FileStation.CreateFolder'))) {
         items.push({ content: { label: '上传与新建', icon: $r('sys.symbol.plus'), componentId: 'file-add-menu', type: IconStyleMode.SMALL,
           isEnabled: this.model.directory.length > 0 && !this.model.busy, action: (): void => { this.openFileTitleMenu(true); } } });
       }
@@ -909,6 +949,9 @@ struct Index {
         items.push(new TitleMenuItem('新建文件夹', true, (): void => { this.openForm('create'); }));
       }
     } else {
+      items.push(new TitleMenuItem(this.previewText(this.fileSelecting ? $r('app.string.file_cancel_selection') : $r('app.string.file_multi_select')),
+        this.model.directory.length > 0 && this.pendingEntries.length === 0 && this.model.entries.length > 0,
+        (): void => { if (this.fileSelecting) { this.cancelFileSelection(); } else { this.fileSelecting = true; } }));
       if (this.model.directory.length > 0) {
         items.push(new TitleMenuItem(this.sortLabel(), true,
           (): void => { this.openForm('sort'); }));
@@ -917,9 +960,8 @@ struct Index {
         items.push(new TitleMenuItem('我的分享链接', true,
           (): void => { this.navStack.pushPathByName('share-links', undefined); }));
       }
-      if (driveTabs((view: DriveView): boolean => this.model.drive.supportsView(view), this.drivePinned).length > 0) {
-        items.push(new TitleMenuItem('Synology Drive', true, (): void => { this.enterModule('drive'); }));
-      }
+      items.push(new TitleMenuItem(this.previewText($r('app.string.file_task_records')), true,
+        (): void => { this.taskSection = 'files'; this.switchTab(ROOT_TASK_TAB); }));
       items.push(new TitleMenuItem('刷新目录', true, (): void => { this.model.refresh(); }));
     }
     this.openTitleMenu(adding ? 'file-add-menu' : 'file-tools-menu', items);
@@ -1342,11 +1384,16 @@ struct Index {
     } else if (tab.id === 'home') { this.homeView() }
     else if (tab.id === 'files') {
       FileStationPage({ model: this.model, scroller: this.filesScroller, topInset: this.contentTopInset(), bottomInset: this.bottomInset(),
-        errorText: this.visibleError(), pendingEntry: this.pendingEntry, pendingOperation: this.pendingOperation, canUseDestination: this.destinationAllowed(),
+        errorText: this.visibleError(), pendingEntries: this.pendingEntries, pendingOperation: this.pendingOperation, canUseDestination: this.destinationAllowed(),
+        selecting: this.fileSelecting, selectedPaths: this.selectedFiles.map((entry: NasFileEntry): string => entry.path),
+        onToggleSelection: (entry: NasFileEntry): void => { this.toggleFileSelection(entry); },
+        onSelectAll: (): void => { this.selectedFiles = this.model.entries.slice(); },
+        onCancelSelection: (): void => { this.cancelFileSelection(); },
+        onSelectionAction: (kind: string): void => { this.selectedFileAction(kind); },
         onOpenForm: (kind: string, entry?: NasFileEntry): void => { this.fileEntryAction(kind, entry); },
         onOpenImage: (entry: NasFileEntry): void => { this.navStack.pushPathByName('file-preview', undefined); this.model.fileOriginal.openFile(entry); },
         onNavigateBreadcrumb: (target: string): void => { this.navigateBreadcrumb(target); },
-        onApplyDestination: (): void => { this.applyDestination(); }, onCancelDestination: (): void => { this.pendingEntry = undefined; this.pendingOperation = ''; } })
+        onApplyDestination: (): void => { this.applyDestination(); }, onCancelDestination: (): void => { this.pendingEntries = []; this.pendingOperation = ''; } })
     } else if (tab.id === 'tasks') { this.tasksView() }
     else { this.settingsView() }
   }
