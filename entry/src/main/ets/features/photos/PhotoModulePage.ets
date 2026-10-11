@@ -163,14 +163,6 @@ export struct PhotoModulePage {
     return workbenchBytes(this.backup.sources.reduce((bytes: number, item: PhotoBackupSource): number => bytes + item.bytes, 0));
   }
 
-  private photoServices(): string {
-    const services: string[] = [];
-    if (this.supportsSpace(PhotosSpace.Personal)) { services.push('个人照片'); }
-    if (this.supportsSpace(PhotosSpace.Shared)) { services.push('共享空间'); }
-    if (this.supportsSpace(PhotosSpace.WithMe)) { services.push('与我共享的相册'); }
-    return services.length > 0 ? services.join('、') + '可访问。' : '当前设备未提供可用的照片服务。';
-  }
-
   @Builder
   emptyState(title: string, description: string) {
     Column({ space: 8 }) {
@@ -194,13 +186,12 @@ export struct PhotoModulePage {
     if (supportsPhotoBackup((api: string): boolean => this.model.supports(api))) {
       if (this.backup.sources.length === 0) {
         Column() {
-          WorkbenchActionRow({ icon: $r('sys.symbol.arrow_up_circle'), label: '备份照片与视频',
-            description: this.backup.selecting ? '正在选择…' : '选择内容，确认位置后上传',
+          WorkbenchActionRow({ icon: $r('sys.symbol.arrow_up_circle'), label: '照片备份',
             available: this.active && !this.backup.selecting && !this.backup.submitting && !this.model.busy,
             onAction: (): void => { this.onSelectBackup(); } })
           WorkbenchNotice({ text: this.backup.errorText, warning: true })
           WorkbenchNotice({ text: this.backup.status })
-        }.width('100%').borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_surface'))
+        }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).clip(true).backgroundColor($r('app.color.workbench_surface'))
       } else {
         Column({ space: WorkbenchMetrics.itemGap }) {
           Row({ space: WorkbenchMetrics.itemGap }) {
@@ -336,27 +327,24 @@ export struct PhotoModulePage {
       if (this.showBackupInMore) { this.backupCard() }
       Column() {
         if (this.showTransfersInMore) {
-          WorkbenchActionRow({ icon: $r('sys.symbol.arrow_down_circle'), label: '传输任务',
-            description: '查看上传与下载进度', available: this.active,
+          WorkbenchActionRow({ icon: $r('sys.symbol.arrow_down_circle'), label: '传输任务', available: this.active,
             onAction: (): void => { this.onOpenTransfers(); } })
         }
         if (this.showSharedInMore && (this.supportsSpace(PhotosSpace.Shared) || this.supportsSpace(PhotosSpace.WithMe) ||
           this.model.supports('SYNO.Foto.Browse.Album'))) {
-          WorkbenchActionRow({ icon: $r('sys.symbol.picture'), label: '共享相册',
-            description: '浏览共享空间与收到的相册', available: this.active,
+          WorkbenchActionRow({ icon: $r('sys.symbol.picture'), label: '共享相册', available: this.active,
             onAction: (): void => { this.onOpenShared(); } })
         }
         if (this.supportsSpace(this.model.photoLibrary.space)) {
-          WorkbenchActionRow({ icon: $r('sys.symbol.arrow_clockwise'), label: '刷新照片',
-            description: '重新读取当前照片空间', available: this.active && !this.model.photoLibrary.busy,
+          WorkbenchActionRow({ icon: $r('sys.symbol.arrow_clockwise'), label: '刷新照片', showChevron: false,
+            available: this.active && !this.model.photoLibrary.busy,
             onAction: (): void => { this.model.photoLibrary.refresh(); } })
         }
-        WorkbenchActionRow({ icon: $r('sys.symbol.ellipsis_circle'), label: '底栏设置',
-          description: '选择常用页签并调整顺序', available: this.active,
+      }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).clip(true).backgroundColor($r('app.color.workbench_surface'))
+      Column() {
+        WorkbenchActionRow({ icon: $r('sys.symbol.slider_horizontal_2'), label: '底栏设置', available: this.active,
           onAction: (): void => { this.onCustomize(); } })
-      }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
-      WorkbenchSectionTitle({ title: '照片服务' })
-      WorkbenchNotice({ text: this.photoServices() })
+      }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).clip(true).backgroundColor($r('app.color.workbench_surface'))
     }.width('100%').alignItems(HorizontalAlign.Start)
       .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin })
   }

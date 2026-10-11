@@ -371,7 +371,10 @@ struct Index {
       }
       return driveViewLabel(this.driveTabId as DriveView);
     }
-    if (this.module === 'photos') { return this.photoTabId === 'transfers' ? '照片传输' : '照片'; }
+    if (this.module === 'photos') {
+      if (this.photoTabId === 'more' && !this.photoMoreShared) { return this.visibleTabs()[this.activeTab].label; }
+      return this.photoTabId === 'transfers' ? '照片传输' : '照片';
+    }
     return rootTabs()[this.activeTab].label;
   }
 
@@ -884,7 +887,7 @@ struct Index {
         items.push({ content: { label: '搜索', icon: $r('sys.symbol.magnifyingglass'), type: IconStyleMode.SMALL,
           isEnabled: !this.navigationBusy() && this.driveViewMatches(), action: (): void => { this.showDriveSearch(); } } });
       }
-      if (this.driveTabId !== 'more' || this.driveMoreView.length > 0) {
+      if (this.driveTabId !== 'more') {
         items.push({ content: { label: '新增与工具', icon: $r('sys.symbol.plus'), componentId: 'drive-add-menu', type: IconStyleMode.SMALL,
           isEnabled: !this.navigationBusy(), action: (): void => { this.openDriveTitleMenu(); } } });
       }
@@ -1212,7 +1215,8 @@ struct Index {
           Text(this.model.deviceTitle).fontSize(24).fontWeight(FontWeight.Bold)
             .fontColor($r('sys.color.font_primary')).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
             .flexShrink(1)
-          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([$r('sys.color.font_tertiary')])
+          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(WorkbenchMetrics.rowArrowSize)
+            .fontColor([$r('sys.color.font_secondary')]).opacity(WorkbenchMetrics.rowArrowOpacity)
         }.width('100%').alignItems(VerticalAlign.Center)
       }.layoutWeight(1).alignItems(HorizontalAlign.Start)
       this.deviceArtwork()
@@ -1288,7 +1292,7 @@ struct Index {
 
         Column() {
           WorkbenchActionRow({ icon: $r('sys.symbol.rectangle_split_3x1'), label: '模块底栏',
-            description: '选择 Drive 与照片的常用功能', onAction: (): void => { this.navStack.pushPathByName('module-tabs', undefined); } })
+            description: '选择 Drive 与照片的常用功能', onAction: (): void => { this.navStack.pushPathByName('module-tabs', 'root'); } })
           WorkbenchActionRow({ icon: $r('sys.symbol.arrow_right_and_square'), label: '登出 NAS', destructive: true, showChevron: false,
             available: !this.model.busy, onAction: (): void => { this.confirmLogout(); } })
         }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
@@ -1302,31 +1306,36 @@ struct Index {
   tabSettingRow(label: string, selected: boolean, enabled: boolean, onToggle: (selected: boolean) => void) {
     Row({ space: 12 }) {
       Text(label).fontSize(16).fontColor($r('sys.color.font_primary')).layoutWeight(1)
-      Toggle({ type: ToggleType.Switch, isOn: selected }).enabled(enabled && this.tabSettingsReady && !this.tabSettingsBusy && !this.navigationBusy())
+      Toggle({ type: ToggleType.Switch, isOn: selected })
+        .enabled(enabled && this.tabSettingsReady && !this.tabSettingsBusy && !this.navigationBusy())
         .onChange(onToggle).accessibilityText(label + '，显示在底栏')
     }.width('100%').constraintSize({ minHeight: WorkbenchMetrics.rowMinHeight }).padding({ left: 16, right: 16 })
   }
 
   @Builder
-  tabSettingsView() {
+  tabSettingsView(module: WorkbenchModule) {
     Scroll(this.tabSettingsScroller) {
       Column({ space: WorkbenchMetrics.sectionGap }) {
-        Text('选择常用功能加入底栏，最多显示 5 项。加入后，该功能会从“更多”中移除。')
-          .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
-        if (this.module !== 'photos' &&
+        if (module !== 'photos' &&
           driveTabs((view: DriveView): boolean => this.model.drive.supportsView(view), this.drivePinned).length > 0) {
           WorkbenchSectionTitle({ title: 'Synology Drive' })
-          Text('我的文件、团队文件和更多固定显示，可再加入 2 项。').fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
           Column() {
+            ForEach([DriveView.MyDrive, DriveView.TeamFolders].filter((view: DriveView): boolean => this.model.drive.supportsView(view)),
+              (view: DriveView): void => {
+                this.tabSettingRow(driveViewLabel(view), true, false, (_selected: boolean): void => {})
+              }, (view: DriveView): string => view)
             ForEach(DRIVE_MORE_VIEWS.filter((view: DriveView): boolean => this.model.drive.supportsView(view)), (view: DriveView): void => {
               this.tabSettingRow(driveViewLabel(view), this.drivePinned.includes(view), this.drivePinned.includes(view) || this.drivePinned.length < 2,
                 (selected) => { this.toggleDriveTab(view, selected); })
             }, (view: DriveView): string => view)
-          }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
+            this.tabSettingRow('更多', true, false, (_selected: boolean): void => {})
+          }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).clip(true).backgroundColor($r('app.color.workbench_surface'))
         }
-        if (this.module !== 'drive' && this.supportsPhotos()) {
+        if (module !== 'drive' && this.supportsPhotos()) {
           WorkbenchSectionTitle({ title: '照片' })
           Column() {
+            this.tabSettingRow('照片', true, false, (_selected: boolean): void => {})
+            this.tabSettingRow('相册', true, false, (_selected: boolean): void => {})
             if (supportsPhotoSharing((api: string): boolean => this.model.supports(api))) {
               this.tabSettingRow('共享', this.showPhotoShared, !this.showPhotoShared ?
                 photoTabs((api: string): boolean => this.model.supports(api), false, this.photoPinned).length < 5 : true,
@@ -1338,7 +1347,8 @@ struct Index {
             }
             this.tabSettingRow('传输任务', this.photoPinned.includes('transfers'), this.photoCanPin('transfers'),
               (selected: boolean): void => { this.togglePhotoTab('transfers', selected); })
-          }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
+            this.tabSettingRow('更多', true, false, (_selected: boolean): void => {})
+          }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).clip(true).backgroundColor($r('app.color.workbench_surface'))
         }
         WorkbenchNotice({ text: this.tabSettingsError, warning: true })
         if (!this.tabSettingsReady) {
@@ -1357,13 +1367,13 @@ struct Index {
         expectedView: tab.view ?? (this.driveMoreView.length > 0 ? this.driveMoreView as DriveView : DriveView.MyDrive),
         scroller: this.driveScrollerFor(tab.id), topInset: this.contentTopInset(), bottomInset: this.bottomInset(),
         moreView: this.driveMoreView, moreViews: this.driveMoreViews(),
-        onSelectMore: (view: DriveView): void => { this.selectDriveMore(view); }, onBackToMore: (): void => { this.backToDriveMore(); },
+        onSelectMore: (view: DriveView): void => { this.selectDriveMore(view); },
         onOpenTransfers: (): void => { this.openDriveTransfers(); },
         onUploadTo: (entry: DriveEntry): void => { this.prepareDriveUpload(entry); },
         onOpenAction: (action: DriveAction, entry?: DriveEntry): void => { if (entry !== undefined) { this.prepareDriveAction(entry, action); } },
         onOpenOriginal: (entry: DriveEntry): void => { this.openDriveOriginal(entry); },
         onOpenLinks: (entry?: DriveEntry): void => { this.openDriveLinks(entry); },
-        onCustomize: (): void => { this.navStack.pushPathByName('module-tabs', undefined); } })
+        onCustomize: (): void => { this.navStack.pushPathByName('module-tabs', 'drive'); } })
     } else if (this.module === 'photos') {
       if (tab.id === 'transfers') { this.tasksView() }
       else {
@@ -1389,7 +1399,7 @@ struct Index {
             onChooseBackup: (): void => { this.chooseBackupDirectory(); }, onShowBackupContents: (): void => { this.openForm('backup'); },
             onOpenTransfers: (): void => { this.taskSection = 'transfers'; this.switchTab(ROOT_TASK_TAB); },
             onOpenShared: (): void => { this.openPhotoShared(); },
-            onCustomize: (): void => { this.navStack.pushPathByName('module-tabs', undefined); } })
+            onCustomize: (): void => { this.navStack.pushPathByName('module-tabs', 'photos'); } })
         }.width('100%').height('100%')
       }
     } else if (tab.id === 'home') { this.homeView() }
@@ -1757,7 +1767,7 @@ struct Index {
   @Builder
   destinationBuilder(name: string, parameter: Object) {
     if (name === 'module-tabs') {
-      HdsNavDestination() { this.tabSettingsView() }
+      HdsNavDestination() { this.tabSettingsView(parameter as WorkbenchModule) }
         .backgroundColor($r('app.color.workbench_background'))
         .titleBar({ enableComponentSafeArea: true, content: { title: { mainTitle: '模块底栏' } } })
         .bindToScrollable([this.tabSettingsScroller])
@@ -2494,7 +2504,7 @@ struct Index {
         .titleMode(HdsNavigationTitleMode.MINI).titleBar({ enableComponentSafeArea: false,
           content: { title: { mainTitle: this.pageTitle() },
             backIcon: this.module === 'root' ? undefined : { icon: $r('sys.symbol.chevron_left'),
-              action: (): void => { this.exitModule(); }, type: IconStyleMode.SMALL },
+              action: (): void => { this.onBackPress(); }, type: IconStyleMode.SMALL },
             menu: { value: this.pageMenu(), maxCount: 2 } },
           style: { scrollEffectOpts: { enableScrollEffect: false, scrollEffectType: ScrollEffectType.GRADIENT_BLUR },
             systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE },

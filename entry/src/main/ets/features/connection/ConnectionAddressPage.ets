@@ -46,7 +46,8 @@ export struct NasConnectionAddressPage {
               }
             }.layoutWeight(1).alignItems(HorizontalAlign.Start)
             if (!this.model.authenticated || this.model.address !== address.origin) {
-              SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(12).fontColor([$r('sys.color.font_tertiary')])
+              SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(WorkbenchMetrics.rowArrowSize)
+                .fontColor([$r('sys.color.font_secondary')]).opacity(WorkbenchMetrics.rowArrowOpacity)
                 .accessibilityLevel('no')
             }
           }.width('100%').padding({ top: 8, bottom: 8, right: 4 })

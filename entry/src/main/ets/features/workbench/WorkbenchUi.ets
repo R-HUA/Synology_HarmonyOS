@@ -11,6 +11,9 @@ export class WorkbenchMetrics {
   static readonly sectionGap: number = 12;
   static readonly itemGap: number = 12;
   static readonly cardRadius: number = 16;
+  /** 列表入口统一尾部箭头，避免各页面独立调整后产生差异。 */
+  static readonly rowArrowSize: number = 18;
+  static readonly rowArrowOpacity: number = 0.8;
   static readonly innerRadius: number = 12;
   static readonly touchSize: number = 48;
   static readonly rowMinHeight: number = 64;
@@ -153,7 +156,8 @@ export struct WorkbenchActionRow {
           }
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
         if (this.showChevron) {
-          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(12).fontColor([$r('sys.color.font_tertiary')])
+          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(WorkbenchMetrics.rowArrowSize)
+            .fontColor([$r('sys.color.font_secondary')]).opacity(WorkbenchMetrics.rowArrowOpacity)
             .accessibilityLevel('no')
         }
       }.width('100%').padding({ left: 16, right: 16, top: this.compact ? 6 : 10, bottom: this.compact ? 6 : 10 })

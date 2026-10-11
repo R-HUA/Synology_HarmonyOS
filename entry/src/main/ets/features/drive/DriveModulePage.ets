@@ -26,7 +26,6 @@ export struct DriveModulePage {
   @Param moreView: string = '';
   @Param moreViews: DriveView[] = [];
   @Event onSelectMore: (view: DriveView) => void = (_view: DriveView): void => {};
-  @Event onBackToMore: () => void = (): void => {};
   @Event onExitSearch: () => void = (): void => {};
   @Event onOpenTransfers: () => void = (): void => {};
   @Event onUploadTo: (entry: DriveEntry) => void = (_entry: DriveEntry): void => {};
@@ -122,13 +121,6 @@ export struct DriveModulePage {
       List({ space: 0, scroller: this.scroller }) {
         ListItem() {
           Column({ space: 4 }) {
-            if (this.tabId === 'more') {
-              Button() {
-                SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(20).fontColor([$r('sys.color.icon_primary')])
-              }.width(48).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).type(ButtonType.Normal)
-                .padding(0).backgroundColor(Color.Transparent).accessibilityText('返回更多')
-                .enabled(!this.model.busy && !this.model.drive.busy).onClick(this.onBackToMore)
-            }
             if (this.searchPage) { this.driveSearch() }
             if (this.canRenderEntries() && (this.model.drive.trail.length > 1 || this.searchPage)) {
               this.driveBreadcrumb()
@@ -217,11 +209,11 @@ export struct DriveModulePage {
                 available: !this.model.busy && !this.model.drive.busy,
                 onAction: (): void => { this.onSelectMore(view); } })
             }, (view: DriveView): string => view)
-          }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
+          }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).clip(true).backgroundColor($r('app.color.workbench_surface'))
         }
         Column() {
           WorkbenchActionRow({ label: '底栏设置', icon: $r('sys.symbol.slider_horizontal_2'), onAction: this.onCustomize })
-        }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
+        }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).clip(true).backgroundColor($r('app.color.workbench_surface'))
         this.driveNotices()
       }.width('100%').alignItems(HorizontalAlign.Start)
         .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin,
@@ -354,7 +346,8 @@ export struct DriveModulePage {
         this.driveFileList()
       }
     }.width('100%').constraintSize({ maxWidth: 960 }).height('100%')
-      .backgroundColor($r('app.color.workbench_surface'))
+      .backgroundColor(this.tabId === 'more' && this.moreView.length === 0 ?
+        $r('app.color.workbench_background') : $r('app.color.workbench_surface'))
       .bindSheet($$this.detailVisible, this.entryDetails(), {
         height: SheetSize.MEDIUM, detents: [SheetSize.MEDIUM, SheetSize.LARGE], title: { title: '文件详情' },
         showClose: true, backgroundColor: this.sheetMaterialAvailable ? Color.Transparent : $r('app.color.workbench_surface'),

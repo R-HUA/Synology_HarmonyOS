@@ -212,7 +212,8 @@ export struct DriveTransferCard {
               .fontSize(12).fontColor(this.item.state === 'unknown' || this.item.state === 'failed' ?
                 $r('app.color.workbench_danger') : $r('sys.color.font_secondary')).width('100%')
           }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(12).fontColor([$r('sys.color.font_tertiary')])
+          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(WorkbenchMetrics.rowArrowSize)
+            .fontColor([$r('sys.color.font_secondary')]).opacity(WorkbenchMetrics.rowArrowOpacity)
         }.width('100%').padding({ top: 4, bottom: 4 })
       }.width('100%').type(ButtonType.Normal).backgroundColor(Color.Transparent)
         .constraintSize({ minHeight: WorkbenchMetrics.touchSize }).onClick((): void => { this.detailsVisible = true; })
