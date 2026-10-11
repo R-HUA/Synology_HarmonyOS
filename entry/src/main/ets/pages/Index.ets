@@ -1248,10 +1248,14 @@ struct Index {
         this.deviceHeader()
         Flex({ wrap: FlexWrap.Wrap }) {
           if (driveTabs((view: DriveView): boolean => this.model.drive.supportsView(view), this.drivePinned).length > 0) {
-            this.shortcut($r('sys.symbol.folder'), 'Synology Drive', (): void => { this.enterModule('drive'); })
+            this.shortcut($r('sys.symbol.folder'), 'Synology Drive', (): void => {
+              this.driveTabId = 'mydrive'; this.driveMoreView = ''; this.enterModule('drive');
+            })
           }
           if (this.supportsPhotos()) {
-            this.shortcut($r('sys.symbol.picture'), '照片', (): void => { this.enterModule('photos'); })
+            this.shortcut($r('sys.symbol.picture'), '照片', (): void => {
+              this.photoTabId = 'photos'; this.photoMoreShared = false; this.enterModule('photos');
+            })
           }
           if (this.model.supports('SYNO.DownloadStation.Task')) {
             this.shortcut($r('sys.symbol.arrow_down_circle'), 'NAS 下载', (): void => { this.openNasDownloads(); })
