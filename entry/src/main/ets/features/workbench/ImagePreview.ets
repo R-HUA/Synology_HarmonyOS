@@ -1,9 +1,26 @@
 import { image } from '@kit.ImageKit';
 import { uiMaterial } from '@kit.ArkUI';
-import { HdsTabs, hdsMaterial } from '@kit.UIDesignKit';
+import { HdsTabs, hdsMaterial, ActionBarButton } from '@kit.UIDesignKit';
 import { WorkbenchInfoRow, WorkbenchNotice } from './WorkbenchUi';
 
 export interface PreviewInformation { label: ResourceStr; value: ResourceStr; }
+
+/** 页签自定义内容只挂载一次，按钮组件独立观察原生操作模型的变化。 */
+@ComponentV2
+struct PreviewToolbarButton {
+  @Param action: ActionBarButton = new ActionBarButton({});
+  @Event onAction: () => void = (): void => {};
+
+  build() {
+    Button({ type: ButtonType.Circle }) {
+      SymbolGlyph(this.action.baseIcon as Resource).fontSize(24).fontColor([$r('sys.color.font_primary')])
+    }.width(48).height(48).backgroundColor(Color.Transparent)
+      .systemMaterial(uiMaterial.Material.empty)
+      .enabled(this.action.enabled !== false).opacity(this.action.enabled === false ? 0.4 : 1)
+      .accessibilityText(this.action.accessibilityText as Resource)
+      .onClick((): void => { this.onAction(); })
+  }
+}
 
 /** 三个套件共用手势与工具栏，操作回调仍由各套件处理。 */
 @ComponentV2
@@ -18,7 +35,6 @@ export struct ImagePreview {
   @Param itemKey: string = '';
   @Param canNavigate: boolean = true;
   @Param favorite: boolean = false;
-  @Param canFavorite: boolean = false;
   @Param canDelete: boolean = false;
   @Param canShare: boolean = false;
   @Param information: PreviewInformation[] = [];
@@ -43,6 +59,27 @@ export struct ImagePreview {
   @Local infoVisible: boolean = false;
   private material: uiMaterial.Material = new uiMaterial.ImmersiveMaterial({ style: uiMaterial.ImmersiveStyle.ULTRA_THICK });
   private materialAvailable: boolean = uiMaterial.isImmersiveMaterialSupported();
+  @Local private shareAction: ActionBarButton = new ActionBarButton({ baseIcon: $r('sys.symbol.share'),
+    accessibilityText: $r('app.string.preview_share') });
+  @Local private favoriteAction: ActionBarButton = new ActionBarButton({ baseIcon: $r('sys.symbol.heart'),
+    accessibilityText: $r('app.string.preview_favorite'), enabled: true });
+  @Local private informationAction: ActionBarButton = new ActionBarButton({ baseIcon: $r('sys.symbol.info_circle'),
+    accessibilityText: $r('app.string.preview_information') });
+  @Local private deleteAction: ActionBarButton = new ActionBarButton({ baseIcon: $r('sys.symbol.trash'),
+    accessibilityText: $r('app.string.preview_delete') });
+  @Local private downloadAction: ActionBarButton = new ActionBarButton({ baseIcon: $r('sys.symbol.arrow_down_circle'),
+    accessibilityText: $r('app.string.preview_download') });
+
+  aboutToAppear(): void { this.updateActions(); }
+
+  @Monitor('canShare', 'canDelete', 'canDownload', 'favorite')
+  private updateActions(): void {
+    this.shareAction.enabled = this.canShare;
+    this.deleteAction.enabled = this.canDelete;
+    this.downloadAction.enabled = this.canDownload;
+    this.favoriteAction.baseIcon = this.favorite ? $r('sys.symbol.heart_fill') : $r('sys.symbol.heart');
+    this.favoriteAction.accessibilityText = this.favorite ? $r('app.string.preview_unfavorite') : $r('app.string.preview_favorite');
+  }
 
   @Monitor('itemKey')
   private resetPhotoView(): void {
@@ -122,30 +159,18 @@ export struct ImagePreview {
   }
 
   @Builder
-  actionButton(icon: Resource, label: Resource, enabled: boolean, callback: () => void) {
-    Button({ type: ButtonType.Circle }) {
-      SymbolGlyph(icon).fontSize(24).fontColor([$r('sys.color.font_primary')])
-    }.width(48).height(48).backgroundColor(Color.Transparent)
-      .systemMaterial(uiMaterial.Material.empty)
-      .enabled(enabled).opacity(enabled ? 1 : 0.4).accessibilityText(label)
-      .onClick(callback)
-  }
-
-  @Builder
   actionBar() {
     Row({ space: 8 }) {
       if (this.photos) {
-        this.actionButton($r('sys.symbol.share'), $r('app.string.preview_share'), this.canShare, (): void => { this.onShare(); })
-        this.actionButton(this.favorite ? $r('sys.symbol.heart_fill') : $r('sys.symbol.heart'),
-          this.favorite ? $r('app.string.preview_unfavorite') : $r('app.string.preview_favorite'), this.canFavorite,
-          (): void => { this.onFavorite(); })
-        this.actionButton($r('sys.symbol.info_circle'), $r('app.string.preview_information'), true, (): void => { this.infoVisible = true; })
-        this.actionButton($r('sys.symbol.trash'), $r('app.string.preview_delete'), this.canDelete, (): void => { this.onDelete(); })
+        PreviewToolbarButton({ action: this.shareAction, onAction: (): void => { this.onShare(); } })
+        PreviewToolbarButton({ action: this.favoriteAction, onAction: (): void => { this.onFavorite(); } })
+        PreviewToolbarButton({ action: this.informationAction, onAction: (): void => { this.infoVisible = true; } })
+        PreviewToolbarButton({ action: this.deleteAction, onAction: (): void => { this.onDelete(); } })
       } else {
-        this.actionButton($r('sys.symbol.arrow_down_circle'), $r('app.string.preview_download'), this.canDownload, (): void => { this.onDownload(); })
-        this.actionButton($r('sys.symbol.trash'), $r('app.string.preview_delete'), this.canDelete, (): void => { this.onDelete(); })
-        this.actionButton($r('sys.symbol.share'), $r('app.string.preview_share'), this.canShare, (): void => { this.onShare(); })
-        this.actionButton($r('sys.symbol.info_circle'), $r('app.string.preview_information'), true, (): void => { this.infoVisible = true; })
+        PreviewToolbarButton({ action: this.downloadAction, onAction: (): void => { this.onDownload(); } })
+        PreviewToolbarButton({ action: this.deleteAction, onAction: (): void => { this.onDelete(); } })
+        PreviewToolbarButton({ action: this.shareAction, onAction: (): void => { this.onShare(); } })
+        PreviewToolbarButton({ action: this.informationAction, onAction: (): void => { this.infoVisible = true; } })
       }
     }.padding({ left: 4, right: 4 }).width(224).height(48).justifyContent(FlexAlign.Center)
   }

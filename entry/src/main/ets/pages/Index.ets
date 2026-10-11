@@ -1678,7 +1678,6 @@ struct Index {
       onNavigate: (direction: number): void => { this.model.photoLibrary.switchDetail(direction); },
       busy: this.model.photoLibrary.loadingMedia, original: this.model.photoLibrary.originalPath.length > 0,
       favorite: this.model.photoLibrary.detail?.favorite === true,
-      canFavorite: !this.model.photoLibrary.loadingMedia && this.model.photoLibrary.detail?.favorite !== undefined && this.photoCan('favorite'),
       canShare: this.photoCan('share'), canDelete: this.photoCan('delete'),
       information: this.photoPreviewInfo(), exif: this.photoExifInfo(),
       errorText: this.model.photoLibrary.mediaErrorText || this.model.extensions.photoError,
