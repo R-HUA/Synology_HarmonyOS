@@ -1,6 +1,6 @@
 import { image } from '@kit.ImageKit';
-import { uiMaterial } from '@kit.ArkUI';
-import { HdsActionBar, ActionBarButton } from '@kit.UIDesignKit';
+import { ColorMetrics, LengthMetrics, uiMaterial } from '@kit.ArkUI';
+import { HdsActionBar, ActionBarButton, ActionBarStyle } from '@kit.UIDesignKit';
 import { WorkbenchInfoRow, WorkbenchNotice } from './WorkbenchUi';
 
 export interface PreviewInformation { label: ResourceStr; value: ResourceStr; }
@@ -45,6 +45,33 @@ export struct ImagePreview {
   private toolbarMaterial: uiMaterial.Material = new uiMaterial.ImmersiveMaterial({
     style: uiMaterial.ImmersiveStyle.ULTRA_THIN, colorInvert: true, interactive: true });
   private materialAvailable: boolean = uiMaterial.isImmersiveMaterialSupported();
+  @Local private shareButton: ActionBarButton = this.photoButton($r('sys.symbol.share'), $r('app.string.preview_share'),
+    (): void => { this.onShare(); });
+  @Local private favoriteButton: ActionBarButton = this.photoButton($r('sys.symbol.heart'), $r('app.string.preview_favorite'),
+    (): void => { this.onFavorite(); });
+  @Local private informationButton: ActionBarButton = this.photoButton($r('sys.symbol.info_circle'), $r('app.string.preview_information'),
+    (): void => { this.infoVisible = true; });
+  @Local private deleteButton: ActionBarButton = this.photoButton($r('sys.symbol.trash'), $r('app.string.preview_delete'),
+    (): void => { this.onDelete(); });
+
+  aboutToAppear(): void { this.updatePhotoButtons(); }
+
+  @Monitor('canShare', 'canFavorite', 'canDelete', 'favorite')
+  private updatePhotoButtons(): void {
+    // 原生操作栏持续观察同一按钮对象，异步读取状态后才能同步启用和图标。
+    this.shareButton.enabled = this.canShare;
+    this.favoriteButton.enabled = this.canFavorite;
+    this.favoriteButton.baseIcon = this.favorite ? $r('sys.symbol.heart_fill') : $r('sys.symbol.heart');
+    this.favoriteButton.accessibilityText = this.favorite ? $r('app.string.preview_unfavorite') : $r('app.string.preview_favorite');
+    this.favoriteButton.hoverTips = this.favoriteButton.accessibilityText;
+    this.deleteButton.enabled = this.canDelete;
+  }
+
+  private photoButton(icon: Resource, label: Resource, callback: () => void): ActionBarButton {
+    return new ActionBarButton({ baseIcon: icon, accessibilityText: label, hoverTips: label, onClick: callback,
+      width: LengthMetrics.vp(40), iconSize: LengthMetrics.vp(24),
+      backgroundColor: ColorMetrics.rgba(0, 0, 0, 0), shadowStyle: { radius: 0, color: Color.Transparent } });
+  }
 
   @Monitor('itemKey')
   private resetPhotoView(): void {
@@ -146,24 +173,11 @@ export struct ImagePreview {
   }
 
   @Builder
-  photoAction(icon: Resource, label: Resource, enabled: boolean, callback: () => void) {
-    Button({ type: ButtonType.Circle }) {
-      SymbolGlyph(icon).fontSize(24).fontColor([$r('sys.color.font_primary')])
-    }.width(48).height(48).backgroundColor(Color.Transparent)
-      .enabled(enabled).opacity(enabled ? 1 : 0.4).accessibilityText(label)
-      .onClick(callback)
-  }
-
-  @Builder
   photoActionBar() {
-    Row({ space: 8 }) {
-      this.photoAction($r('sys.symbol.share'), $r('app.string.preview_share'), this.canShare, (): void => { this.onShare(); })
-      this.photoAction(this.favorite ? $r('sys.symbol.heart_fill') : $r('sys.symbol.heart'),
-        this.favorite ? $r('app.string.preview_unfavorite') : $r('app.string.preview_favorite'), this.canFavorite,
-        (): void => { this.onFavorite(); })
-      this.photoAction($r('sys.symbol.info_circle'), $r('app.string.preview_information'), true, (): void => { this.infoVisible = true; })
-      this.photoAction($r('sys.symbol.trash'), $r('app.string.preview_delete'), this.canDelete, (): void => { this.onDelete(); })
-    }.padding(4).borderRadius(28)
+    Row() {
+      HdsActionBar({ startButtons: [this.shareButton, this.favoriteButton, this.informationButton, this.deleteButton],
+        actionBarStyle: new ActionBarStyle({ height: LengthMetrics.vp(56), margin: LengthMetrics.vp(0) }) })
+    }.borderRadius(28)
       .systemMaterial(this.toolbarMaterial)
       .margin({ bottom: 16 })
   }
