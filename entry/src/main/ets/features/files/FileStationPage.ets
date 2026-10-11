@@ -10,6 +10,7 @@ export struct FileStationPage {
   @Param scroller: Scroller = new Scroller();
   @Param topInset: number = 0;
   @Param bottomInset: number = 0;
+  @Param active: boolean = true;
   @Param errorText: string = '';
   @Param pendingEntries: NasFileEntry[] = [];
   @Param selecting: boolean = false;
@@ -32,6 +33,24 @@ export struct FileStationPage {
   @Event onSelectAll: () => void = (): void => {};
   @Event onCancelSelection: () => void = (): void => {};
   @Event onSelectionAction: (kind: string) => void = (): void => {};
+  @Local private refreshing: boolean = false;
+  @Local private refreshedCount: number | undefined = undefined;
+
+  @Monitor('active', 'model.busy')
+  private clearRefreshedCount(): void {
+    if (!this.active || this.model.busy) { this.refreshedCount = undefined; }
+  }
+
+  /** 目录选择页只统计文件夹，尚有未加载分页时不显示不完整计数。 */
+  private async refreshFiles(): Promise<void> {
+    this.refreshedCount = undefined;
+    await this.model.refresh();
+    this.refreshing = false;
+    if (this.active && this.model.directoryErrorText.length === 0) {
+      if (this.pickerMode.length === 0) { this.refreshedCount = this.model.total; }
+      else if (!this.model.filesMore) { this.refreshedCount = this.visibleEntries().length; }
+    }
+  }
 
   @Builder
   breadcrumbBar() {
@@ -165,16 +184,21 @@ export struct FileStationPage {
 
   build() {
     Stack({ alignContent: Alignment.Center }) {
+      Refresh({ refreshing: $$this.refreshing }) {
       List({ space: 0, scroller: this.scroller }) {
         ListItem() {
           Column({ space: 8 }) {
+            if (this.refreshedCount !== undefined) {
+              Text(this.refreshedCount.toString() + ' 项').fontSize(12).fontColor($r('sys.color.font_secondary'))
+                .width('100%').height(32).textAlign(TextAlign.Center)
+            }
             this.breadcrumbBar()
             this.destinationBar()
             this.pickerBar()
             this.selectionBar()
             WorkbenchNotice({ text: this.errorText, warning: true })
             if (this.errorText.length === 0) { WorkbenchNotice({ text: this.model.actionNotice }) }
-          }.width('100%').padding({ left: 16, right: 16, top: this.topInset + 4, bottom: 8 })
+          }.width('100%').padding({ left: 16, right: 16, top: 4, bottom: 8 })
             .alignItems(HorizontalAlign.Start)
         }
         if (!this.model.busy && this.visibleEntries().length === 0 && this.model.errorText.length === 0 && this.errorText.length === 0) {
@@ -214,10 +238,19 @@ export struct FileStationPage {
           }
         }
       }.width('100%').height('100%').scrollBar(BarState.Auto).contentEndOffset(this.bottomInset)
+        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+        .onWillScroll((offset: number, _state: ScrollState, source: ScrollSource): void => {
+          if (offset > 0 && (source === ScrollSource.DRAG || source === ScrollSource.FLING)) {
+            this.refreshedCount = undefined;
+          }
+        })
         .onReachEnd((): void => {
           if (this.model.directoryErrorText.length === 0 && !this.pickerBusy) { this.model.nextPage(); }
         })
-      if (this.model.listLoading === 'content') {
+      }.width('100%').height('100%').padding({ top: this.topInset })
+        .pullToRefresh(this.active && !this.model.busy && !this.pickerBusy)
+        .onRefreshing((): void => { this.refreshFiles(); })
+      if (this.model.listLoading === 'content' && !this.refreshing) {
         Column() {
           LoadingProgress().width(40).height(40).accessibilityText($r('app.string.file_list_loading'))
         }.width('100%').height('100%').padding({ top: this.topInset, bottom: this.bottomInset })

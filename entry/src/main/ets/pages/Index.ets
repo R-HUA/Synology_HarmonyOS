@@ -1405,6 +1405,7 @@ struct Index {
     } else if (tab.id === 'home') { this.homeView() }
     else if (tab.id === 'files') {
       FileStationPage({ model: this.model, scroller: this.filesScroller, topInset: this.contentTopInset(), bottomInset: this.bottomInset(),
+        active: this.module === 'root' && this.activeTab === 1,
         errorText: this.visibleError(), pendingEntries: this.pendingEntries, pendingOperation: this.pendingOperation, canUseDestination: this.destinationAllowed(),
         selecting: this.fileSelecting, selectedPaths: this.selectedFiles.map((entry: NasFileEntry): string => entry.path),
         onToggleSelection: (entry: NasFileEntry): void => { this.toggleFileSelection(entry); },

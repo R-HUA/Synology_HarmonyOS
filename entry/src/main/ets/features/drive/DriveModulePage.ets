@@ -36,6 +36,8 @@ export struct DriveModulePage {
   @Event onCustomize: () => void = (): void => {};
   @Local private detailVisible: boolean = false;
   @Local private detailEntry: DriveEntry | undefined = undefined;
+  @Local private refreshing: boolean = false;
+  @Local private refreshedCount: number | undefined = undefined;
   private sheetMaterial: uiMaterial.Material =
     new uiMaterial.ImmersiveMaterial({ style: uiMaterial.ImmersiveStyle.ULTRA_THICK });
   private sheetMaterialAvailable: boolean = uiMaterial.isImmersiveMaterialSupported();
@@ -43,6 +45,26 @@ export struct DriveModulePage {
 
   private canRenderEntries(): boolean {
     return this.active && this.model.drive.view === this.expectedView;
+  }
+
+  @Computed
+  private get listBusy(): boolean { return this.model.drive.busy; }
+
+  @Monitor('active', 'listBusy')
+  private clearRefreshedCount(): void {
+    if (!this.active || this.model.drive.busy) { this.refreshedCount = undefined; }
+  }
+
+  /** 计数仅在下拉刷新成功后显示；未知总数不能用当前页长度代替。 */
+  private async refreshFiles(): Promise<void> {
+    this.refreshedCount = undefined;
+    this.model.driveThumbnails.retryVisible();
+    await this.model.drive.reload();
+    this.refreshing = false;
+    if (this.canRenderEntries() && this.model.drive.errorText.length === 0) {
+      if (this.model.drive.total !== undefined) { this.refreshedCount = this.model.drive.total; }
+      else if (!this.model.drive.hasMore) { this.refreshedCount = this.model.drive.entries.length; }
+    }
   }
 
   private supportedMoreViews(): DriveView[] {
@@ -118,9 +140,14 @@ export struct DriveModulePage {
   @Builder
   driveFileList() {
     Stack({ alignContent: Alignment.Center }) {
+      Refresh({ refreshing: $$this.refreshing }) {
       List({ space: 0, scroller: this.scroller }) {
         ListItem() {
           Column({ space: 4 }) {
+            if (this.refreshedCount !== undefined) {
+              Text(this.refreshedCount.toString() + ' 项').fontSize(12).fontColor($r('sys.color.font_secondary'))
+                .width('100%').height(32).textAlign(TextAlign.Center)
+            }
             if (this.searchPage) { this.driveSearch() }
             if (this.canRenderEntries() && (this.model.drive.trail.length > 1 || this.searchPage)) {
               this.driveBreadcrumb()
@@ -134,7 +161,7 @@ export struct DriveModulePage {
           if (!this.model.drive.busy && this.model.drive.entries.length === 0) {
             ListItem() {
               if (this.model.drive.errorText.length > 0) {
-                this.emptyState($r('sys.symbol.exclamationmark_circle'), 'Drive 内容未能读取', '请使用标题栏的刷新重试。')
+                this.emptyState($r('sys.symbol.exclamationmark_circle'), 'Drive 内容未能读取', '请下拉刷新重试。')
               } else if (this.model.drive.view === DriveView.Search && this.model.drive.trail.length === 1) {
                 this.emptyState($r('sys.symbol.magnifyingglass'), '没有搜索结果', '请尝试其他关键词。')
               } else {
@@ -162,14 +189,10 @@ export struct DriveModulePage {
             })
             .onDisAppear((): void => { this.model.driveThumbnails.setVisible(entry, false); })
           }, (entry: DriveEntry): string => driveEntryRenderKey(entry))
-          if (this.model.drive.entries.length > 0) {
+          if (this.model.drive.listLoading === 'more') {
             ListItem() {
               Row({ space: 8 }) {
-                if (this.model.drive.listLoading === 'more') {
-                  LoadingProgress().width(24).height(24).accessibilityText($r('app.string.file_list_loading'))
-                } else {
-                  Text(this.driveCountText()).fontSize(12).fontColor($r('sys.color.font_secondary'))
-                }
+                LoadingProgress().width(24).height(24).accessibilityText($r('app.string.file_list_loading'))
               }.width('100%').height(50).justifyContent(FlexAlign.Center)
             }
           }
@@ -185,11 +208,19 @@ export struct DriveModulePage {
           }
         }
       }.width('100%').height('100%').scrollBar(BarState.Auto)
-        .contentStartOffset(this.topInset).contentEndOffset(this.bottomInset)
+        .contentEndOffset(this.bottomInset).edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+        .onWillScroll((offset: number, _state: ScrollState, source: ScrollSource): void => {
+          if (offset > 0 && (source === ScrollSource.DRAG || source === ScrollSource.FLING)) {
+            this.refreshedCount = undefined;
+          }
+        })
         .onReachEnd((): void => {
           if (this.canRenderEntries() && !this.model.busy && this.model.drive.errorText.length === 0) { this.model.drive.loadMore(); }
         })
-      if (this.active && this.model.drive.listLoading === 'content') {
+      }.width('100%').height('100%').padding({ top: this.topInset })
+        .pullToRefresh(this.canRenderEntries() && !this.model.busy && !this.model.drive.busy)
+        .onRefreshing((): void => { this.refreshFiles(); })
+      if (this.active && this.model.drive.listLoading === 'content' && !this.refreshing) {
         Column() {
           LoadingProgress().width(40).height(40).accessibilityText($r('app.string.file_list_loading'))
         }.width('100%').height('100%').padding({ top: this.topInset, bottom: this.bottomInset })
@@ -234,13 +265,6 @@ export struct DriveModulePage {
       case DriveView.Trash: return $r('sys.symbol.trash');
       default: return $r('sys.symbol.folder');
     }
-  }
-
-  private driveCountText(): string {
-    const total = this.model.drive.total;
-    if (this.model.drive.entries.length === 0) { return '0 项'; }
-    return total === undefined ? this.model.drive.entries.length.toString() + ' 项' :
-      this.model.drive.entries.length.toString() + ' / ' + total.toString() + ' 项';
   }
 
   private driveEntryMenu(entry: DriveEntry): MenuElement[] {
