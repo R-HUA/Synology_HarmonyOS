@@ -17,6 +17,7 @@ import { copyTransferFile, ensureTransferDirectory, hashTransferFile, removeTran
 import { DriveTransferStore } from './DriveTransferStore';
 import { DriveBackgroundTransfer } from './DriveBackgroundTransfer';
 import { DriveUploadRequest } from '../../core/domain/DriveTransferProtocol';
+import { DownloadSubmitResult } from '../../core/domain/DownloadSubmitResult';
 import { copyDriveUploadRemainder } from './DriveUploadSlice';
 
 export interface DriveUploadDraft { parent: DriveEntry; uri: string; name: string; bytes: number; modifiedTime: number; }
@@ -132,6 +133,11 @@ export class DriveTransferModel {
         }
       }
       await this.save(session, session.records);
+      for (const record of session.records.filter((item: DriveTransferRecord): boolean => item.state === 'cancelled')) {
+        await this.cleanup(session, record);
+      }
+      session.records = session.records.filter((record: DriveTransferRecord): boolean => record.state !== 'cancelled');
+      await this.save(session, session.records);
     });
     this.tail = stopping.catch((): void => {});
     await stopping;
@@ -143,7 +149,7 @@ export class DriveTransferModel {
       session.accountGuardBlocked = false;
       const records = await session.store.load(session.context, session.origin, session.account);
       this.ensureCurrent(session);
-      session.records = records.map(recoverDriveTransfer);
+      session.records = records.filter((record: DriveTransferRecord): boolean => record.state !== 'cancelled').map(recoverDriveTransfer);
       session.background?.detach();
       if (session.adapter.backgroundAvailable() && canIUse('SystemCapability.Request.FileTransferAgent')) {
         session.background = new DriveBackgroundTransfer(session.context, session.adapter, session.origin, session.store.identity,
@@ -237,32 +243,58 @@ export class DriveTransferModel {
       /\.(txt|cpp|c|h|java|xhtml|xml|html|htm|svg|m4a|aac|mp3|ogg|wav|mp4|mkv|ts|pdf|doc|docx|xls|xlsx|ppt|pptx|csv|ofd)$/i.test(entry.name);
   }
 
-  async download(entry: DriveEntry, openAfterDownload: boolean = false): Promise<void> {
+  /** 提交回调在执行器接管后调用一次；返回值仍等待前台下载及预览结束。 */
+  async download(entry: DriveEntry, openAfterDownload: boolean = false,
+    onSubmitted: (result: DownloadSubmitResult) => void = (): void => {}): Promise<void> {
+    if (this.session === undefined || !this.ready || this.busy) {
+      onSubmitted({ status: 'rejected', message: this.busy ? '正在处理其他任务，请稍后重试' : '传输记录尚未就绪，请重新加载' });
+      return;
+    }
+    let submitted = false;
+    let recordId = '';
+    let submissionError = '';
     await this.run(async (session: DriveTransferSession): Promise<void> => {
+      try {
       this.requireAvailable(false);
       if (entry.kind !== DriveEntryKind.File || !entry.capabilities.canRead || !entry.capabilities.canDownload) {
         throw new NasFailure(NasErrorKind.Permission, '无法下载此文件。');
       }
       if (entry.sizeBytes !== undefined) { this.checkSize(entry.sizeBytes); }
-      const record = this.newRecord(session, 'download', entry, entry.name, entry.sizeBytes);
+      const existing = session.records.find((item: DriveTransferRecord): boolean => item.direction === 'download' &&
+        item.resource.fileId === entry.fileId && !['completed', 'failed', 'cancelled', 'closed'].includes(item.state));
+      if (existing !== undefined) {
+        submitted = true;
+        onSubmitted({ status: 'duplicate', taskId: existing.id, message: '该任务已存在' });
+        return;
+      }
+      const next = this.newRecord(session, 'download', entry, entry.name, entry.sizeBytes);
       // 打开文件必须在前台完成，避免尚未就绪就跳转到传输页。
-      if (openAfterDownload) { record.executor = 'foreground'; }
-      if (record.executor === 'agent' && session.background !== undefined) {
-        session.records.push(record); await this.save(session, session.records);
-        await ensureTransferDirectory(this.directory(session, record)); this.ensureCurrent(session);
-        await session.background.create(record);
+      if (openAfterDownload) { next.executor = 'foreground'; }
+      if (next.executor === 'agent' && session.background !== undefined) {
+        session.records.push(next); recordId = next.id;
+        await this.save(session, session.records);
+        await ensureTransferDirectory(this.directory(session, next)); this.ensureCurrent(session);
+        await session.background.create(next);
+        submitted = true;
+        onSubmitted({ status: 'created', taskId: next.id, message: '已添加下载任务' });
         this.notice = '后台下载已开始，可在任务页查看进度。';
         return;
       }
-      await this.transfer(session, record, async (): Promise<void> => {},
+      await this.transfer(session, next, async (): Promise<void> => {},
         async (control: NasTransferControl): Promise<void> => {
-          const result = await session.adapter.download(entry, { directory: this.directory(session, record),
+          submitted = true;
+          onSubmitted({ status: 'created', taskId: next.id, message: '已添加下载任务' });
+          const result = await session.adapter.download(entry, { directory: this.directory(session, next),
             maximumBytes: DRIVE_TRANSFER_MAX_BYTES, expectedBytes: entry.sizeBytes }, control);
-          record.bytes = result.bytes;
+          next.bytes = result.bytes;
         });
-      if (openAfterDownload && record.state === 'completed') {
-        const path = this.directory(session, record) + '/' + record.name;
-        await copyTransferFile(this.directory(session, record) + '/content', path, record.bytes!,
+      if (!submitted) {
+        if (session.records.includes(next)) { recordId = next.id; }
+        submissionError = next.errorText;
+      }
+      if (openAfterDownload && next.state === 'completed') {
+        const path = this.directory(session, next) + '/' + next.name;
+        await copyTransferFile(this.directory(session, next) + '/content', path, next.bytes!,
           (): void => this.ensureCurrent(session));
         this.ensureCurrent(session);
         const uri = fileUri.getUriFromPath(path);
@@ -271,10 +303,19 @@ export class DriveTransferModel {
         }
         this.ensureCurrent(session);
         if (!this.foreground) { throw new NasFailure(NasErrorKind.Cancelled, '请返回应用后重新打开文件。'); }
-        await filePreview.openPreview(session.context, { uri: uri, title: record.name, mimeType: '' });
+        await filePreview.openPreview(session.context, { uri: uri, title: next.name, mimeType: '' });
         this.notice = '';
       }
+      } catch (error) {
+        submissionError = transferMessage(error as Object);
+        this.publish(session);
+        throw error as Error;
+      }
     });
+    if (!submitted) {
+      onSubmitted({ status: recordId.length > 0 ? 'unconfirmed' : 'failed', taskId: recordId.length > 0 ? recordId : undefined,
+        message: recordId.length > 0 ? '任务提交未完成' : submissionError || '下载提交失败' });
+    }
   }
 
   async verifyDownload(id: string): Promise<void> {
@@ -302,7 +343,8 @@ export class DriveTransferModel {
     });
   }
 
-  async exportDownload(id: string): Promise<void> {
+  async exportDownload(id: string): Promise<boolean> {
+    let saved = false;
     await this.run(async (session: DriveTransferSession): Promise<void> => {
       const record = this.find(session, id);
       if (record.direction !== 'download' || record.state !== 'completed' || record.bytes === undefined) {
@@ -321,7 +363,9 @@ export class DriveTransferModel {
         (): void => this.ensureCurrent(session), true);
       this.ensureCurrent(session);
       this.notice = '文件已保存到所选位置。';
+      saved = true;
     });
+    return saved;
   }
 
   /** 仅在用户明确核对后关闭记录；此操作不发送任何远端请求。 */
@@ -343,19 +387,22 @@ export class DriveTransferModel {
     });
   }
 
-  async remove(id: string): Promise<void> {
+  async remove(id: string, deleteLocalFile: boolean = true): Promise<boolean> {
+    let removed = false;
     await this.run(async (session: DriveTransferSession): Promise<void> => {
       const record = this.find(session, id);
       if (['preparing', 'creating', 'waiting', 'running', 'paused', 'unknown'].includes(record.state)) {
         throw new NasFailure(NasErrorKind.InvalidInput, '请先停止传输；结果待确认的上传须核对后关闭。');
       }
       await session.background?.stop(record);
-      await this.cleanup(session, record);
+      if (deleteLocalFile || record.direction !== 'download') { await this.cleanup(session, record); }
       const records = session.records.filter((item: DriveTransferRecord): boolean => item.id !== id);
       await this.save(session, records);
       session.records = records;
       this.publish(session);
+      removed = true;
     });
+    return removed;
   }
 
   async refresh(): Promise<void> {
@@ -369,6 +416,11 @@ export class DriveTransferModel {
       record.state = record.direction === 'upload' && (record.uploadSession?.started || record.background?.startAttempted || record.state === 'unknown') ? 'unknown' : 'cancelled';
       record.errorText = record.state === 'unknown' ? '上传已停止，请先核对目标文件，再关闭记录或继续原上传。' : '';
       await this.save(session, session.records);
+      if (record.state === 'cancelled') {
+        await this.cleanup(session, record);
+        session.records = session.records.filter((item: DriveTransferRecord): boolean => item.id !== id);
+        await this.save(session, session.records);
+      }
     });
   }
   async pause(id: string): Promise<void> {
@@ -465,6 +517,10 @@ export class DriveTransferModel {
       if (this.cancellation === signal) { this.cancellation = undefined; }
       if (this.activeRecord === record) { this.activeRecord = undefined; }
       if (this.session === session) { this.activeId = ''; this.progress = undefined; }
+    }
+    if (record.state === 'cancelled') {
+      session.records = session.records.filter((item: DriveTransferRecord): boolean => item.id !== record.id);
+      await this.save(session, session.records);
     }
   }
 
@@ -598,6 +654,10 @@ export class DriveTransferModel {
       if (this.activeRecord === record) { this.activeRecord = undefined; }
       if (this.session === session) { this.activeId = ''; this.progress = undefined; }
     }
+    if (record.state === 'cancelled') {
+      session.records = session.records.filter((item: DriveTransferRecord): boolean => item.id !== record.id);
+      await this.save(session, session.records);
+    }
     if (failure instanceof NasFailure && failure.kind === NasErrorKind.SessionExpired && this.session === session) {
       throw failure;
     }
@@ -653,6 +713,10 @@ export class DriveTransferModel {
   }
 
   private directory(session: DriveTransferSession, record: DriveTransferRecord): string { return session.store.directory + '/' + record.id; }
+  downloadLocalPath(id: string): string {
+    const session = this.session!;
+    return this.directory(session, this.find(session, id)) + '/content';
+  }
   private find(session: DriveTransferSession, id: string): DriveTransferRecord {
     const record = session.records.find((item: DriveTransferRecord): boolean => item.id === id);
     if (record === undefined) { throw new NasFailure(NasErrorKind.InvalidInput, '当前账号没有此 Drive 传输记录。'); }

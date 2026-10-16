@@ -204,7 +204,8 @@ export class DriveActionModel {
     });
   }
 
-  async remove(id: string): Promise<void> {
+  async remove(id: string): Promise<boolean> {
+    let removed = false;
     await this.run(async (session: DriveActionSession): Promise<void> => {
       const record = this.find(session, id);
       if (record.state === 'unknown' || record.state === 'accepted') { throw new NasFailure(NasErrorKind.InvalidInput, '请先核对或查询任务结果。'); }
@@ -212,7 +213,9 @@ export class DriveActionModel {
       await this.save(session, records);
       session.records = records;
       this.publish(session);
+      removed = true;
     });
+    return removed;
   }
 
   private requireWrite(session: DriveActionSession): void {

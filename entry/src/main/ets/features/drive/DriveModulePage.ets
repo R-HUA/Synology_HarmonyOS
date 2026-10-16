@@ -28,6 +28,7 @@ export struct DriveModulePage {
   @Event onSelectMore: (view: DriveView) => void = (_view: DriveView): void => {};
   @Event onExitSearch: () => void = (): void => {};
   @Event onOpenTransfers: () => void = (): void => {};
+  @Event onDownload: (entry: DriveEntry, open: boolean) => void = (): void => {};
   @Event onUploadTo: (entry: DriveEntry) => void = (_entry: DriveEntry): void => {};
   @Event onOpenAction: (action: DriveAction, entry?: DriveEntry) => void =
     (_action: DriveAction, _entry?: DriveEntry): void => {};
@@ -243,6 +244,8 @@ export struct DriveModulePage {
           }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).clip(true).backgroundColor($r('app.color.workbench_surface'))
         }
         Column() {
+          WorkbenchActionRow({ label: this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.task_records').id),
+            icon: $r('sys.symbol.clock'), onAction: this.onOpenTransfers })
           WorkbenchActionRow({ label: '底栏设置', icon: $r('sys.symbol.slider_horizontal_2'), onAction: this.onCustomize })
         }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).clip(true).backgroundColor($r('app.color.workbench_surface'))
         this.driveNotices()
@@ -281,7 +284,7 @@ export struct DriveModulePage {
       menu.push({ value: '查看原图', action: (): void => { this.openDriveOriginal(entry); } });
     }
     if (entry.kind === DriveEntryKind.File && entry.capabilities.canRead && entry.capabilities.canDownload) {
-      menu.push({ value: '下载到本机', action: (): void => { this.model.driveTransfers.download(entry); this.openDriveTransfers(); } });
+      menu.push({ value: '下载到本机', action: (): void => { this.detailVisible = false; this.onDownload(entry, false); } });
     }
     if (this.model.driveTransfers.available && entry.kind === DriveEntryKind.Folder &&
       entry.capabilities.canRead && entry.capabilities.canWrite) {
@@ -309,15 +312,13 @@ export struct DriveModulePage {
     this.onOpenAction(action, entry);
   }
 
-  private openDriveTransfers(): void { this.onOpenTransfers(); }
-
   private openDriveEntry(entry: DriveEntry): void {
     if (this.model.drive.busy || !entry.capabilities.canRead) { return; }
     if (entry.kind === DriveEntryKind.Folder) { this.model.drive.openFolder(entry); return; }
     if (this.model.drive.view === DriveView.Trash) { return; }
     if (canPreviewDriveMedia(entry)) { this.openDriveOriginal(entry); return; }
     if (!entry.capabilities.canDownload) { return; }
-    if (this.model.driveTransfers.canPreview(entry)) { this.model.driveTransfers.download(entry, true); }
+    if (this.model.driveTransfers.canPreview(entry)) { this.onDownload(entry, true); }
     else { this.detailEntry = entry; this.detailVisible = true; }
   }
 

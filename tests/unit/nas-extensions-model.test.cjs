@@ -64,6 +64,72 @@ async function fixture(options = {}) {
   return { model, saved, calls, options, connector };
 }
 
+const download = (id, status = 'downloading') => ({ id: String(id), title: '文件' + id, status });
+
+test('NAS pagination uses the raw page cursor, replaces duplicate IDs and records changing totals', async () => {
+  const first = Array.from({ length: 50 }, (_, id) => download(id));
+  const second = [download(0, 'paused'), ...Array.from({ length: 49 }, (_, id) => download(id + 50))];
+  const f = await fixture({ replies: [{ tasks: first, total: 160, offset: 0 },
+    { tasks: second, total: 160, offset: 50 }, { tasks: [], total: 90, offset: 100 }] });
+  assert.equal(await f.model.refreshDownloads(), true);
+  assert.equal(await f.model.loadMoreDownloads(), true);
+  assert.equal(f.model.downloads.length, 99); assert.equal(f.model.downloadOffset, 100);
+  assert.equal(f.model.downloads[0].id, '0'); assert.equal(f.model.downloads[0].status, 'paused');
+  assert.equal(f.model.downloadListChanged, true);
+  assert.equal(await f.model.loadMoreDownloads(), true);
+  assert.equal(f.model.downloadHasMore, false); assert.equal(f.model.downloadOffset, 100);
+  assert.equal(f.model.downloadTotal, 90); assert.equal(f.model.downloads.length, 99);
+  assert.deepEqual(f.calls.requests.map(request => request.fields.find(field => field.name === 'offset').content), ['0', '50', '100']);
+});
+
+test('NAS append and refresh failures retain data and cursor, with a retry matching the failed operation', async () => {
+  const f = await fixture({ replies: [{ tasks: [download('a')], total: 100, offset: 0 }] });
+  await f.model.refreshDownloads();
+  f.connector.extensionRequest = async () => { throw failure(protocol.NasErrorKind.Network); };
+  assert.equal(await f.model.loadMoreDownloads(), false);
+  assert.equal(f.model.downloadRetryAppend, true); assert.ok(f.model.downloadListError);
+  assert.equal(f.model.downloads.length, 1); assert.equal(f.model.downloadOffset, 1);
+  assert.equal(await f.model.refreshDownloads(), false);
+  assert.equal(f.model.downloadRetryAppend, false); assert.equal(f.model.downloads[0].id, 'a');
+  f.connector.extensionRequest = async () => ({ tasks: [download('b')], total: 1, offset: 0 });
+  assert.equal(await f.model.refreshDownloads(), true);
+  assert.equal(f.model.downloads.length, 1); assert.equal(f.model.downloads[0].id, 'b');
+  assert.equal(f.model.downloadOffset, 1); assert.equal(f.model.downloadHasMore, false); assert.equal(f.model.downloadListError, '');
+});
+
+test('NAS list serializes requests and ignores late results after page exit or account reset', async () => {
+  for (const reset of [false, true]) {
+    const f = await fixture(); const gate = deferred(); let count = 0;
+    f.connector.extensionRequest = async () => { count++; return gate.promise; };
+    const reading = f.model.refreshDownloads();
+    assert.equal(f.model.downloadsLoading, true);
+    assert.equal(await f.model.refreshDownloads(), false); assert.equal(count, 1);
+    if (reset) f.model.reset(); else f.model.deactivateDownloads();
+    gate.resolve({ tasks: [download('old')], total: 1, offset: 0 });
+    assert.equal(await reading, false); assert.equal(f.model.downloads.length, 0);
+    assert.equal(f.model.downloadsLoaded, false); assert.equal(f.model.downloadsLoading, false);
+  }
+});
+
+test('NAS details preserve the list snapshot on failure and cannot refill a closed or changed instance', async () => {
+  const f = await fixture();
+  f.model.downloads = [download('a'), download('b')];
+  f.connector.extensionRequest = async () => { throw failure(protocol.NasErrorKind.Network); };
+  await f.model.showDownload('a');
+  assert.equal(f.model.selectedDownload.id, 'a'); assert.ok(f.model.downloadDetailError);
+  for (const action of ['close', 'switch', 'account']) {
+    const gate = deferred(); f.connector.extensionRequest = async () => gate.promise;
+    const reading = f.model.showDownload('a');
+    assert.equal(f.model.downloadDetailLoading, true);
+    if (action === 'close') f.model.closeDownloadDetail();
+    else if (action === 'switch') await f.model.showDownload('b');
+    else f.model.reset();
+    gate.resolve({ tasks: [download('a', 'finished')] }); await reading;
+    assert.equal(f.model.selectedDownload?.id, action === 'switch' ? 'b' : undefined);
+    assert.equal(f.model.downloadDetailLoading, false);
+  }
+});
+
 test('photo mutation saves identity before submission, retains accepted task and never replays it', async () => {
   const f = await fixture();
   let submitted = 0;

@@ -36,6 +36,13 @@ export class NasExtensionsModel {
   @Trace downloadOffset: number = 0;
   @Trace downloadTotal: number = 0;
   @Trace downloadsLoaded: boolean = false;
+  @Trace downloadsLoading: boolean = false;
+  @Trace downloadHasMore: boolean = false;
+  @Trace downloadListChanged: boolean = false;
+  @Trace downloadRetryAppend: boolean = false;
+  @Trace downloadListError: string = '';
+  @Trace downloadDetailLoading: boolean = false;
+  @Trace downloadDetailError: string = '';
   @Trace selectedDownload: DownloadTask | undefined = undefined;
   @Trace downloadUri: string = '';
   @Trace downloadDestination: string = '';
@@ -47,6 +54,8 @@ export class NasExtensionsModel {
   @Trace downloadNeedsOtp: boolean = false;
   private connector: NasConnector | undefined = undefined;
   private generation: number = 0;
+  private downloadListRevision: number = 0;
+  private downloadDetailRevision: number = 0;
   private store: ExtensionWriteStore = new ExtensionWriteStore();
   private context: common.UIAbilityContext | undefined = undefined;
   private origin: string = '';
@@ -96,6 +105,13 @@ export class NasExtensionsModel {
     this.downloadOffset = 0;
     this.downloadTotal = 0;
     this.downloadsLoaded = false;
+    this.downloadsLoading = false;
+    this.downloadHasMore = false;
+    this.downloadRetryAppend = false;
+    this.downloadListError = '';
+    this.downloadListChanged = false;
+    this.downloadListRevision++;
+    this.closeDownloadDetail();
     this.selectedDownload = undefined;
     this.downloadUri = '';
     this.downloadDestination = '';
@@ -174,21 +190,74 @@ export class NasExtensionsModel {
     if (confirmed) { this.selectedShare = undefined; await this.refreshShares(0); }
   }
 
-  async refreshDownloads(offset: number = this.downloadOffset): Promise<void> {
+  async refreshDownloads(offset: number = 0): Promise<boolean> {
+    return this.loadDownloadPage(offset, false);
+  }
+
+  async loadMoreDownloads(): Promise<boolean> {
+    if (!this.downloadsLoaded || !this.downloadHasMore) { return false; }
+    return this.loadDownloadPage(this.downloadOffset, true);
+  }
+
+  /** 游标按原始响应推进，重复任务只更新内容，不改变已有顺序。 */
+  private async loadDownloadPage(offset: number, append: boolean): Promise<boolean> {
+    if (this.busy || this.downloadsLoading || this.connector === undefined) { return false; }
     const ticket = this.generation;
-    const page = await this.read('nasDownloads', async (connector: NasConnector) => this.station(connector).list(offset));
-    if (page === undefined || ticket !== this.generation) { return; }
-    this.downloads = page.tasks;
-    this.downloadOffset = page.offset;
+    const revision = ++this.downloadListRevision;
+    this.downloadsLoading = true;
+    this.downloadRetryAppend = append;
+    this.downloadListError = '';
+    const page = await this.read('nasDownloads', async (connector: NasConnector) => this.station(connector).list(offset),
+      (): boolean => revision === this.downloadListRevision);
+    if (ticket !== this.generation || revision !== this.downloadListRevision) { return false; }
+    this.downloadsLoading = false;
+    if (page === undefined) { this.downloadListError = this.downloadError; return false; }
+    const merged = append ? this.downloads.slice() : [];
+    let duplicate = false;
+    for (const task of page.tasks) {
+      const index = merged.findIndex((item: DownloadTask): boolean => item.id === task.id);
+      if (index < 0) { merged.push(task); }
+      else { merged[index] = task; duplicate = true; }
+    }
+    this.downloadListChanged = append && (this.downloadListChanged || duplicate || page.total !== this.downloadTotal);
+    this.downloads = merged;
+    this.downloadOffset = page.offset + page.tasks.length;
     this.downloadTotal = page.total;
+    this.downloadHasMore = page.tasks.length > 0 && this.downloadOffset < page.total;
     this.downloadsLoaded = true;
+    return true;
+  }
+
+  /** 页面退出使在途读取失效，保留已经显示的列表。 */
+  deactivateDownloads(): void {
+    this.downloadListRevision++;
+    this.downloadsLoading = false;
+    this.closeDownloadDetail();
+  }
+
+  closeDownloadDetail(): void {
+    this.downloadDetailRevision++;
+    this.selectedDownload = undefined;
+    this.downloadDetailLoading = false;
+    this.downloadDetailError = '';
   }
 
   async showDownload(id: string): Promise<void> {
-    this.selectedDownload = undefined;
+    const revision = ++this.downloadDetailRevision;
+    this.downloadDetailLoading = false;
+    if (this.selectedDownload?.id !== id) {
+      this.selectedDownload = this.downloads.find((item: DownloadTask): boolean => item.id === id);
+    }
+    if (this.busy) { this.downloadDetailError = '正在处理其他请求，请稍后刷新详情。'; return; }
     const ticket = this.generation;
-    const task = await this.read('nasDownloads', async (connector: NasConnector) => this.station(connector).getInfo(id));
-    if (task !== undefined && ticket === this.generation) { this.selectedDownload = task; }
+    this.downloadDetailLoading = true;
+    this.downloadDetailError = '';
+    const task = await this.read('nasDownloads', async (connector: NasConnector) => this.station(connector).getInfo(id),
+      (): boolean => revision === this.downloadDetailRevision && this.selectedDownload?.id === id);
+    if (ticket !== this.generation || revision !== this.downloadDetailRevision || this.selectedDownload?.id !== id) { return; }
+    this.downloadDetailLoading = false;
+    if (task !== undefined && task.id === id) { this.selectedDownload = task; }
+    else { this.downloadDetailError = this.downloadError; }
   }
 
   async createDownload(): Promise<boolean> {
@@ -224,7 +293,11 @@ export class NasExtensionsModel {
     });
     if (ticket !== this.generation) { return; }
     if (failure !== undefined) { await this.reportFailure('nasDownloads', failure as Error, ticket); return; }
-    if (confirmed) { this.selectedDownload = undefined; await this.refreshDownloads(); }
+    if (confirmed) {
+      if (operation === 'delete' && this.selectedDownload?.id === id) { this.closeDownloadDetail(); }
+      await this.refreshDownloads();
+      if (this.selectedDownload?.id === id) { await this.showDownload(id); }
+    }
   }
 
   hasPending(feature: ExtensionFeature): boolean {
@@ -350,7 +423,8 @@ export class NasExtensionsModel {
     } finally { if (ticket === this.generation) { this.busy = false; } }
   }
 
-  private async read<T>(feature: ExtensionFeature, action: (connector: NasConnector) => Promise<T>): Promise<T | undefined> {
+  private async read<T>(feature: ExtensionFeature, action: (connector: NasConnector) => Promise<T>,
+    current: () => boolean = (): boolean => true): Promise<T | undefined> {
     const connector = this.connector;
     if (this.busy || connector === undefined) { return undefined; }
     const ticket = this.generation;
@@ -358,13 +432,16 @@ export class NasExtensionsModel {
     this.setError(feature, '');
     try {
       const result = await connector.readExtension(feature, async (): Promise<T> => action(connector));
-      if (ticket !== this.generation) { return undefined; }
+      if (ticket !== this.generation || !current()) { return undefined; }
       return result;
     } catch (error) {
-      if (ticket === this.generation) { await this.reportFailure(feature, error as Error, ticket); }
+      if (ticket === this.generation && current()) { await this.reportFailure(feature, error as Error, ticket); }
       return undefined;
     } finally {
-      if (ticket === this.generation) { this.capabilities = connector.capabilitySnapshots(); this.busy = false; }
+      if (ticket === this.generation) {
+        if (current()) { this.capabilities = connector.capabilitySnapshots(); }
+        this.busy = false;
+      }
     }
   }
 

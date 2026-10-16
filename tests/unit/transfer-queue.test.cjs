@@ -52,7 +52,7 @@ function loadEts(relative, mocks) {
 
 function record(overrides = {}) {
   return {
-    id: '11111111-1111-4111-8111-111111111111', direction: 'upload', name: '中文.json', remotePath: '/share/中文.json',
+    id: '11111111-1111-4111-8111-111111111111', direction: 'upload', source: 'fileUpload', name: '中文.json', remotePath: '/share/中文.json',
     bytes: 37, localName: '11111111-1111-4111-8111-111111111111-1.bin', localReady: true, state: 'unknown',
     taskId: '100', attempts: 1, startAttempted: true, uploadAccepted: false, httpStatus: 200,
     contentType: '', attachmentName: '', processed: 37, createdAt: 1, updatedAt: 1, errorText: '', ...overrides,
@@ -169,7 +169,7 @@ function fixture() {
     async copyTransferFile(source, destination, bytes, current) { current(); files.set(destination, bytes); },
     async removeTransferFile(name) { files.delete(name); },
     async removeTransferArtifacts(directory, record) {
-      if (clearFailure) throw new Error('local cleanup failed');
+      if (clearFailure) throw new protocol.NasFailure(protocol.NasErrorKind.Protocol, '本地文件清理失败');
       for (const name of files.keys()) if (name.startsWith(`${directory}/${record.id}-`)) files.delete(name);
     },
     async readTransferPrefix() { return { text: downloadPrefix, wholeFile: true }; },
@@ -706,8 +706,8 @@ test('queue read or decode failure blocks all mutations, preserves history and r
     await assert.rejects(() => f.attach('alice'));
     assert.equal(f.queue.ready, false);
     await assert.rejects(() => f.queue.uploadSources('/share', [{ uri: 'selected', name: 'new.txt', bytes: 37 }]));
-    await assert.rejects(() => f.queue.download({ path: '/share/file.txt', name: 'file.txt', isDirectory: false }));
-    await assert.rejects(() => f.queue.clearHistory());
+    assert.equal((await f.queue.download({ path: '/share/file.txt', name: 'file.txt', isDirectory: false })).status, 'rejected');
+    await assert.rejects(() => f.queue.clearHistory([]));
     await assert.rejects(() => f.queue.stopAll());
     assert.equal(f.calls.length, before);
     assert.equal(f.snapshots.get(scope), retained);
@@ -775,6 +775,71 @@ test('legacy sources are explicit and are never inferred from photo extensions',
   assert.throws(() => state.decodeTransferQueue(JSON.stringify({ version: 2, scope: 'legacy', records: [record({ source: 'photoGuess' })] }), 'legacy'));
 });
 
+test('download submission distinguishes creation, duplicate, refusal, failure and retained uncertainty', async () => {
+  const entry = { path: '/share/file.txt', name: 'file.txt', isDirectory: false };
+  const f = fixture();
+  assert.equal((await f.queue.download(entry)).status, 'rejected');
+  await f.attach('alice');
+  const created = await f.queue.download(entry);
+  assert.equal(created.status, 'created');
+  assert.equal(created.taskId, f.queue.items[0].id);
+  const duplicate = await f.queue.download(entry);
+  assert.equal(duplicate.status, 'duplicate'); assert.equal(duplicate.taskId, created.taskId);
+  assert.equal(f.calls.filter(call => call.startsWith('create:')).length, 1);
+  f.queue.busy = true;
+  assert.equal((await f.queue.download(entry)).status, 'rejected'); f.queue.busy = false;
+  f.connector.getFileInfo = async () => { throw new protocol.NasFailure(protocol.NasErrorKind.Network, '无法查询文件'); };
+  const failed = await f.queue.download({ ...entry, path: '/share/other.txt' });
+  assert.equal(failed.status, 'failed'); assert.equal(failed.taskId, undefined); assert.match(failed.message, /无法查询文件/);
+  const g = fixture(); await g.attach('alice'); g.setCreateFailure(true);
+  const uncertain = await g.queue.download(entry);
+  assert.equal(uncertain.status, 'unconfirmed'); assert.equal(uncertain.taskId, g.queue.items[0].id);
+  f.queue.detach(); g.queue.detach();
+});
+
+test('legacy history is dropped without reconciling its task or deleting its old private file', async () => {
+  const f = fixture(); await f.attach('alice');
+  const scope = f.queue.session.scope;
+  f.snapshots.set(scope, JSON.stringify({ version: 1, scope, records: [record()] }));
+  f.files.set('/files/old-copy', 37);
+  const before = f.calls.length;
+  await f.attach('alice');
+  assert.equal(f.queue.items.length, 0); assert.equal(f.files.size, 1);
+  assert.equal(JSON.parse(f.snapshots.get(scope)).records.length, 0);
+  assert.equal(f.calls.slice(before).some(call => /^(create|start|remove):/.test(call)), false);
+  f.queue.detach();
+});
+
+test('cleanup freezes selected IDs and preserves downloaded copies unless deletion is requested', async () => {
+  const f = fixture(); await f.attach('alice');
+  const scope = f.queue.session.scope;
+  const first = record({ source: 'download', direction: 'download', state: 'completed', taskId: '' });
+  const secondId = '22222222-2222-4222-8222-222222222222';
+  const second = record({ id: secondId, localName: secondId + '-1.bin', state: 'completed', taskId: '', source: 'photoUpload' });
+  f.snapshots.set(scope, JSON.stringify({ version: 2, scope, records: [first, second] }));
+  const local = `/files/transfers/${scope}/${first.localName}`; f.files.set(local, 37);
+  await f.attach('alice');
+  const ids = [first.id]; const clearing = f.queue.clearHistory(ids); ids.push(second.id);
+  assert.equal(await clearing, 1); assert.equal(f.files.get(local), 37);
+  assert.deepEqual(Array.from(f.queue.items, item => item.id), [second.id]);
+  f.queue.detach();
+});
+
+test('cleanup stops at the first failure and reports the completed count without clearing later IDs', async () => {
+  const f = fixture(); await f.attach('alice');
+  const scope = f.queue.session.scope;
+  const first = record({ source: 'download', direction: 'download', state: 'completed', taskId: '' });
+  const secondId = '22222222-2222-4222-8222-222222222222';
+  const second = record({ id: secondId, localName: secondId + '-1.bin', state: 'closed', taskId: '' });
+  const thirdId = '33333333-3333-4333-8333-333333333333';
+  const third = record({ id: thirdId, localName: thirdId + '-1.bin', state: 'closed', taskId: '' });
+  f.snapshots.set(scope, JSON.stringify({ version: 2, scope, records: [first, second, third] }));
+  await f.attach('alice'); f.setClearFailure(true);
+  await assert.rejects(() => f.queue.clearHistory([first.id, second.id, third.id]), /已清理 1 项，本地文件清理失败/);
+  assert.deepEqual(Array.from(f.queue.items, item => item.id), [second.id, third.id]);
+  f.queue.detach();
+});
+
 test('system stop failure prevents closing an unknown upload or unblocking the remote path', async () => {
   const f = fixture(); await f.attach('alice');
   await f.queue.uploadSources('/share', [{ uri: 'selected', name: 'file.txt', bytes: 37 }]);
@@ -814,7 +879,7 @@ test('cleanup releases a full queue slot while keeping running and unconfirmed u
     const id = `${(i + 1).toString(16).padStart(8, '0')}-2222-4222-8222-222222222222`;
     return record({ id, localName: `${id}-1.bin`, state: 'closed', taskId: '' });
   });
-  f.snapshots.set(scope, JSON.stringify({ version: 1, scope, records }));
+  f.snapshots.set(scope, JSON.stringify({ version: 2, scope, records }));
   await f.attach('alice');
   const full = await f.queue.uploadSources('/share', [{ uri: 'selected', name: 'new.txt', bytes: 37 }]);
   assert.equal(full.acceptedIndices.length, 0);
@@ -822,10 +887,11 @@ test('cleanup releases a full queue slot while keeping running and unconfirmed u
   await f.queue.removeRecord(records[0].id);
   const admitted = await f.queue.uploadSources('/share', [{ uri: 'selected', name: 'new.txt', bytes: 37 }]);
   assert.deepEqual(Array.from(admitted.acceptedIndices), [0]);
-  await f.queue.clearHistory();
+  await f.queue.clearHistory(f.queue.items.filter(item => item.canRemove).map(item => item.id));
   assert.equal(f.queue.items.length, 1);
   assert.equal(f.queue.items[0].state, 'running');
-  await f.queue.cancel(f.queue.items[0].id); await f.queue.clearHistory();
+  await f.queue.cancel(f.queue.items[0].id);
+  await f.queue.clearHistory(f.queue.items.filter(item => item.canRemove).map(item => item.id));
   assert.equal(f.queue.items[0].state, 'unknown');
   assert.equal(f.queue.items[0].canRemove, false);
   f.queue.detach();

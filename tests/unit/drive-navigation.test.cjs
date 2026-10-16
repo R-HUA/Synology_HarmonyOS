@@ -15,12 +15,20 @@ const drive = require('../../work/core-build/domain/DriveProtocol.js');
 const photos = require('../../work/core-build/domain/PhotosProtocol.js');
 const { DriveView: V } = drive;
 const { PhotosSpace: P } = photos;
+const taskStateModule = { exports: {} };
+vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(root, 'features/tasks/TaskPageState.ets'), 'utf8')
+  .replace(/^@ObservedV2\s*$/gm, '').replace(/@Trace\s+/g, ''), {
+  compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS }
+}).outputText, { module: taskStateModule, exports: taskStateModule.exports });
 const navFixture = { exports: {} };
 vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(root, 'features/workbench/ModuleNavigation.ts'), 'utf8'), {
   compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS }
 }).outputText, { module: navFixture, exports: navFixture.exports,
   require(id) { return require('../../work/core-build/domain/' + id.split('/').at(-1) + '.js'); } });
 const globals = { ...navFixture.exports, DriveEntryKind: drive.DriveEntryKind, DriveView: V, PhotosSpace: P,
+  TaskPageState: taskStateModule.exports.TaskPageState,
+  HdsSnackBar: class { show(_options, message, operation) { this.message = message; this.operation = operation; } dismiss() {} },
+  SnackBarOperationType: { TEXT_ONLY: 1 }, LengthMetrics: { vp: value => value }, $r: name => name,
   canPreviewDriveOriginal: require('../../work/core-build/domain/DriveOriginalProtocol.js').canPreviewDriveOriginal,
   canPreviewDriveMedia: require('../../work/core-build/domain/DriveOriginalProtocol.js').canPreviewDriveMedia };
 
@@ -71,7 +79,8 @@ function page() {
   };
   for (const name of ['switchTab', 'exitModule', 'enterModule', 'selectModuleTab', 'navigationBusy', 'visibleTabs',
     'expectedPhotoSpace', 'expectedPhotoSection', 'ensurePhotosOpen', 'effectivePhotoTab', 'exitDriveSearch',
-    'backToDriveMore', 'driveViewMatches', 'selectDriveMore', 'selectPhotoSpace', 'cancelDirectoryPicker', 'cancelFileSelection']) state[name] = method(index, name);
+    'backToDriveMore', 'driveViewMatches', 'selectDriveMore', 'selectPhotoSpace', 'cancelDirectoryPicker', 'cancelFileSelection',
+    'openModuleTasks', 'openPhotoTransfers', 'showAllTasks']) state[name] = method(index, name);
   return state;
 }
 
@@ -100,11 +109,81 @@ test('busy Drive consumes folder back but explicit module exit remains available
   assert.equal(method(index, 'onBackPress').call(state), true); assert.deepEqual(state.calls, []);
   state.exitModule(); assert.equal(state.module, 'root'); assert.equal(state.activeTab, 1);
 });
-test('File Station root back and global task index retain the new root navigation order', () => {
+test('File Station back and Drive tasks preserve the browser beneath the secondary page', () => {
   const state = page(); state.module = 'root'; state.activeTab = 1;
   method(index, 'onBackPress').call(state); assert.deepEqual(state.calls, ['station-back']);
   method(index, 'openDriveTransfers').call(state);
-  assert.equal(state.activeTab, 2); assert.equal(state.taskSection, 'drive');
+  assert.equal(state.activeTab, 1); assert.equal(state.navStack.getAllPathName().at(-1), 'drive-tasks');
+  state.model.drive.view = V.Search;
+  state.openModuleTasks('files'); state.navStack.pop();
+  assert.equal(state.model.drive.view, V.Search);
+  state.showAllTasks(); assert.equal(state.activeTab, 2); assert.equal(state.module, 'root'); assert.equal(state.navStack.size(), 0);
+});
+
+test('download feedback preserves the current preview and locates a finished record only on explicit action', () => {
+  const state = page(); state.module = 'root'; state.activeTab = 1;
+  state.model.sessionGeneration = 1; state.navigationInset = 24; state.bottomInset = () => 80; state.getUIContext = () => ({});
+  state.model.fileOriginal = { close: () => state.calls.push('close-preview') };
+  state.fileTasks = new globals.TaskPageState('files'); state.fileTasks.filter = 'active';
+  state.navStack.pushPathByName('file-preview'); state.calls.length = 0;
+  const feedback = method(index, 'downloadFeedback');
+  feedback.call(state, { status: 'created', taskId: 'already-ended', message: '已添加下载任务' }, 'files', 'file-preview', 1);
+  assert.deepEqual(state.calls, []); assert.equal(state.navStack.getAllPathName().at(-1), 'file-preview');
+  state.downloadSnackBar.operation.onContentClick();
+  assert.equal(state.navStack.getAllPathName().at(-1), 'files-tasks');
+  assert.equal(state.fileTasks.filter, 'all'); assert.equal(state.fileTasks.focusKey, 'transfer:already-ended');
+  assert.equal(state.model.directory, '/hidden'); assert.ok(state.calls.includes('close-preview'));
+});
+
+test('failure without a task uses its reason, and stale snackbar actions cannot enter a reconnected session', () => {
+  const state = page(); state.model.sessionGeneration = 1; state.getUIContext = () => ({}); state.bottomInset = () => 80;
+  state.showTitleMenuError = message => state.calls.push(message);
+  const feedback = method(index, 'downloadFeedback');
+  for (const status of ['rejected', 'failed']) feedback.call(state, { status, message: status }, 'files', '', 1);
+  assert.deepEqual(state.calls, ['rejected', 'failed']); assert.equal(state.downloadSnackBar, undefined);
+  for (const status of ['duplicate', 'unconfirmed']) {
+    feedback.call(state, { status, taskId: 'retained', message: status }, 'files', '', 1);
+    assert.ok(state.downloadSnackBar.operation);
+  }
+  const action = state.downloadSnackBar.operation.onContentClick;
+  state.model.sessionGeneration = 2; action();
+  assert.equal(state.navStack.size(), 0);
+});
+
+test('photo transfer entry stays in photo scope and locating one task preserves the other page filters', () => {
+  const state = page(); state.module = 'photos'; state.visibleTabs = () => [{ id: 'photos' }];
+  state.openPhotoTransfers(); assert.equal(state.navStack.getAllPathName().at(-1), 'photos-tasks');
+  state.navStack.pop(); state.calls.length = 0;
+  state.visibleTabs = () => [{ id: 'photos' }, { id: 'transfers' }];
+  state.selectModuleTab = index => { state.activeTab = index; state.photoTabId = 'transfers'; };
+  state.openPhotoTransfers(); assert.equal(state.navStack.size(), 0); assert.equal(state.photoTabId, 'transfers');
+  const root = new globals.TaskPageState('root'), files = new globals.TaskPageState('files');
+  root.filter = 'finished'; files.filter = 'active'; files.locate('transfer:one');
+  assert.equal(root.filter, 'finished'); assert.equal(files.filter, 'all');
+});
+
+test('Drive operation polling follows visible task pages, overlays and foreground state', () => {
+  const state = page(); let polling;
+  state.foreground = true; state.module = 'root'; state.activeTab = 2; state.taskDestination = ''; state.taskOverlayVisible = false;
+  state.rootTasks = new globals.TaskPageState('root');
+  state.model.driveActions = { setPolling: value => { polling = value; } }; state.model.telemetry = { setMode() {} };
+  const update = method(index, 'updateTelemetryMode');
+  update.call(state); assert.equal(polling, false);
+  state.rootTasks.categoryIndex = 2;
+  update.call(state); assert.equal(polling, true);
+  state.navStack.pushPathByName('nas-downloads'); update.call(state); assert.equal(polling, false);
+  state.taskDestination = 'drive'; update.call(state); assert.equal(polling, true);
+  state.taskOverlayVisible = true; update.call(state); assert.equal(polling, false);
+  state.taskOverlayVisible = false; state.foreground = false; update.call(state); assert.equal(polling, false);
+});
+test('root category selection retains its matching navigation scroller', () => {
+  const state = page(); state.module = 'root'; state.activeTab = 2;
+  state.rootTasks = new globals.TaskPageState('root'); state.taskCategoryScrollers = [{}, {}, {}, {}];
+  const active = method(index, 'activeScrollers');
+  for (let category = 0; category < 4; category++) {
+    state.rootTasks.categoryIndex = category;
+    assert.equal(active.call(state)[0], state.taskCategoryScrollers[category]);
+  }
 });
 test('File Station back exits multi-selection before leaving the current directory', () => {
   const state = page(); state.module = 'root'; state.activeTab = 1;
@@ -260,6 +339,7 @@ test('Drive file action prepares supported files for preview without navigating 
   const state = page();
   state.model.driveTransfers = { canPreview: () => true, download(_entry, preview) { state.calls.push(['drive-download', preview]); } };
   state.openDriveTransfers = () => state.calls.push('drive-tasks');
+  state.onDownload = (_entry, preview) => state.calls.push(['drive-download', preview]);
   const open = method(drivePage, 'openDriveEntry');
   const file = { name: '记录.txt', kind: 'file', capabilities: { canRead: true, canDownload: true } };
   open.call(state, file);
@@ -308,7 +388,7 @@ test('returning from the directory picker reopens the retained NAS download form
   assert.equal(state.model.downloadUri, 'https://example.test/a'); assert.equal(state.model.downloadDestination, 'old');
   state.creating = false; restore.call(state); assert.equal(state.creating, false);
   assert.ok(index.includes('DownloadStationPage({ model: this.model.extensions, scroller: this.downloadsScroller, visible: this.downloadsVisible,'));
-  assert.ok(index.includes('this.downloadsVisible = true; this.extensionsOpened = true; this.updateTelemetryMode(); this.model.extensions.refreshDownloads();'));
+  assert.match(index, /if \(!this\.model\.extensions\.downloadsLoaded\) \{ this\.model\.extensions\.refreshDownloads\(\); \}/);
 });
 test('directory pickers filter files without changing the regular File Station list', () => {
   const entries = [{ path: '/a', isDirectory: true }, { path: '/a/b.txt', isDirectory: false }];

@@ -33,6 +33,12 @@ export interface DownloadTaskPage {
   offset: number;
 }
 
+/** 做种已完成文件下载，同时仍在执行上传。 */
+export function downloadMatchesFilter(task: DownloadTask, filter: string): boolean {
+  return filter === 'all' || (filter === 'finished' ? ['finished', 'seeding'].includes(task.status) :
+    ['waiting', 'downloading', 'processing', 'paused', 'seeding'].includes(task.status));
+}
+
 export interface DownloadCreateResult {
   state: 'accepted';
   awaitingConfirmation: true;

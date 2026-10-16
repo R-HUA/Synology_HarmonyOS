@@ -58,7 +58,17 @@ function fixture(options = {}) {
     '../../core/domain/DriveTransferState': state, '../../core/network/DriveTransferAdapter': adapter,
     '../../core/network/NasConnector': {}, '../../core/network/NasTransferTransport': transport,
     '../../platform/SdkFileIO': { async closeFile() {} }, './DriveTransferStore': { DriveTransferStore: Store },
-    './DriveBackgroundTransfer': { DriveBackgroundTransfer: class {} },
+    './DriveBackgroundTransfer': { DriveBackgroundTransfer: class {
+      constructor(...args) { this.save = args[6]; }
+      async guardAccount() {} detach() {} async refresh() {} async stop() {}
+      async create(record) {
+        events.push(['background-create', record.id]);
+        if (options.backgroundCreate) await options.backgroundCreate(record);
+        record.state = 'running';
+        record.background = { taskId: '100', startAttempted: true, processed: 0 };
+        await this.save();
+      }
+    } },
     '../../platform/SdkBackgroundTransfer': { SdkBackgroundTransfer: class { static available() { return false; } async stop() {} active = false; } },
     './DriveDownloadVerification': { async verifyDriveDownloadedFile() { throw new Error('unexpected verification'); } },
     './DriveUploadSlice': { async copyDriveUploadRemainder() {} },
@@ -76,6 +86,7 @@ function fixture(options = {}) {
   const mod = { exports: {} };
   vm.runInNewContext(output.outputText, { module: mod, exports: mod.exports,
     canIUse: () => true,
+    setInterval: () => 1, clearInterval() {},
     require(id) { assert.ok(Object.hasOwn(mocks, id), id); return mocks[id]; } });
   const model = new mod.exports.DriveTransferModel();
   const kernel = {
@@ -94,10 +105,62 @@ function fixture(options = {}) {
       return { path: target.directory + '/content', bytes: target.expectedBytes ?? 9 };
     }
   };
+  if (options.background) { kernel.driveUploadPlan = () => {}; kernel.driveDownloadPlan = () => {}; }
   const attach = account => model.attach({ filesDir: '/private' }, kernel, 'https://nas.example.test:5001', account,
     async error => failures.push(error), () => options.canStart !== false);
   return { model, events, history, sessions, failures, attach };
 }
+
+test('foreground submission reports takeover once before the completion promise settles', async () => {
+  const pending = gate(), started = gate(), receipts = [];
+  const f = fixture({ download: async () => { started.resolve(); await pending.promise; throw new NasFailure(K.Network, '执行失败'); } });
+  await f.attach('alice');
+  let completed = false;
+  const downloading = f.model.download(file(3), false, result => receipts.push(clone(result))).then(() => { completed = true; });
+  await started.promise;
+  assert.equal(completed, false); assert.equal(receipts.length, 1); assert.equal(receipts[0].status, 'created');
+  assert.equal(receipts[0].taskId, f.model.items[0].id);
+  pending.resolve(); await downloading;
+  assert.equal(receipts.length, 1); assert.equal(f.model.items[0].state, 'failed');
+});
+
+test('background submission waits for executor acceptance and duplicate uses the existing identity', async () => {
+  const pending = gate(), started = gate(), receipts = [];
+  const f = fixture({ background: true, backgroundCreate: async () => { started.resolve(); await pending.promise; } });
+  await f.attach('alice');
+  const downloading = f.model.download(file(3), false, result => receipts.push(clone(result)));
+  await started.promise; assert.equal(receipts.length, 0);
+  pending.resolve(); await downloading;
+  assert.equal(receipts.length, 1); assert.equal(receipts[0].status, 'created');
+  await f.model.download(file(3), false, result => receipts.push(clone(result)));
+  assert.equal(receipts[1].status, 'duplicate'); assert.equal(receipts[1].taskId, receipts[0].taskId);
+  assert.equal(f.events.filter(event => event[0] === 'background-create').length, 1);
+});
+
+test('Drive submission refuses busy or unloaded state and exposes a retained pre-dispatch failure', async () => {
+  const f = fixture({ saveFailure: count => count > 1 }), receipts = [];
+  await f.model.download(file(3), false, result => receipts.push(clone(result)));
+  assert.equal(receipts.pop().status, 'rejected');
+  await f.attach('alice'); f.model.busy = true;
+  await f.model.download(file(3), false, result => receipts.push(clone(result)));
+  assert.equal(receipts.pop().status, 'rejected'); f.model.busy = false;
+  await f.model.download(file(3), false, result => receipts.push(clone(result)));
+  assert.equal(receipts.length, 1); assert.equal(receipts[0].status, 'unconfirmed');
+  assert.equal(receipts[0].taskId, f.model.items[0].id);
+  assert.equal(f.events.some(event => event[0] === 'download'), false);
+});
+
+test('Drive export returns success only after copying and record cleanup can preserve the private copy', async () => {
+  for (const saveUris of [[], ['file://export']]) {
+    const f = fixture({ saveUris }); await f.attach('alice'); await f.model.download(file(3));
+    const id = f.model.items[0].id;
+    assert.equal(await f.model.exportDownload(id), saveUris.length > 0);
+    const before = f.events.length;
+    assert.equal(await f.model.remove(id, false), true);
+    assert.equal(f.events.slice(before).some(event => event[0] === 'unlink'), false);
+    assert.equal(f.model.items.length, 0);
+  }
+});
 
 test('pending writes block uploads while unrelated downloads remain available', async () => {
   const options = { canStart: false }; const f = fixture(options); await f.attach('alice');
@@ -125,7 +188,7 @@ test('file preview starts only after completed download and provides a named app
 test('a cancelled file download never launches preview and unsupported local preview reports failure', async () => {
   const cancelled = fixture({ download: async (_request, _target, control) => { control.cancellation.cancel(); } });
   await cancelled.attach('alice'); await cancelled.model.download(file(3), true);
-  assert.equal(cancelled.model.items[0].state, 'cancelled');
+  assert.equal(cancelled.model.items.length, 0);
   assert.equal(cancelled.events.some(event => event[0] === 'preview'), false);
   assert.ok(cancelled.model.errorText);
   const unsupported = fixture({ previewSupported: false });
@@ -201,7 +264,7 @@ test('background stops active download and preparation cancellation does not imp
   const f = fixture({ download: async () => { started.resolve(); await pending.promise; } });
   await f.attach('alice'); const download = f.model.download(file(3)); await started.promise;
   f.model.setForeground(false); pending.resolve(); await download;
-  assert.equal(f.model.items[0].state, 'cancelled');
+  assert.equal(f.model.items.length, 0);
   assert.equal(f.sessions[0].cancellation.cancelled, true);
   f.model.setForeground(true);
   const copying = gate(), copied = gate();
@@ -209,7 +272,7 @@ test('background stops active download and preparation cancellation does not imp
   await g.attach('alice'); await g.model.prepareUpload(folder());
   const upload = g.model.upload(); await copied.promise;
   g.model.cancel(); copying.resolve(); await upload;
-  assert.equal(g.model.items[0].state, 'cancelled');
+  assert.equal(g.model.items.length, 0);
   assert.equal(g.events.some(e => e[0] === 'upload'), false);
 });
 

@@ -10,6 +10,7 @@ import { FileEditResult, FileTaskItem, FileTaskState, FileMutationKind, NasFileS
 import { SharedUploadFile, SharedUploadInbox, sharedUploadInbox } from '../sharing/SharedUploadInbox';
 import { FileTaskStore } from './FileTaskStore';
 import { util } from '@kit.ArkTS';
+import { DownloadSubmitResult } from '../../core/domain/DownloadSubmitResult';
 import { PhotoLibrary } from '../photos/PhotoLibrary';
 import { PhotoUpload } from '../photos/PhotoUpload';
 import { AutomaticPhotoBackup } from '../backup/AutomaticPhotoBackup';
@@ -95,6 +96,8 @@ export class ConnectionViewModel {
   get photosMore(): boolean { return this.photoLibrary.hasMore; }
   private connector: NasConnector | undefined = undefined;
   private generation: number = 0;
+  /** 异步页面动作绑定原会话，重连同一账号也不能沿用旧回执。 */
+  get sessionGeneration(): number { return this.generation; }
   private connectedOrigin: string = '';
   private connectedInsecure: boolean = false;
   /** 登录页确认仅绑定当前地址与证书策略，编辑后必须重新确认。 */
@@ -822,10 +825,34 @@ export class ConnectionViewModel {
     catch (error) { await this.showFailure(error as Error, 'upload'); }
   }
 
-  async downloadFile(entry: NasFileEntry): Promise<void> {
-    if (!this.authenticated || this.busy || entry.isDirectory) { return; }
-    try { await this.queue.download(entry); }
-    catch (error) { await this.showFailure(error as Error, 'download'); }
+  async downloadFile(entry: NasFileEntry): Promise<DownloadSubmitResult> {
+    if (!this.authenticated) { return { status: 'rejected', message: '请先连接 NAS' }; }
+    if (this.busy || this.queue.busy) { return { status: 'rejected', message: '正在处理其他任务，请稍后重试' }; }
+    if (entry.isDirectory) { return { status: 'rejected', message: '请进入文件夹后选择文件' }; }
+    try {
+      const result = await this.queue.download(entry);
+      if (result.failure?.kind === NasErrorKind.SessionExpired) { await this.showFailure(result.failure, 'download'); }
+      return result;
+    }
+    catch (error) {
+      await this.showFailure(error as Error, 'download');
+      return { status: 'failed', message: error instanceof NasFailure ? error.message : '下载提交失败' };
+    }
+  }
+
+  /** 只移除已结束记录，未确认的写入必须先人工核对关闭。 */
+  async removeFileTask(id: string): Promise<boolean> {
+    if (this.busy || !this.authenticated || !this.fileTasksReady) { return false; }
+    const item = this.fileTasks.find((record: FileTaskItem): boolean => record.id === id);
+    if (item === undefined || !['completed', 'failed', 'closed'].includes(item.state)) { return false; }
+    const ticket = this.generation;
+    this.busy = true;
+    try {
+      const records = this.fileTasks.filter((record: FileTaskItem): boolean => record.id !== id);
+      if (!await this.saveFileTasks(this.fileTaskStore, records, ticket) || ticket !== this.generation) { return false; }
+      this.fileTasks = records;
+      return true;
+    } finally { if (ticket === this.generation) { this.busy = false; } }
   }
 
   async uploadSharedFiles(): Promise<void> {
@@ -935,7 +962,10 @@ export class ConnectionViewModel {
     try {
       const tasks = await store.load(context, this.address, this.account.trim());
       if (ticket !== this.generation) { return; }
-      this.fileTasks = tasks;
+      const current = tasks.filter((task: FileTaskItem): boolean => task.operation !== 'legacy');
+      if (current.length !== tasks.length) { await store.save(current); }
+      if (ticket !== this.generation) { return; }
+      this.fileTasks = current;
       this.fileTasksReady = true;
       this.fileTasksErrorText = '';
     } catch (error) {

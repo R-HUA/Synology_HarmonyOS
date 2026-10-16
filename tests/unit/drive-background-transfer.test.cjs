@@ -300,7 +300,7 @@ test('downloads reject pause/resume and legacy paused downloads remain cancellab
   const task = [...f.tasks.values()][0]; task.state = State.PAUSED; await f.model.refresh();
   assert.equal(f.model.items[0].state, 'paused'); await f.model.resume(record.id);
   assert.equal(f.events.some(e => e[0] === 'resume-system'), false); assert.match(f.model.errorText, /不支持下载续传/);
-  await f.model.cancelTask(record.id); assert.equal(f.tasks.size, 0); assert.equal(f.model.items[0].state, 'cancelled');
+  await f.model.cancelTask(record.id); assert.equal(f.tasks.size, 0); assert.equal(f.model.items.length, 0);
   const g = fixture(); await g.attach(); await g.upload('autorename'); await g.model.cancelTask(g.model.items[0].id);
   await g.model.resume(g.model.items[0].id); assert.equal(g.events.filter(e => e[0] === 'create').length, 1);
 });

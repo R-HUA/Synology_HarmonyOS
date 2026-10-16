@@ -6,7 +6,9 @@ const vm = require('node:vm');
 const sdk = process.env.HARMONY_SDK_ROOT || 'C:/Users/rhua0016/.VirtualDisk/Programs/command-line-tools/sdk/default';
 const ts = require(path.join(sdk, 'openharmony/ets/build-tools/ets-loader/node_modules/typescript'));
 const source = fs.readFileSync(path.join(__dirname, '../../entry/src/main/ets/pages/Index.ets'), 'utf8');
-const methods = ['refreshTaskSection', 'prepareDriveUpload', 'startDriveUpload', 'uploadSheetClosed'].map(name => {
+const taskSource = fs.readFileSync(path.join(__dirname, '../../entry/src/main/ets/features/tasks/TaskPage.ets'), 'utf8');
+const refreshMethod = taskSource.match(/  private async refresh\([^]*?\n  }/)[0].replace('refresh(', 'refreshTaskPage(');
+const methods = refreshMethod + ['prepareDriveUpload', 'startDriveUpload', 'uploadSheetClosed'].map(name => {
   const match = source.match(new RegExp(`  private (?:async )?${name}\\([^]*?\\n  }`));
   assert.ok(match, name);
   return match[0];
@@ -27,7 +29,9 @@ function fixture() {
   h.navigationBusy = () => false;
   h.openForm = kind => { h.opened = kind; h.sheetVisible = true; };
   h.openDriveTransfers = () => { h.openedTasks = true; };
-  h.model = { authenticated: true, address: 'https://nas.example', account: 'alice',
+  h.state = { scope: 'files' }; h.runQueue = work => work();
+  h.model = { authenticated: true, address: 'https://nas.example', account: 'alice', sessionGeneration: 1,
+    queue: { async reconcile() {} },
     driveTransfers: { busy: false, draft: undefined, errorText: '',
       clearDraft() { if (!this.busy) this.draft = undefined; } } };
   return h;
@@ -73,10 +77,10 @@ test('confirmed upload releases a failed draft after its closed sheet and preser
   }
 });
 
-test('task menu queries pending server records sequentially instead of reloading a ready local snapshot', async () => {
-  for (const section of ['files', 'drive-actions']) {
+test('task page queries pending server records sequentially instead of reloading a ready local snapshot', async () => {
+  for (const scope of ['files', 'drive']) {
     const h = fixture();
-    h.taskSection = section;
+    h.state.scope = scope;
     const calls = [];
     let running = 0;
     const query = async id => { assert.equal(running++, 0); calls.push(id); await Promise.resolve(); running--; };
@@ -86,20 +90,21 @@ test('task menu queries pending server records sequentially instead of reloading
     h.model.reloadFileTasks = async () => { assert.fail('ready records should be queried'); };
     h.model.driveActions = { ready: true, items: [{ id: 'a', state: 'accepted' }, { id: 'b', state: 'accepted' }, { id: 'c', state: 'unknown' }],
       refresh: query, reload: async () => { assert.fail('ready records should be queried'); } };
-    await h.refreshTaskSection();
+    h.model.driveTransfers.ready = true; h.model.driveTransfers.refresh = async () => {};
+    await h.refreshTaskPage();
     assert.deepEqual(calls, ['a', 'b']);
   }
 });
 
 test('task refresh loads missing records before querying and stops across account changes', async () => {
   const h = fixture();
-  h.taskSection = 'files';
+  h.state.scope = 'files';
   const calls = [];
   h.model.fileTasksReady = false;
   h.model.fileTasks = [];
   h.model.reloadFileTasks = async () => { calls.push('reload'); h.model.fileTasksReady = true;
     h.model.fileTasks = [{ id: 'a', state: 'pending' }, { id: 'b', state: 'unknown' }]; };
-  h.model.checkFileTask = async id => { calls.push(id); h.model.account = 'bob'; };
-  await h.refreshTaskSection();
+  h.model.checkFileTask = async id => { calls.push(id); h.model.sessionGeneration++; };
+  await h.refreshTaskPage();
   assert.deepEqual(calls, ['reload', 'a']);
 });

@@ -4,6 +4,7 @@ import { fileIo, fileUri, picker } from '@kit.CoreFileKit';
 import { sha256 } from '../../platform/SdkDigest';
 import { sdkTransferAgent } from '../../platform/SdkTransferAgent';
 import { util } from '@kit.ArkTS';
+import { DownloadSubmitResult } from '../../core/domain/DownloadSubmitResult';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { NasConnector, NasTransferPlan } from '../../core/network/NasConnector';
 import { NasTransferCancellation } from '../../core/network/NasTransferTransport';
@@ -85,7 +86,8 @@ export class TransferQueue {
       await ensureTransferDirectory(session.directory);
       const records = await readTransferRecords(session.directory, session.scope);
       this.ensureCurrent(session);
-      session.records = records;
+      session.records = records.filter((record: TransferQueueRecord): boolean => record.source !== 'legacy' && record.state !== 'cancelled');
+      if (session.records.length !== records.length) { await saveTransferRecords(session.directory, session.scope, session.records); }
       // 完整读取与解码成功之前，空数组绝不是可以覆盖历史的有效队列。
       session.loaded = true;
       this.ready = true;
@@ -184,25 +186,40 @@ export class TransferQueue {
     }, false);
   }
 
-  async download(entry: NasFileEntry): Promise<void> {
-    const session = this.requireSession();
-    await this.operation(session, async (): Promise<void> => {
-      if (entry.isDirectory) { throw queueFailure('请进入文件夹后选择要下载的文件。'); }
+  async download(entry: NasFileEntry): Promise<DownloadSubmitResult> {
+    const session = this.session;
+    if (session === undefined || !session.loaded || this.busy || entry.isDirectory) {
+      return { status: 'rejected', message: this.busy ? '正在处理其他任务，请稍后重试' : entry.isDirectory ?
+        '请进入文件夹后选择要下载的文件' : '传输记录尚未就绪，请重新加载' };
+    }
+    let result: DownloadSubmitResult = { status: 'failed', message: '' };
+    let recordId: string | undefined = undefined;
+    try { await this.operation(session, async (): Promise<void> => {
       validateLogicalPath(entry.path);
       const info = await session.connector.getFileInfo(entry.path);
       this.ensureCurrent(session);
       if (info.isDirectory) { throw queueFailure('所选项目已变为文件夹。'); }
-      if (session.records.some((record: TransferQueueRecord): boolean => record.direction === 'download' &&
-        record.remotePath === entry.path && !['completed', 'cancelled', 'failed', 'closed', 'clearing'].includes(record.state))) {
-        throw queueFailure('这个文件已有下载任务，请到任务页处理。');
+      const existing = session.records.find((record: TransferQueueRecord): boolean => record.direction === 'download' &&
+        record.source !== 'legacy' && record.remotePath === entry.path && !['completed', 'cancelled', 'failed', 'closed', 'clearing'].includes(record.state));
+      if (existing !== undefined) {
+        result = { status: 'duplicate', taskId: existing.id, message: '该任务已存在' };
+        return;
       }
       const record = this.newRecord('download', validateTransferName(info.name), entry.path, info.bytes);
       record.state = 'queued';
       record.localReady = true;
       this.addRecord(session, record);
+      recordId = record.id;
+      this.publish(session);
       await this.save(session);
       await this.createTask(session, record);
-    });
+      result = { status: 'created', taskId: record.id, message: '已添加下载任务' };
+    }); } catch (error) {
+      result = { status: recordId === undefined ? 'failed' : 'unconfirmed', taskId: recordId,
+        message: recordId === undefined ? transferError(error as Error) : '任务提交未完成',
+        failure: error instanceof NasFailure ? error : undefined };
+    }
+    return result;
   }
 
   async reconcile(): Promise<void> {
@@ -228,17 +245,22 @@ export class TransferQueue {
     });
   }
 
-  async removeRecord(id: string): Promise<void> {
+  async removeRecord(id: string, deleteLocalFile: boolean = true): Promise<void> {
     const session = this.requireSession();
-    await this.operation(session, async (): Promise<void> => { await this.clearRecord(session, this.find(session, id)); });
+    await this.operation(session, async (): Promise<void> => { await this.clearRecord(session, this.find(session, id), deleteLocalFile); });
   }
 
-  async clearHistory(): Promise<void> {
+  async clearHistory(ids: string[], deleteLocalFile: boolean = false): Promise<number> {
     const session = this.requireSession();
+    const frozen = ids.slice();
+    let cleared = 0;
     await this.operation(session, async (): Promise<void> => {
-      const records = session.records.filter(transferCanRemove);
-      for (const record of records) { await this.clearRecord(session, record); }
+      for (const id of frozen) {
+        try { await this.clearRecord(session, this.find(session, id), deleteLocalFile); cleared++; }
+        catch (error) { throw queueFailure('已清理 ' + cleared.toString() + ' 项，' + transferError(error as Error)); }
+      }
     });
+    return cleared;
   }
 
   async cancel(id: string): Promise<void> {
@@ -309,8 +331,9 @@ export class TransferQueue {
     });
   }
 
-  async exportDownload(id: string): Promise<void> {
+  async exportDownload(id: string): Promise<boolean> {
     const session = this.requireSession();
+    let saved = false;
     await this.operation(session, async (): Promise<void> => {
       const record = this.find(session, id);
       if (record.direction !== 'download' || record.state !== 'completed') { throw queueFailure('下载尚未通过校验，无法保存。'); }
@@ -323,7 +346,9 @@ export class TransferQueue {
       if (selected.length === 0) { return; }
       await copyTransferFile(this.localPath(session, record), selected[0], record.bytes,
         (): void => this.ensureCurrent(session), true);
+      saved = true;
     });
+    return saved;
   }
 
   private async uploadSelected(session: QueueSession, directory: string, uris: string[]): Promise<void> {
@@ -851,9 +876,10 @@ export class TransferQueue {
     record.errorText = record.state === 'unknown' ? '上传已停止，NAS 写入结果需核对；不会自动重传。' : '';
     await this.save(session);
     if (record.direction === 'download') { await removeTransferFile(this.localPath(session, record)); }
+    if (record.state === 'cancelled') { await this.clearRecord(session, record); }
   }
 
-  private async clearRecord(session: QueueSession, record: TransferQueueRecord): Promise<void> {
+  private async clearRecord(session: QueueSession, record: TransferQueueRecord, deleteLocalFile: boolean = true): Promise<void> {
     this.ensureCurrent(session);
     if (!transferCanRemove(record)) { throw queueFailure('请先停止任务；结果待确认的上传需在 NAS 核对后关闭。'); }
     if (record.backupKey !== undefined && record.state === 'completed') {
@@ -862,12 +888,14 @@ export class TransferQueue {
     }
     if (record.taskId.length > 0) { await this.removeTask(record.taskId); this.unbind(record.taskId); }
     await this.stopChecksum(session, record);
-    record.taskId = '';
-    record.state = 'clearing';
-    record.errorText = '';
-    // 清理标记先落盘，文件或最终记录写入失败时可在重启后继续清理。
-    await this.save(session);
-    await removeTransferArtifacts(session.directory, record);
+    if (deleteLocalFile || record.direction !== 'download' || !record.localReady) {
+      record.taskId = '';
+      record.state = 'clearing';
+      record.errorText = '';
+      // 删除副本前保存清理标记；保留副本时不写此标记，避免重启后误删。
+      await this.save(session);
+      await removeTransferArtifacts(session.directory, record);
+    }
     this.ensureCurrent(session);
     const remaining = session.records.filter((value: TransferQueueRecord): boolean => value.id !== record.id);
     await saveTransferRecords(session.directory, session.scope, remaining);
@@ -912,6 +940,10 @@ export class TransferQueue {
   }
 
   private localPath(session: QueueSession, record: TransferQueueRecord): string { return session.directory + '/' + record.localName; }
+  downloadLocalPath(id: string): string {
+    const session = this.requireSession();
+    return this.localPath(session, this.find(session, id));
+  }
   private find(session: QueueSession, id: string): TransferQueueRecord {
     const record = session.records.find((value: TransferQueueRecord): boolean => value.id === id);
     if (record === undefined) { throw queueFailure('当前账号没有这个传输任务。'); }

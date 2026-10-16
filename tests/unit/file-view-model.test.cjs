@@ -139,6 +139,18 @@ test('Drive write permission requires an idle authenticated connection with the 
   }
 });
 
+test('structured download receipts retain task identity and still route session expiry through the connection owner', async () => {
+  const { model } = await fixture();
+  const expired = failure(K.SessionExpired);
+  const receipt = { status: 'unconfirmed', taskId: 'retained', message: '任务提交未完成', failure: expired };
+  let handled;
+  model.queue.download = async () => receipt;
+  model.showFailure = async (error, feature) => { handled = { error, feature }; };
+  assert.equal(await model.downloadFile(entry), receipt);
+  assert.equal(handled.error, expired); assert.equal(handled.feature, 'download');
+  model.busy = true; assert.equal((await model.downloadFile(entry)).status, 'rejected');
+});
+
 test('File Station appends short pages once, preserves a failed page and resets on refresh', async () => {
   const { model, connector } = await fixture();
   const offsets = []; let reject = false; let release;

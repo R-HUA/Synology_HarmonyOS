@@ -88,6 +88,7 @@ export struct DriveTransferSummary {
 export struct DriveTransferCard {
   @Param model: DriveTransferModel = new DriveTransferModel();
   @Require @Param item: DriveTransferRecord;
+  @Param detailsOnly: boolean = false;
   @Local private detailsVisible: boolean = false;
   private sheetMaterial: uiMaterial.Material =
     new uiMaterial.ImmersiveMaterial({ style: uiMaterial.ImmersiveStyle.ULTRA_THICK });
@@ -159,7 +160,11 @@ export struct DriveTransferCard {
       }
       if (this.item.state === 'completed' && this.item.direction === 'download') {
         Button('保存到本机').constraintSize({ minHeight: WorkbenchMetrics.touchSize })
-          .enabled(this.model.ready && !this.model.busy).onClick((): void => { this.model.exportDownload(this.item.id); })
+          .enabled(this.model.ready && !this.model.busy).onClick(async (): Promise<void> => {
+            if (await this.model.exportDownload(this.item.id)) {
+              this.getUIContext().getPromptAction().showToast({ message: $r('app.string.task_saved') });
+            }
+          })
       }
       if (this.item.state === 'unknown') {
         Button('核对结果').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).buttonStyle(ButtonStyleMode.TEXTUAL)
@@ -183,7 +188,8 @@ export struct DriveTransferCard {
         Text(this.item.executor === 'rcpBackground' ? '应用后台传输 · 进程终止后会中断' :
           this.item.background !== undefined ? '系统后台传输' : '前台传输')
           .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
-        Text((this.item.direction === 'upload' ? '目标：' : '来源：') + this.item.locationName)
+        Text((this.item.direction === 'upload' ? '目标：' : '本地路径：') + (this.item.direction === 'upload' ?
+          this.item.locationName : this.model.downloadLocalPath(this.item.id)))
           .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
         this.transferProgress()
         if (this.item.state === 'unknown') {
@@ -193,6 +199,7 @@ export struct DriveTransferCard {
           Text('请返回文件列表重新选择下载。').fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
         }
         WorkbenchNotice({ text: this.item.errorText, warning: true })
+        WorkbenchNotice({ text: this.model.errorText, warning: true })
         this.transferActions()
       }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: 24 }).alignItems(HorizontalAlign.Start)
     }.width('100%').height('100%').scrollBar(BarState.Auto)
@@ -200,6 +207,8 @@ export struct DriveTransferCard {
   }
 
   build() {
+    if (this.detailsOnly) { this.transferDetails() }
+    else {
     Column({ space: 4 }) {
       Button() {
         Row({ space: 12 }) {
@@ -227,5 +236,6 @@ export struct DriveTransferCard {
         showClose: true, backgroundColor: this.sheetMaterialAvailable ? Color.Transparent : $r('app.color.workbench_surface'),
         systemMaterial: this.sheetMaterial
       })
+    }
   }
 }
