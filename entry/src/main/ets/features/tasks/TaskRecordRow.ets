@@ -14,6 +14,10 @@ export struct TaskRecordRow {
   @Event onCancel: () => void = (): void => {};
   @Event onPause: () => void = (): void => {};
 
+  /** 结束状态以业务回执为准，进度达到百分之百仍可能处于核验中。 */
+  @Computed
+  private get hasProgress(): boolean { return this.record.progress !== undefined && !taskEnded(this.record.state); }
+
   private fileIcon(): Resource {
     if (/\.(jpg|jpeg|png|gif|webp|heic)$/i.test(this.record.name)) { return $r('sys.symbol.picture'); }
     if (/\.(mp4|mov|mkv|avi)$/i.test(this.record.name)) { return $r('sys.symbol.video'); }
@@ -36,8 +40,9 @@ export struct TaskRecordRow {
           Column({ space: 6 }) {
             Text(this.record.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
               .width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-            Progress({ value: this.record.progress ?? 0, total: 100, type: ProgressType.Linear }).width('100%').height(4)
-              .visibility(this.record.progress === undefined ? Visibility.Hidden : Visibility.Visible)
+            if (this.hasProgress) {
+              Progress({ value: this.record.progress!, total: 100, type: ProgressType.Linear }).width('100%').height(4)
+            }
             Row({ space: 8 }) {
               Text(this.record.group === 'processing' ? this.record.path : this.record.processed !== undefined && !taskEnded(this.record.state) ?
                 workbenchBytes(this.record.processed) + (this.record.bytes === undefined ? '' : ' / ' + workbenchBytes(this.record.bytes)) : workbenchBytes(this.record.bytes))
@@ -59,7 +64,7 @@ export struct TaskRecordRow {
       if (!this.canCancel && !this.canPause && !this.canResume) {
         this.action($r('sys.symbol.ellipsis_circle'), $r('app.string.task_details'), this.onDetail)
       }
-    }.width('100%').constraintSize({ minHeight: 96 }).padding({ left: 12, right: 8, top: 10, bottom: 10 })
+    }.width('100%').constraintSize({ minHeight: this.hasProgress ? 96 : 72 }).padding({ left: 12, right: 8, top: 10, bottom: 10 })
       .borderRadius(16).backgroundColor(this.focused ? $r('app.color.workbench_accent_surface') : $r('app.color.workbench_surface'))
   }
 }

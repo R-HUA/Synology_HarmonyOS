@@ -8,12 +8,12 @@ import { TaskPageState } from './TaskPageState';
 import { TaskRecordRow } from './TaskRecordRow';
 import { DriveTransferCard } from '../drive/DriveTransferUi';
 import { DriveActionCard } from '../drive/DriveActionUi';
-import { WorkbenchChoice, WorkbenchInfoRow, WorkbenchNotice, WorkbenchActionRow } from '../workbench/WorkbenchUi';
+import { WorkbenchChoice, WorkbenchInfoRow, WorkbenchNotice, WorkbenchActionRow, WorkbenchMetrics } from '../workbench/WorkbenchUi';
 import { workbenchBytes } from '../workbench/WorkbenchPresentation';
 import { HdsTabs } from '@kit.UIDesignKit';
 
 type TaskCategory = TaskGroup | 'other';
-interface TaskListEntry { key: string; group: TaskGroup; filter?: TaskFilter; record?: TaskRecordView; }
+interface TaskListEntry { key: string; group: TaskGroup; filter?: TaskFilter; record?: TaskRecordView; groupEnd?: boolean; }
 
 @ComponentV2
 export struct TaskPage {
@@ -65,8 +65,10 @@ export struct TaskPage {
     for (const filter of filters) {
       const records = this.groupRecords(group, filter);
       if (records.length === 0 && this.groupReady(group) && this.groupError(group).length === 0) { continue; }
-      entries.push({ key: 'header:' + group + ':' + filter, group, filter });
-      records.forEach((record: TaskRecordView): void => { entries.push({ key: record.key, group, record }); });
+      entries.push({ key: 'header:' + group + ':' + filter, group, filter, groupEnd: records.length === 0 });
+      records.forEach((record: TaskRecordView, index: number): void => {
+        entries.push({ key: record.key, group, record, groupEnd: index === records.length - 1 });
+      });
     }
     return entries;
   }
@@ -240,6 +242,7 @@ export struct TaskPage {
         WorkbenchNotice({ text: this.text($r('app.string.task_records_loading')) })
       }
     }.width('100%').alignItems(HorizontalAlign.Start)
+      .padding(this.state.scope === 'root' ? { left: 16, right: 16, top: 12, bottom: 8 } : 0)
   }
   @Builder
   taskRow(entry: TaskListEntry) {
@@ -256,7 +259,8 @@ export struct TaskPage {
         if (category === 'other') {
           ListItem() {
             WorkbenchActionRow({ label: this.text($r('app.string.task_remote_download')), icon: $r('sys.symbol.arrow_down_circle'), onAction: this.onRemoteDownloads })
-          }
+          }.margin({ top: 12 }).borderRadius(WorkbenchMetrics.cardRadius).clip(true)
+            .backgroundColor($r('app.color.workbench_surface'))
         } else {
           if (this.groupError(category).length > 0) {
             ListItem() { WorkbenchNotice({ text: this.groupError(category), warning: true }) }
@@ -265,15 +269,20 @@ export struct TaskPage {
             ListItem() {
               if (entry.item.record === undefined) { this.groupHeader(entry.item.group, entry.item.filter!) }
               else { this.taskRow(entry.item) }
-            }
+            }.margin({ top: entry.item.record === undefined ? 12 : 0 })
+              .borderRadius({ topLeft: entry.item.record === undefined ? WorkbenchMetrics.cardRadius : 0,
+                topRight: entry.item.record === undefined ? WorkbenchMetrics.cardRadius : 0,
+                bottomLeft: entry.item.groupEnd ? WorkbenchMetrics.cardRadius : 0,
+                bottomRight: entry.item.groupEnd ? WorkbenchMetrics.cardRadius : 0 })
+              .backgroundColor($r('app.color.workbench_surface')).clip(true)
           }).key((entry: TaskListEntry): string => entry.key).virtualScroll()
           if (this.rootEntries(category).length === 0) {
             ListItem() { Text($r('app.string.task_empty')).fontSize(16).fontColor($r('sys.color.font_secondary')).width('100%').textAlign(TextAlign.Center).padding(32) }
           }
         }
       }.width('100%').height('100%').scrollBar(BarState.Auto).contentEndOffset(this.bottomInset)
-        .padding({ left: 16, right: 16, top: 12 })
-    }.width('100%').height('100%').backgroundColor($r('app.color.workbench_surface')).borderRadius({ topLeft: 24, topRight: 24 })
+        .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin })
+    }.width('100%').height('100%').backgroundColor($r('app.color.workbench_background'))
       .onRefreshing((): void => { this.refreshRoot(); })
   }
   @Builder
@@ -286,8 +295,9 @@ export struct TaskPage {
             .labelStyle({ font: { size: 16 }, selectedColor: $r('sys.color.font_emphasize'), unselectedColor: $r('sys.color.font_primary') }))
       }, (category: TaskCategory): string => category)
     }.width('100%').layoutWeight(1).barPosition(BarPosition.Start).barHeight(52)
-      .barMode(BarMode.Scrollable, { nonScrollableLayoutStyle: LayoutStyle.ALWAYS_AVERAGE_SPLIT }).scrollable(false)
-      .animationDuration(0).onChange((index: number): void => { this.state.categoryIndex = index; })
+      .barMode(BarMode.Scrollable, { nonScrollableLayoutStyle: LayoutStyle.ALWAYS_AVERAGE_SPLIT }).scrollable(true)
+      .onContentWillChange((): boolean => !this.model.sessionTransition && !this.detailVisible && !this.clearVisible)
+      .animationDuration(300).onChange((index: number): void => { this.state.categoryIndex = index; })
   }
   @Builder
   queueActions(record: TaskRecordView) {

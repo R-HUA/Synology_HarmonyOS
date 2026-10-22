@@ -18,6 +18,26 @@ const compiled = ts.transpileModule(prefix + '\n}\nmodule.exports = TaskPage;', 
 const mod = { exports: {} };
 vm.runInNewContext(compiled, { module: mod, ...presentation, Scroller: class {}, $r: value => value });
 
+const rowSource = fs.readFileSync(path.join(__dirname, '../../entry/src/main/ets/features/tasks/TaskRecordRow.ets'), 'utf8');
+const rowPrefix = rowSource.slice(rowSource.indexOf('@ComponentV2'), rowSource.indexOf('  @Builder'))
+  .replace(/@(?:ComponentV2|Require|Param|Event|Computed)\b\s*/g, '')
+  .replace('export struct TaskRecordRow', 'class TaskRecordRow');
+const rowModule = { exports: {} };
+vm.runInNewContext(ts.transpileModule(rowPrefix + '\n}\nmodule.exports = TaskRecordRow;', {
+  compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS }
+}).outputText, { module: rowModule, taskEnded: presentation.taskEnded });
+
+test('task row progress follows the business result, including verification at one hundred percent', () => {
+  const row = new rowModule.exports();
+  for (const state of ['running', 'paused', 'verifying', 'unknown']) {
+    row.record = { state, progress: 100 }; assert.equal(row.hasProgress, true, state);
+    row.record = { state }; assert.equal(row.hasProgress, false, state);
+  }
+  for (const state of ['completed', 'failed', 'partial', 'closed', 'clearing']) {
+    row.record = { state, progress: 100 }; assert.equal(row.hasProgress, false, state);
+  }
+});
+
 function record(id, state, direction = 'download') {
   return { id, source: direction === 'download' ? 'download' : 'fileUpload', direction, state,
     name: id, remotePath: '/目标/' + id, bytes: 100, processed: 20, stateText: state, errorText: '',
@@ -40,8 +60,10 @@ test('root category pages partition download and upload records into active and 
     'header:download:finished', 'transfer:done', 'transfer:failed']);
   assert.equal(p.groupRecords('download', 'active').length, 2);
   assert.equal(p.groupRecords('download', 'finished').length, 2);
+  assert.deepEqual(Array.from(p.entries, row => row.groupEnd), [false, false, true, false, false, true]);
   p.state.categoryIndex = 1;
   assert.deepEqual(Array.from(p.entries, row => row.key), ['header:upload:active', 'transfer:upload']);
+  assert.deepEqual(Array.from(p.entries, row => row.groupEnd), [false, true]);
   p.state.categoryIndex = 2;
   assert.equal(p.entries.length, 0);
   p.state.categoryIndex = 3;
@@ -52,6 +74,7 @@ test('unloaded or failed categories retain their sections rather than becoming a
   const p = page(); p.model.queue.items = [];
   p.model.queue.ready = false;
   assert.equal(p.entries.length, 2); assert.equal(p.groupReady('download'), false);
+  assert.ok(p.entries.every(row => row.record === undefined && row.groupEnd));
   p.model.queue.ready = true; p.model.queue.errorText = '读取失败';
   assert.equal(p.entries.length, 2); assert.equal(p.groupError('download'), '读取失败');
   p.model.queue.errorText = '';
