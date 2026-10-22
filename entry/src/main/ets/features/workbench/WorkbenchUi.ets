@@ -1,4 +1,5 @@
 import { uiMaterial } from '@kit.ArkUI';
+import { workbenchUsageLevel } from './WorkbenchPresentation';
 
 export class WorkbenchMetrics {
   static readonly pageMargin: number = 16;
@@ -55,6 +56,52 @@ export struct WorkbenchSectionTitle {
         Text(this.subtitle).fontSize(12).fontColor($r('sys.color.font_secondary'))
       }
     }.width('100%').alignItems(HorizontalAlign.Start)
+  }
+}
+
+/** 统一空状态组件：柔和图标底板 + 居中说明 + 可选主次胶囊操作按钮。 */
+@ComponentV2
+export struct WorkbenchEmptyState {
+  @Param icon: Resource = $r('sys.symbol.folder');
+  @Param title: ResourceStr = '';
+  @Param description: ResourceStr = '';
+  @Param actionLabel: ResourceStr = '';
+  @Param actionAvailable: boolean = true;
+  @Param secondaryLabel: ResourceStr = '';
+  @Param secondaryAvailable: boolean = true;
+  @Event onAction: () => void = (): void => {};
+  @Event onSecondaryAction: () => void = (): void => {};
+
+  build() {
+    Column({ space: 12 }) {
+      WorkbenchIconTile({ icon: this.icon, iconSize: 28, tileSize: 60, tileRadius: 18,
+        iconColor: $r('sys.color.icon_secondary'), tileColor: $r('app.color.workbench_subtle') })
+      Column({ space: 4 }) {
+        Text(this.title).fontSize(16).fontWeight(FontWeight.Medium)
+          .fontColor($r('sys.color.font_primary')).textAlign(TextAlign.Center)
+        if (this.description !== '') {
+          Text(this.description).fontSize(14).fontColor($r('sys.color.font_secondary'))
+            .textAlign(TextAlign.Center).constraintSize({ maxWidth: 280 })
+        }
+      }.alignItems(HorizontalAlign.Center)
+      if (this.actionLabel !== '' || this.secondaryLabel !== '') {
+        Row({ space: 12 }) {
+          if (this.actionLabel !== '') {
+            Button(this.actionLabel).type(ButtonType.Capsule)
+              .constraintSize({ minHeight: WorkbenchMetrics.chipHeight }).fontSize(14)
+              .padding({ left: 16, right: 16 })
+              .enabled(this.actionAvailable).onClick(this.onAction)
+          }
+          if (this.secondaryLabel !== '') {
+            Button(this.secondaryLabel).type(ButtonType.Capsule).buttonStyle(ButtonStyleMode.NORMAL)
+              .constraintSize({ minHeight: WorkbenchMetrics.chipHeight }).fontSize(14)
+              .padding({ left: 16, right: 16 })
+              .enabled(this.secondaryAvailable).onClick(this.onSecondaryAction)
+          }
+        }.margin({ top: 4 }).justifyContent(FlexAlign.Center)
+      }
+    }.width('100%').padding({ top: 40, bottom: 40, left: 24, right: 24 })
+      .alignItems(HorizontalAlign.Center)
   }
 }
 
@@ -213,9 +260,8 @@ export struct WorkbenchEntryRow {
           .onClick(this.onOpen).accessibilityText(this.title)
         if (this.menu.length > 0) {
           Button() {
-            SymbolGlyph($r('sys.symbol.ellipsis_circle')).fontSize(32)
-              .renderingStrategy(SymbolRenderingStrategy.MULTIPLE_COLOR)
-              .fontColor([$r('sys.color.icon_primary'), Color.Transparent]).accessibilityLevel('no')
+            SymbolGlyph($r('sys.symbol.dot_grid_1x2')).fontSize(20)
+              .fontColor([$r('sys.color.icon_secondary')]).accessibilityLevel('no')
           }.width(48).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).type(ButtonType.Normal).padding(0)
             .margin({ right: 8 }).backgroundColor(Color.Transparent).stateEffect(false).enabled(this.menuAvailable)
             .bindMenu(this.menu).accessibilityText(this.title + '，操作菜单')
@@ -242,13 +288,20 @@ export struct WorkbenchMetric {
   @Param value: string = '';
   @Param percentage: number | undefined = undefined;
 
+  private barColor(): ResourceColor {
+    const level = workbenchUsageLevel(this.percentage);
+    if (level === 'danger') { return $r('app.color.workbench_danger'); }
+    if (level === 'warning') { return $r('app.color.workbench_warning'); }
+    return $r('sys.color.icon_emphasize');
+  }
+
   build() {
     Column({ space: 6 }) {
       Text(this.label).fontSize(14).fontColor($r('sys.color.font_secondary'))
       Text(this.value).fontSize(24).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
       if (this.percentage !== undefined) {
         Progress({ value: this.percentage, total: 100, type: ProgressType.Linear }).width('100%').height(4)
-          .color($r('sys.color.icon_emphasize')).backgroundColor($r('app.color.workbench_divider'))
+          .color(this.barColor()).backgroundColor($r('app.color.workbench_divider'))
           .accessibilityText(this.label + '，' + this.value)
       }
     }.width('100%').padding(12).borderRadius(WorkbenchMetrics.innerRadius)

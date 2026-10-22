@@ -156,3 +156,43 @@ export function connectionRouteLabel(origin: string, kind?: string): string {
   if (kind === 'private') { return '专网'; }
   return isPrivateHost(originHost(origin)) ? '局域网' : '公网';
 }
+
+export type WorkbenchUsageLevel = 'normal' | 'warning' | 'danger';
+
+/** 存储与资源占用水位线分级：75% 告警、90% 危险。 */
+export function workbenchUsageLevel(percentage: number | undefined): WorkbenchUsageLevel {
+  if (percentage === undefined || !Number.isFinite(percentage)) { return 'normal'; }
+  return percentage >= 90 ? 'danger' : percentage >= 75 ? 'warning' : 'normal';
+}
+
+/** 文件修改时间友好格式：同日显示今天，昨日显示昨天，其余显示年月日。 */
+export function workbenchRelativeDate(seconds: number | undefined, nowMs: number = Date.now()): string {
+  if (seconds === undefined || !Number.isFinite(seconds) || seconds <= 0) { return ''; }
+  const date = new Date(Math.trunc(seconds * 1000));
+  const now = new Date(nowMs);
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startOfTarget = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const dayDiff = Math.round((startOfToday - startOfTarget) / 86400000);
+  const pad = (value: number): string => value < 10 ? '0' + value.toString() : value.toString();
+  if (dayDiff === 0) {
+    return '今天 ' + pad(date.getHours()) + ':' + pad(date.getMinutes());
+  }
+  if (dayDiff === 1) {
+    return '昨天 ' + pad(date.getHours()) + ':' + pad(date.getMinutes());
+  }
+  return date.getFullYear().toString() + '/' + pad(date.getMonth() + 1) + '/' + pad(date.getDate());
+}
+
+/** 登录地址栏协议与端口提示，让省略协议或端口时的实际连接方式一目了然。 */
+export function workbenchProtocolHint(address: string, useHttps: boolean): string {
+  const trimmed = address.trim();
+  if (trimmed.length === 0) {
+    return useHttps ? '默认使用 HTTPS 加密连接（端口 443，可附加 :5001）' :
+      '当前选择 HTTP 明文连接（端口 80，可附加 :5000）';
+  }
+  const withoutScheme = trimmed.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+  const scheme = useHttps ? 'https://' : 'http://';
+  const hasPort = /:[0-9]{1,5}$/.test(withoutScheme);
+  return '将通过 ' + scheme + withoutScheme + ' 连接' +
+    (hasPort ? '' : useHttps ? '（未指定端口，若使用 DSM 默认端口请加 :5001）' : '（未指定端口，若使用 DSM 默认端口请加 :5000）');
+}

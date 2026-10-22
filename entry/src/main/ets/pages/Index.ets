@@ -36,10 +36,10 @@ import { DownloadStationPage } from '../features/downloadStation/DownloadStation
 import { NasTelemetrySummary, NasTelemetryStorageCard, NasTelemetryDashboard } from '../features/telemetry/TelemetryDashboard';
 import { photoTakenDate, workbenchBytes,
   workbenchCanUseDestination, workbenchBottomInset,
-  connectionRouteLabel } from '../features/workbench/WorkbenchPresentation';
+  connectionRouteLabel, workbenchProtocolHint } from '../features/workbench/WorkbenchPresentation';
 import { bundledDeviceArtwork, fallbackDeviceArtwork, hasModelArtwork, deviceArtworkPath } from '../features/workbench/NasDeviceArtwork';
 
-import { WorkbenchMetrics, WorkbenchIconTile, WorkbenchSectionTitle, WorkbenchInfoRow, WorkbenchNotice, WorkbenchChoice, WorkbenchActionRow } from '../features/workbench/WorkbenchUi';
+import { WorkbenchMetrics, WorkbenchIconTile, WorkbenchSectionTitle, WorkbenchInfoRow, WorkbenchNotice, WorkbenchChoice, WorkbenchActionRow, WorkbenchEmptyState } from '../features/workbench/WorkbenchUi';
 
 import { ModuleTab, WorkbenchModule, ModuleTabSettings, rootTabs, driveTabs, driveMoreViews, photoTabs,
   moduleTabIndex, rootReturnIndex, ROOT_TASK_TAB, ROOT_SETTINGS_TAB, DRIVE_MORE_VIEWS, supportsPhotoSharing,
@@ -497,15 +497,6 @@ struct Index {
     if (errorText.length > 0) { this.showTitleMenuError(errorText); }
   }
 
-  private openPhotosTitleMenu(): void {
-    this.openTitleMenu('photos-tools-menu', [
-      new TitleMenuItem(this.previewText($r('app.string.photos_select')), this.model.photoLibrary.items.length > 0,
-        (): void => { this.model.photoLibrary.beginSelection(); }),
-      new TitleMenuItem(this.previewText($r('app.string.photos_upload')), supportsPhotoBackup((api: string): boolean => this.model.supports(api)) &&
-        this.model.queue.ready && !this.model.busy && !this.backup.selecting && !this.backup.submitting,
-        (): void => { this.selectBackup(); })]);
-  }
-
 
   private showDeviceInfo(): void {
     this.deviceInfo = [];
@@ -929,8 +920,16 @@ struct Index {
         return [{ content: { label: this.previewText($r('app.string.action_cancel')), type: TextStyleMode.NORMAL,
           isEnabled: !this.model.photoLibrary.selectionBusy, action: (): void => { this.model.photoLibrary.endSelection(); } } }];
       }
-      return [{ content: { label: this.previewText($r('app.string.photos_more')), icon: $r('sys.symbol.more'), componentId: 'photos-tools-menu',
-        type: IconStyleMode.SMALL, isEnabled: !this.navigationBusy(), action: (): void => { this.openPhotosTitleMenu(); } } }];
+      const photoActions: HdsNavigationMenuItemOptions[] = [];
+      if (supportsPhotoBackup((api: string): boolean => this.model.supports(api))) {
+        photoActions.push({ content: { label: this.previewText($r('app.string.photos_upload')), icon: $r('sys.symbol.plus'),
+          type: IconStyleMode.SMALL, isEnabled: !this.navigationBusy() && this.model.queue.ready && !this.model.busy &&
+            !this.backup.selecting && !this.backup.submitting, action: (): void => { this.selectBackup(); } } });
+      }
+      photoActions.push({ content: { label: this.previewText($r('app.string.photos_select')), icon: $r('sys.symbol.checkmark_circle'),
+        type: IconStyleMode.SMALL, isEnabled: !this.navigationBusy() && this.model.photoLibrary.items.length > 0,
+        action: (): void => { this.model.photoLibrary.beginSelection(); } } });
+      return photoActions;
     }
     if (this.module === 'photos' && ['albums', 'shared'].includes(this.effectivePhotoTab()) &&
       this.model.photoLibrary.selectedAlbum === undefined) {
@@ -1085,11 +1084,7 @@ struct Index {
 
   @Builder
   emptyState(icon: Resource, title: string, description: string) {
-    Column({ space: 8 }) {
-      SymbolGlyph(icon).fontSize(32).fontColor([$r('sys.color.font_tertiary')])
-      Text(title).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
-      Text(description).fontSize(14).fontColor($r('sys.color.font_secondary')).textAlign(TextAlign.Center)
-    }.width('100%').padding({ top: 32, bottom: 32, left: 24, right: 24 })
+    WorkbenchEmptyState({ icon: icon, title: title, description: description })
   }
 
   /** 启动等待页：只呈现居中的加载指示，不提前暴露表单或半成品状态。 */
@@ -1125,18 +1120,35 @@ struct Index {
               .fontSize(24).fontWeight(FontWeight.Bold).fontColor($r('sys.color.font_primary'))
           }.width('100%').alignItems(HorizontalAlign.Center).margin({ bottom: 24 })
           Column({ space: 12 }) {
-            Row() {
-              TextInput({ text: this.model.address, placeholder: '地址或域名' })
-                .maxLength(512).constraintSize({ minHeight: 48 }).layoutWeight(1).enabled(!this.model.busy && !this.model.authenticated)
-                .backgroundColor(Color.Transparent)
-                .onChange((text: string): void => { this.model.setAddress(text); }).accessibilityText('NAS 服务器地址')
-              Button() {
-                SymbolGlyph($r('sys.symbol.arrow_counterclockwise_clock')).fontSize(20).fontWeight(FontWeight.Medium)
-                  .fontColor([$r('sys.color.icon_primary')])
-              }.width(48).height(48).type(ButtonType.Normal).backgroundColor(Color.Transparent).padding(0)
-                .enabled(!this.model.busy).accessibilityText($r('app.string.connection_addresses'))
-                .onClick((): void => { this.openConnectionAddresses(); })
-            }.width('100%').borderRadius(24).backgroundColor($r('sys.color.comp_background_tertiary'))
+            Column({ space: 6 }) {
+              Row() {
+                Button(this.model.useHttps ? 'HTTPS' : 'HTTP')
+                  .height(32).padding({ left: 10, right: 10 }).margin({ left: 8 })
+                  .fontSize(12).fontWeight(FontWeight.Medium)
+                  .fontColor(this.model.useHttps ? $r('sys.color.font_emphasize') : $r('app.color.workbench_warning'))
+                  .backgroundColor(this.model.useHttps ? $r('app.color.workbench_accent_surface') : $r('app.color.workbench_warning_surface'))
+                  .borderRadius(16).type(ButtonType.Normal)
+                  .enabled(!this.model.busy && !this.model.authenticated)
+                  .onClick((): void => {
+                    this.model.setAddress((this.model.useHttps ? 'http://' : 'https://') +
+                      this.model.address.trim().replace(/^https?:\/\//i, ''));
+                  })
+                  .accessibilityText('切换连接协议，当前为 ' + (this.model.useHttps ? 'HTTPS' : 'HTTP'))
+                TextInput({ text: this.model.address, placeholder: '地址或域名' })
+                  .maxLength(512).constraintSize({ minHeight: 48 }).layoutWeight(1).enabled(!this.model.busy && !this.model.authenticated)
+                  .backgroundColor(Color.Transparent)
+                  .onChange((text: string): void => { this.model.setAddress(text); }).accessibilityText('NAS 服务器地址')
+                Button() {
+                  SymbolGlyph($r('sys.symbol.arrow_counterclockwise_clock')).fontSize(20).fontWeight(FontWeight.Medium)
+                    .fontColor([$r('sys.color.icon_primary')])
+                }.width(48).height(48).type(ButtonType.Normal).backgroundColor(Color.Transparent).padding(0)
+                  .enabled(!this.model.busy).accessibilityText($r('app.string.connection_addresses'))
+                  .onClick((): void => { this.openConnectionAddresses(); })
+              }.width('100%').borderRadius(24).backgroundColor($r('sys.color.comp_background_tertiary'))
+                .alignItems(VerticalAlign.Center)
+              Text(workbenchProtocolHint(this.model.address, this.model.useHttps))
+                .fontSize(12).fontColor($r('sys.color.font_tertiary')).padding({ left: 8, right: 8 })
+            }.width('100%').alignItems(HorizontalAlign.Start)
             TextInput({ text: this.model.account, placeholder: '用户名' })
               .maxLength(128).constraintSize({ minHeight: 48 }).enabled(!this.model.busy)
               .onChange((text: string): void => { this.model.account = text; }).accessibilityText('NAS 用户名')
@@ -1297,13 +1309,25 @@ struct Index {
   }
 
   @Builder
-  tabSettingRow(label: string, selected: boolean, enabled: boolean, onToggle: (selected: boolean) => void) {
-    Row({ space: 12 }) {
-      Text(label).fontSize(16).fontColor($r('sys.color.font_primary')).layoutWeight(1)
-      Toggle({ type: ToggleType.Switch, isOn: selected })
-        .enabled(enabled && this.tabSettingsReady && !this.tabSettingsBusy && !this.navigationBusy())
-        .onChange(onToggle).accessibilityText(label + '，显示在底栏')
-    }.width('100%').constraintSize({ minHeight: WorkbenchMetrics.rowMinHeight }).padding({ left: 16, right: 16 })
+  tabSettingRow(label: string, selected: boolean, enabled: boolean, onToggle: (selected: boolean) => void,
+    permanent: boolean = false, showDivider: boolean = true) {
+    Column() {
+      Row({ space: 12 }) {
+        Text(label).fontSize(16).fontColor($r('sys.color.font_primary')).layoutWeight(1)
+        if (permanent) {
+          Text('常驻').fontSize(12).fontColor($r('sys.color.font_secondary'))
+            .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+            .borderRadius(12).backgroundColor($r('app.color.workbench_subtle'))
+        } else {
+          Toggle({ type: ToggleType.Switch, isOn: selected })
+            .enabled(enabled && this.tabSettingsReady && !this.tabSettingsBusy && !this.navigationBusy())
+            .onChange(onToggle).accessibilityText(label + '，显示在底栏')
+        }
+      }.width('100%').constraintSize({ minHeight: WorkbenchMetrics.rowMinHeight }).padding({ left: 16, right: 16 })
+      if (showDivider) {
+        Divider().color($r('app.color.workbench_divider')).margin({ left: 16, right: 16 })
+      }
+    }.width('100%')
   }
 
   @Builder
@@ -1312,36 +1336,36 @@ struct Index {
       Column({ space: WorkbenchMetrics.sectionGap }) {
         if (module !== 'photos' &&
           driveTabs((view: DriveView): boolean => this.model.drive.supportsView(view), this.drivePinned).length > 0) {
-          WorkbenchSectionTitle({ title: 'Synology Drive' })
+          WorkbenchSectionTitle({ title: 'Synology Drive', subtitle: '最多可固定 2 个扩展视图至底栏（底栏上限 5 项）' })
           Column() {
             ForEach([DriveView.MyDrive, DriveView.TeamFolders].filter((view: DriveView): boolean => this.model.drive.supportsView(view)),
               (view: DriveView): void => {
-                this.tabSettingRow(driveViewLabel(view), true, false, (_selected: boolean): void => {})
+                this.tabSettingRow(driveViewLabel(view), true, false, (_selected: boolean): void => {}, true, true)
               }, (view: DriveView): string => view)
             ForEach(DRIVE_MORE_VIEWS.filter((view: DriveView): boolean => this.model.drive.supportsView(view)), (view: DriveView): void => {
               this.tabSettingRow(driveViewLabel(view), this.drivePinned.includes(view), this.drivePinned.includes(view) || this.drivePinned.length < 2,
-                (selected) => { this.toggleDriveTab(view, selected); })
+                (selected) => { this.toggleDriveTab(view, selected); }, false, true)
             }, (view: DriveView): string => view)
-            this.tabSettingRow('更多', true, false, (_selected: boolean): void => {})
+            this.tabSettingRow('更多', true, false, (_selected: boolean): void => {}, true, false)
           }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).clip(true).backgroundColor($r('app.color.workbench_surface'))
         }
         if (module !== 'drive' && this.supportsPhotos()) {
-          WorkbenchSectionTitle({ title: '照片' })
+          WorkbenchSectionTitle({ title: '照片', subtitle: '底栏最多同时展示 5 个页签（含常驻项）' })
           Column() {
-            this.tabSettingRow('照片', true, false, (_selected: boolean): void => {})
-            this.tabSettingRow('相册', true, false, (_selected: boolean): void => {})
+            this.tabSettingRow('照片', true, false, (_selected: boolean): void => {}, true, true)
+            this.tabSettingRow('相册', true, false, (_selected: boolean): void => {}, true, true)
             if (supportsPhotoSharing((api: string): boolean => this.model.supports(api))) {
               this.tabSettingRow('共享', this.showPhotoShared, !this.showPhotoShared ?
                 photoTabs((api: string): boolean => this.model.supports(api), false, this.photoPinned).length < 5 : true,
-                (selected: boolean): void => { this.togglePhotoTab('shared', selected); })
+                (selected: boolean): void => { this.togglePhotoTab('shared', selected); }, false, true)
             }
             if (supportsPhotoBackup((api: string): boolean => this.model.supports(api))) {
               this.tabSettingRow('照片备份', this.photoPinned.includes('backup'), this.photoCanPin('backup'),
-                (selected: boolean): void => { this.togglePhotoTab('backup', selected); })
+                (selected: boolean): void => { this.togglePhotoTab('backup', selected); }, false, true)
             }
             this.tabSettingRow('传输任务', this.photoPinned.includes('transfers'), this.photoCanPin('transfers'),
-              (selected: boolean): void => { this.togglePhotoTab('transfers', selected); })
-            this.tabSettingRow('更多', true, false, (_selected: boolean): void => {})
+              (selected: boolean): void => { this.togglePhotoTab('transfers', selected); }, false, true)
+            this.tabSettingRow('更多', true, false, (_selected: boolean): void => {}, true, false)
           }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).clip(true).backgroundColor($r('app.color.workbench_surface'))
         }
         WorkbenchNotice({ text: this.tabSettingsError, warning: true })
@@ -1395,7 +1419,8 @@ struct Index {
             onOpenBackup: (): void => { this.navStack.pushPathByName('photo-backup', undefined); },
             onOpenTransfers: (): void => { this.openPhotoTransfers(); },
             onOpenShared: (): void => { this.openPhotoShared(); },
-            onCustomize: (): void => { this.navStack.pushPathByName('module-tabs', 'photos'); } })
+            onCustomize: (): void => { this.navStack.pushPathByName('module-tabs', 'photos'); },
+            onUpload: (): void => { this.selectBackup(); } })
         }.width('100%').height('100%')
       }
     } else if (tab.id === 'home') { this.homeView() }
@@ -1510,6 +1535,7 @@ struct Index {
   taskPage(state: TaskPageState, scroller: Scroller, top: number, bottom: number) {
     TaskPage({ model: this.model, state, scroller, rootScrollers: this.taskCategoryScrollers, topInset: top, bottomInset: bottom,
       onAllTasks: (): void => { this.showAllTasks(); }, onRemoteDownloads: (): void => { this.openNasDownloads(); },
+      onPhotoBackup: (): void => { this.openPhotoBackup(); },
       onDriveFiles: (): void => { this.returnDriveFiles(); },
       onOverlay: (visible: boolean): void => { this.taskOverlayVisible = visible; } })
   }

@@ -3,7 +3,7 @@ import { ExtensionStatusPanel } from '../extensions/ExtensionStatusPanel';
 import { DownloadTask, DownloadTaskFile, downloadMatchesFilter } from './DownloadStationProtocol';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { workbenchBytes } from '../workbench/WorkbenchPresentation';
-import { WorkbenchMetrics, WorkbenchChoice, WorkbenchIconTile, WorkbenchInfoRow, WorkbenchNotice } from '../workbench/WorkbenchUi';
+import { WorkbenchMetrics, WorkbenchChoice, WorkbenchEmptyState, WorkbenchIconTile, WorkbenchInfoRow, WorkbenchNotice } from '../workbench/WorkbenchUi';
 
 @ComponentV2
 export struct DownloadStationPage {
@@ -105,6 +105,12 @@ export struct DownloadStationPage {
       case 'error': return '下载失败';
       default: return '状态待核对';
     }
+  }
+  private taskEnded(task: DownloadTask): boolean {
+    return task.status === 'finished' || task.status === 'error';
+  }
+  private hasProgress(task: DownloadTask): boolean {
+    return !this.taskEnded(task) && task.totalBytes !== undefined && task.totalBytes > 0 && task.downloadedBytes !== undefined;
   }
   private progress(task: DownloadTask): number {
     return task.totalBytes === undefined || task.totalBytes <= 0 || task.downloadedBytes === undefined ? 0 :
@@ -213,8 +219,9 @@ export struct DownloadStationPage {
           Column({ space: 4 }) {
             Text(task.title).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
               .width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-            Progress({ value: this.progress(task), total: 100, type: ProgressType.Linear }).width('100%').height(4)
-              .visibility(task.totalBytes !== undefined && task.totalBytes > 0 && task.downloadedBytes !== undefined ? Visibility.Visible : Visibility.Hidden)
+            if (this.hasProgress(task)) {
+              Progress({ value: this.progress(task), total: 100, type: ProgressType.Linear }).width('100%').height(4)
+            }
             Row({ space: 8 }) {
               Text(this.bytes(task)).fontSize(12).fontColor($r('sys.color.font_secondary')).layoutWeight(1)
                 .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -226,7 +233,7 @@ export struct DownloadStationPage {
           }.layoutWeight(1).alignItems(HorizontalAlign.Start)
         }.width('100%').padding({ top: 10, bottom: 10, right: 4 })
       }.layoutWeight(1).type(ButtonType.Normal).backgroundColor(Color.Transparent).padding(0)
-        .constraintSize({ minHeight: 64 }).onClick((): void => { this.openDetail(task); })
+        .constraintSize({ minHeight: this.hasProgress(task) ? 64 : 56 }).onClick((): void => { this.openDetail(task); })
         .accessibilityText(task.title + '，' + this.statusText(task) + '，查看详情')
       if (this.canPause(task) || task.status === 'paused' || task.status === 'error') {
         Button() {
@@ -237,57 +244,72 @@ export struct DownloadStationPage {
           .enabled(this.model.canWrite('nasDownloads')).accessibilityText(task.title + (this.canPause(task) ? '，暂停' : task.status === 'error' ? '，尝试继续' : '，继续'))
           .onClick((): void => { this.model.controlDownload(task.id, this.canPause(task) ? 'pause' : 'resume'); })
       }
-      Button() { SymbolGlyph($r('sys.symbol.ellipsis_circle')).fontSize(20).fontColor([$r('sys.color.font_secondary')]) }
+      Button() { SymbolGlyph($r('sys.symbol.dot_grid_1x2')).fontSize(20).fontColor([$r('sys.color.icon_secondary')]) }
         .width(44).height(44).type(ButtonType.Circle)
         .backgroundColor(Color.Transparent).padding(0)
         .enabled(!this.model.busy).bindMenu(this.taskMenu(task)).accessibilityText(task.title + '，更多操作')
-    }.width('100%').constraintSize({ minHeight: 96 }).padding({ left: 14, right: 8 })
+    }.width('100%').constraintSize({ minHeight: this.hasProgress(task) ? 96 : 72 }).padding({ left: 14, right: 8 })
       .borderRadius(16).backgroundColor($r('app.color.workbench_surface'))
   }
 
   @Builder
   createForm() {
-      Column({ space: 12 }) {
-        Row() {
-          Text($r('app.string.task_link')).fontSize(16).fontColor($r('sys.color.font_primary')).layoutWeight(1)
-          PasteButton({ icon: PasteIconStyle.LINES, text: PasteDescription.PASTE })
-            .onClick((_event: ClickEvent, result: PasteButtonOnClickResult): void => { if (result === PasteButtonOnClickResult.SUCCESS) { this.paste(); } })
-        }.width('100%')
-        TextInput({ text: this.model.downloadUri, placeholder: $r('app.string.task_link_placeholder') }).enabled(!this.model.busy)
-          .onChange((value: string): void => { this.model.downloadUri = value; })
-        WorkbenchInfoRow({ label: $r('app.string.task_remote_directory'), value: this.model.downloadDestination.length === 0 ? '尚未选择' : '/' + this.model.downloadDestination })
-        Button($r('app.string.task_choose_directory')).buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: 48 }).enabled(!this.model.busy)
-          .onClick((): void => { this.creating = false; this.onChooseDirectory(); })
-        ExtensionStatusPanel({ model: this.model, feature: 'nasDownloads' })
-        if (this.model.downloadAuthenticationRequired) { this.authenticationForm() }
-        if (!this.model.canCreateDownload) {
-          WorkbenchNotice({ text: '当前无法在此 NAS 创建下载任务，可查看和管理已有任务。', warning: true })
-        }
-        Button($r('app.string.task_remote_create')).width('100%').constraintSize({ minHeight: 48 })
-          .enabled(this.model.canCreateDownload && this.model.canWrite('nasDownloads') && this.model.downloadUri.trim().length > 0 &&
-            this.model.downloadDestination.length > 0).onClick((): void => { this.confirmCreate(); })
-      }.width('100%').padding(16).alignItems(HorizontalAlign.Start)
+    Column({ space: 12 }) {
+      Row() {
+        Text($r('app.string.task_link')).fontSize(16).fontColor($r('sys.color.font_primary')).layoutWeight(1)
+        PasteButton({ icon: PasteIconStyle.LINES, text: PasteDescription.PASTE })
+          .onClick((_event: ClickEvent, result: PasteButtonOnClickResult): void => { if (result === PasteButtonOnClickResult.SUCCESS) { this.paste(); } })
+      }.width('100%')
+      TextInput({ text: this.model.downloadUri, placeholder: $r('app.string.task_link_placeholder') }).enabled(!this.model.busy)
+        .onChange((value: string): void => { this.model.downloadUri = value; })
+      WorkbenchInfoRow({ label: $r('app.string.task_remote_directory'), value: this.model.downloadDestination.length === 0 ? '尚未选择' : '/' + this.model.downloadDestination })
+      Button($r('app.string.task_choose_directory')).buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: 48 }).enabled(!this.model.busy)
+        .onClick((): void => { this.creating = false; this.onChooseDirectory(); })
+      ExtensionStatusPanel({ model: this.model, feature: 'nasDownloads' })
+      if (this.model.downloadAuthenticationRequired) { this.authenticationForm() }
+      if (!this.model.canCreateDownload) {
+        WorkbenchNotice({ text: '当前无法在此 NAS 创建下载任务，可查看和管理已有任务。', warning: true })
+      }
+      Button($r('app.string.task_remote_create')).width('100%').constraintSize({ minHeight: 48 })
+        .enabled(this.model.canCreateDownload && this.model.canWrite('nasDownloads') && this.model.downloadUri.trim().length > 0 &&
+          this.model.downloadDestination.length > 0).onClick((): void => { this.confirmCreate(); })
+    }.width('100%').padding(16).alignItems(HorizontalAlign.Start)
   }
 
   @Builder
   authenticationForm() {
     Column({ space: 12 }) {
+      Row({ space: 12 }) {
+        WorkbenchIconTile({
+          icon: $r('sys.symbol.lock'),
+          iconSize: 20, tileSize: 40, tileRadius: 12,
+          iconColor: $r('app.color.workbench_warning'),
+          tileColor: $r('app.color.workbench_warning_surface')
+        })
+        Column({ space: 2 }) {
+          Text('需要验证 NAS 账号密码').fontSize(15).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
+          Text('执行此操作需要重新验证当前 DSM 账户凭据').fontSize(12).fontColor($r('sys.color.font_secondary'))
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      }.width('100%')
       TextInput({ text: this.model.downloadPassword, placeholder: $r('app.string.download_password') })
-        .type(InputType.Password).enabled(!this.model.busy)
+        .type(InputType.Password).height(48).borderRadius(12).enabled(!this.model.busy)
         .onChange((value: string): void => { this.model.downloadPassword = value; })
         .accessibilityText($r('app.string.download_password'))
       if (this.model.downloadNeedsOtp) {
         TextInput({ text: this.model.downloadOtp, placeholder: $r('app.string.download_otp') })
-          .type(InputType.Number).enabled(!this.model.busy)
+          .type(InputType.Number).height(48).borderRadius(12).enabled(!this.model.busy)
           .onChange((value: string): void => { this.model.downloadOtp = value; })
           .accessibilityText($r('app.string.download_otp'))
       }
-      Button($r('app.string.download_authenticate')).constraintSize({ minHeight: 48 })
-        .enabled(!this.model.busy && this.model.downloadPassword.length > 0)
-        .onClick((): void => { this.onAuthenticate(); })
-      Button($r('app.string.action_cancel')).buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: 48 })
-        .onClick((): void => { this.model.cancelDownloadAuthentication(); })
-    }.width('100%')
+      Row({ space: 12 }) {
+        Button($r('app.string.action_cancel')).buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: 44 }).layoutWeight(1)
+          .onClick((): void => { this.model.cancelDownloadAuthentication(); })
+        Button($r('app.string.download_authenticate')).constraintSize({ minHeight: 44 }).layoutWeight(1)
+          .enabled(!this.model.busy && this.model.downloadPassword.length > 0)
+          .onClick((): void => { this.onAuthenticate(); })
+      }.width('100%')
+    }.width('100%').padding(16).borderRadius(WorkbenchMetrics.cardRadius)
+      .backgroundColor($r('app.color.workbench_surface'))
   }
 
   @Builder
@@ -352,10 +374,14 @@ export struct DownloadStationPage {
             selected: this.filter === filter, onSelect: (): void => { this.selectFilter(filter); } })
         }, (filter: string): string => filter)
       }.width('100%').padding({ top: 4, bottom: 8 })
+        .bindSheet($$this.showingFile, this.fileInformation(), {
+          height: SheetSize.FIT_CONTENT, showClose: true, title: { title: $r('app.string.task_file_details') },
+          backgroundColor: $r('app.color.workbench_surface_elevated')
+        })
       Refresh({ refreshing: $$this.refreshing }) {
         List({ space: 8, scroller: this.scroller }) {
           ListItem() {
-            Column() {
+            Column({ space: 12 }) {
               ExtensionStatusPanel({ model: this.model, feature: 'nasDownloads' })
               if (this.model.downloadAuthenticationRequired) { this.authenticationForm() }
             }.width('100%')
@@ -372,11 +398,18 @@ export struct DownloadStationPage {
                 Button($r('app.string.task_retry_loading')).buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: 48 })
                   .enabled(!this.model.busy).onClick((): void => { if (this.model.downloadRetryAppend) { this.loadMore(); } else { this.refresh(); } })
               } else if (this.model.downloadsLoaded && this.model.downloadTotal === 0) {
-                Text($r('app.string.task_remote_empty')).fontSize(16).fontColor($r('sys.color.font_secondary'))
+                WorkbenchEmptyState({
+                  icon: $r('sys.symbol.arrow_down_circle'),
+                  title: this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.task_remote_empty').id),
+                  description: '点击右上角加号可向 NAS 提交 HTTP、FTP 或磁力链接下载任务。'
+                })
               } else if (this.tasks().length === 0 && this.model.downloadsLoaded) {
-                Text(this.model.downloadHasMore || this.model.downloadListChanged ?
-                  $r('app.string.task_loaded', this.model.downloads.length) : $r('app.string.task_remote_no_match'))
-                  .fontSize(16).fontColor($r('sys.color.font_secondary')).textAlign(TextAlign.Center)
+                WorkbenchEmptyState({
+                  icon: $r('sys.symbol.arrow_down_circle'),
+                  title: this.model.downloadHasMore || this.model.downloadListChanged ?
+                    this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.task_loaded').id, this.model.downloads.length) :
+                    this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.task_remote_no_match').id)
+                })
               }
               if (this.model.downloadHasMore && !this.model.downloadsLoading && !this.supplementing) {
                 Button($r('app.string.task_continue_loading')).constraintSize({ minHeight: 48 }).enabled(!this.model.busy)
@@ -392,10 +425,16 @@ export struct DownloadStationPage {
           .onScrollStart((): void => { if (!this.model.downloadsLoading && !this.supplementing) { this.reachArmed = true; } })
           .onReachEnd((): void => { if (this.reachArmed && !this.model.busy && this.visible) { this.loadMore(); } })
       }.width('100%').layoutWeight(1).onRefreshing((): void => { this.refresh(); })
+        .bindSheet($$this.showingDetail, this.detail(), {
+          height: SheetSize.LARGE, showClose: true, title: { title: $r('app.string.task_details') },
+          backgroundColor: $r('app.color.workbench_surface_elevated')
+        })
     }.width('100%').height('100%').constraintSize({ maxWidth: 960 }).padding({ left: 16, right: 16 })
-      .bindSheet($$this.creating, this.createForm(), { height: SheetSize.FIT_CONTENT, showClose: true, title: { title: $r('app.string.task_remote_create') },
-        keyboardAvoidMode: SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL })
-      .bindSheet($$this.showingDetail, this.detail(), { height: SheetSize.LARGE, showClose: true, title: { title: $r('app.string.task_details') } })
-      .bindSheet($$this.showingFile, this.fileInformation(), { height: SheetSize.FIT_CONTENT, showClose: true, title: { title: $r('app.string.task_file_details') } })
+      .backgroundColor($r('app.color.workbench_background'))
+      .bindSheet($$this.creating, this.createForm(), {
+        height: SheetSize.FIT_CONTENT, showClose: true, title: { title: $r('app.string.task_remote_create') },
+        keyboardAvoidMode: SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL,
+        backgroundColor: $r('app.color.workbench_surface_elevated')
+      })
   }
 }

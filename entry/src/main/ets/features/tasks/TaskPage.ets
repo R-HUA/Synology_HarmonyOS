@@ -8,8 +8,9 @@ import { TaskPageState } from './TaskPageState';
 import { TaskRecordRow } from './TaskRecordRow';
 import { DriveTransferCard } from '../drive/DriveTransferUi';
 import { DriveActionCard } from '../drive/DriveActionUi';
-import { WorkbenchChoice, WorkbenchInfoRow, WorkbenchNotice, WorkbenchActionRow, WorkbenchMetrics } from '../workbench/WorkbenchUi';
+import { WorkbenchChoice, WorkbenchEmptyState, WorkbenchInfoRow, WorkbenchNotice, WorkbenchActionRow, WorkbenchMetrics } from '../workbench/WorkbenchUi';
 import { workbenchBytes } from '../workbench/WorkbenchPresentation';
+import { supportsPhotoBackup } from '../workbench/ModuleNavigation';
 import { HdsTabs } from '@kit.UIDesignKit';
 
 type TaskCategory = TaskGroup | 'other';
@@ -25,6 +26,7 @@ export struct TaskPage {
   @Param bottomInset: number = 16;
   @Event onAllTasks: () => void = (): void => {};
   @Event onRemoteDownloads: () => void = (): void => {};
+  @Event onPhotoBackup: () => void = (): void => {};
   @Event onDriveFiles: () => void = (): void => {};
   @Event onOverlay: (visible: boolean) => void = (): void => {};
   @Local private detailVisible: boolean = false;
@@ -246,11 +248,41 @@ export struct TaskPage {
   }
   @Builder
   taskRow(entry: TaskListEntry) {
-    TaskRecordRow({ record: entry.record!, focused: this.state.focusKey === entry.key,
-      canCancel: this.canCancel(entry.record!), canPause: this.canPause(entry.record!), canResume: this.canResume(entry.record!),
-      actionsEnabled: this.actionsAvailable(entry.record!),
-      onDetail: (): void => { this.selectedKey = entry.key; this.detailVisible = true; },
-      onCancel: (): void => { this.cancel(entry.record!); }, onPause: (): void => { this.pause(entry.record!); } })
+    Column() {
+      TaskRecordRow({ record: entry.record!, focused: this.state.focusKey === entry.key,
+        canCancel: this.canCancel(entry.record!), canPause: this.canPause(entry.record!), canResume: this.canResume(entry.record!),
+        actionsEnabled: this.actionsAvailable(entry.record!),
+        onDetail: (): void => { this.selectedKey = entry.key; this.detailVisible = true; },
+        onCancel: (): void => { this.cancel(entry.record!); }, onPause: (): void => { this.pause(entry.record!); } })
+      if (this.state.scope === 'root' && !entry.groupEnd) {
+        Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
+      }
+    }.width('100%')
+  }
+  @Builder
+  otherCategoryCard() {
+    Column() {
+      WorkbenchActionRow({
+        label: this.text($r('app.string.task_remote_download')),
+        description: this.model.extensions.downloadsLoaded ?
+          '共 ' + this.model.extensions.downloadTotal.toString() + ' 项远程下载任务' :
+          '查看或创建 NAS Download Station 离线下载任务',
+        icon: $r('sys.symbol.arrow_down_circle'),
+        onAction: this.onRemoteDownloads
+      })
+      if (supportsPhotoBackup((api: string): boolean => this.model.supports(api))) {
+        Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
+        WorkbenchActionRow({
+          label: this.text($r('app.string.photos_album_backup')),
+          description: this.model.photoBackup.settings.enabled ?
+            (this.model.photoBackup.status.length > 0 ? this.model.photoBackup.status : '已开启自动相册备份') :
+            '管理本机照片与视频的自动备份策略',
+          icon: $r('sys.symbol.arrow_up_circle'),
+          onAction: this.onPhotoBackup
+        })
+      }
+    }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).clip(true)
+      .backgroundColor($r('app.color.workbench_surface'))
   }
   @Builder
   rootList(category: TaskCategory, index: number) {
@@ -258,9 +290,8 @@ export struct TaskPage {
       List({ scroller: this.rootScrollers[index] }) {
         if (category === 'other') {
           ListItem() {
-            WorkbenchActionRow({ label: this.text($r('app.string.task_remote_download')), icon: $r('sys.symbol.arrow_down_circle'), onAction: this.onRemoteDownloads })
-          }.margin({ top: 12 }).borderRadius(WorkbenchMetrics.cardRadius).clip(true)
-            .backgroundColor($r('app.color.workbench_surface'))
+            this.otherCategoryCard()
+          }.margin({ top: 12 })
         } else {
           if (this.groupError(category).length > 0) {
             ListItem() { WorkbenchNotice({ text: this.groupError(category), warning: true }) }
@@ -277,7 +308,14 @@ export struct TaskPage {
               .backgroundColor($r('app.color.workbench_surface')).clip(true)
           }).key((entry: TaskListEntry): string => entry.key).virtualScroll()
           if (this.rootEntries(category).length === 0) {
-            ListItem() { Text($r('app.string.task_empty')).fontSize(16).fontColor($r('sys.color.font_secondary')).width('100%').textAlign(TextAlign.Center).padding(32) }
+            ListItem() {
+              WorkbenchEmptyState({
+                icon: category === 'download' ? $r('sys.symbol.arrow_down_circle') :
+                  category === 'upload' ? $r('sys.symbol.arrow_up_circle') : $r('sys.symbol.clock'),
+                title: this.text($r('app.string.task_empty')),
+                description: '当前分类下没有正在进行或已结束的任务记录。'
+              })
+            }
           }
         }
       }.width('100%').height('100%').scrollBar(BarState.Auto).contentEndOffset(this.bottomInset)
@@ -379,37 +417,51 @@ export struct TaskPage {
 
   build() {
     Column() {
-      if (this.state.scope === 'root') {
-        this.rootPage()
-      } else {
-        Row({ space: 8 }) {
-          ForEach(['all', 'active', 'finished'] as TaskFilter[], (filter: TaskFilter): void => {
-            WorkbenchChoice({ label: this.filterLabel(filter), selected: this.state.filter === filter,
-              onSelect: (): void => { this.state.filter = filter; } })
-          }, (filter: TaskFilter): string => filter)
-          Blank()
-          Button() { SymbolGlyph($r('sys.symbol.arrow_clockwise')).fontSize(20).fontColor([$r('sys.color.icon_secondary')]) }
-            .width(44).height(44).backgroundColor(Color.Transparent).enabled(!this.clearing).accessibilityText($r('app.string.task_refresh'))
-            .onClick((): void => { this.refresh(); })
-        }.width('100%').padding({ top: this.topInset + 4, bottom: 4 })
-        Button($r('app.string.task_all_tasks')).buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: 44 }).onClick(this.onAllTasks)
-        WorkbenchNotice({ text: this.loadError, warning: true })
-        List({ space: 8, scroller: this.scroller }) {
-          Repeat<TaskListEntry>(this.entries).each((entry: RepeatItem<TaskListEntry>): void => {
-            ListItem() {
-              if (entry.item.record === undefined) { this.groupHeader(entry.item.group) }
-              else { this.taskRow(entry.item) }
+      Column() {
+        if (this.state.scope === 'root') {
+          this.rootPage()
+        } else {
+          Row({ space: 8 }) {
+            ForEach(['all', 'active', 'finished'] as TaskFilter[], (filter: TaskFilter): void => {
+              WorkbenchChoice({ label: this.filterLabel(filter), selected: this.state.filter === filter,
+                onSelect: (): void => { this.state.filter = filter; } })
+            }, (filter: TaskFilter): string => filter)
+            Blank()
+            Button() { SymbolGlyph($r('sys.symbol.arrow_clockwise')).fontSize(20).fontColor([$r('sys.color.icon_secondary')]) }
+              .width(44).height(44).backgroundColor(Color.Transparent).enabled(!this.clearing).accessibilityText($r('app.string.task_refresh'))
+              .onClick((): void => { this.refresh(); })
+          }.width('100%').padding({ top: this.topInset + 4, bottom: 4 })
+          Button($r('app.string.task_all_tasks')).buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: 44 }).onClick(this.onAllTasks)
+          WorkbenchNotice({ text: this.loadError, warning: true })
+          List({ space: 8, scroller: this.scroller }) {
+            Repeat<TaskListEntry>(this.entries).each((entry: RepeatItem<TaskListEntry>): void => {
+              ListItem() {
+                if (entry.item.record === undefined) { this.groupHeader(entry.item.group) }
+                else { this.taskRow(entry.item) }
+              }
+            }).key((entry: TaskListEntry): string => entry.key).virtualScroll()
+            if (this.entries.length === 0 && this.countsReady()) {
+              ListItem() {
+                WorkbenchEmptyState({
+                  icon: $r('sys.symbol.clock'),
+                  title: this.text($r('app.string.task_empty')),
+                  description: '当前筛选条件下没有任务记录。'
+                })
+              }
             }
-          }).key((entry: TaskListEntry): string => entry.key).virtualScroll()
-          if (this.entries.length === 0 && this.countsReady()) {
-            ListItem() { Text($r('app.string.task_empty')).fontSize(16).fontColor($r('sys.color.font_secondary')).width('100%').textAlign(TextAlign.Center).padding(32) }
-          }
-        }.width('100%').layoutWeight(1).scrollBar(BarState.Auto).contentEndOffset(this.bottomInset)
-      }
+          }.width('100%').layoutWeight(1).scrollBar(BarState.Auto).contentEndOffset(this.bottomInset)
+        }
+      }.width('100%').height('100%')
+        .bindSheet($$this.clearVisible, this.clearSheet(), {
+          height: SheetSize.FIT_CONTENT, showClose: true, title: { title: $r('app.string.task_clear_records') },
+          backgroundColor: $r('app.color.workbench_surface_elevated')
+        })
     }.width('100%').height('100%').constraintSize({ maxWidth: 960 })
       .padding({ left: this.state.scope === 'root' ? 0 : 16, right: this.state.scope === 'root' ? 0 : 16,
         top: this.state.scope === 'root' ? this.topInset : 0 })
-      .bindSheet($$this.detailVisible, this.detailsSheet(), { height: SheetSize.LARGE, showClose: true, title: { title: $r('app.string.task_details') } })
-      .bindSheet($$this.clearVisible, this.clearSheet(), { height: SheetSize.FIT_CONTENT, showClose: true, title: { title: $r('app.string.task_clear_records') } })
+      .bindSheet($$this.detailVisible, this.detailsSheet(), {
+        height: SheetSize.LARGE, showClose: true, title: { title: $r('app.string.task_details') },
+        backgroundColor: $r('app.color.workbench_surface_elevated')
+      })
   }
 }

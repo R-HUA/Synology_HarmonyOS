@@ -7,9 +7,9 @@ import { canPreviewDriveOriginal, canPreviewDriveMedia } from '../../core/domain
 import { telemetryTimestamp } from '../../core/domain/TelemetryProtocol';
 import { driveFileLinkAllowed } from '../../core/domain/DriveCollaborationProtocol';
 import { ConnectionViewModel } from '../connection/ConnectionViewModel';
-import { WorkbenchMetrics, WorkbenchNotice, WorkbenchActionRow,
+import { WorkbenchMetrics, WorkbenchNotice, WorkbenchActionRow, WorkbenchEmptyState,
   WorkbenchEntryRow, WorkbenchInfoRow } from '../workbench/WorkbenchUi';
-import { workbenchBytes } from '../workbench/WorkbenchPresentation';
+import { workbenchBytes, workbenchRelativeDate } from '../workbench/WorkbenchPresentation';
 import type { DriveTrailItem } from './DriveBrowserModel';
 
 /** Drive 页签内容；页面导航与底栏由根页面统一管理。 */
@@ -131,11 +131,7 @@ export struct DriveModulePage {
 
   @Builder
   emptyState(icon: Resource, title: string, description: string) {
-    Column({ space: 8 }) {
-      SymbolGlyph(icon).fontSize(32).fontColor([$r('sys.color.font_tertiary')])
-      Text(title).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
-      Text(description).fontSize(14).fontColor($r('sys.color.font_secondary')).textAlign(TextAlign.Center)
-    }.width('100%').padding({ top: 32, bottom: 32, left: 24, right: 24 })
+    WorkbenchEmptyState({ icon: icon, title: title, description: description })
   }
 
   @Builder
@@ -240,16 +236,22 @@ export struct DriveModulePage {
       Column({ space: WorkbenchMetrics.sectionGap }) {
         if (this.supportedMoreViews().length > 0) {
           Column() {
-            ForEach(this.supportedMoreViews(), (view: DriveView): void => {
-              WorkbenchActionRow({ label: driveViewLabel(view), icon: this.driveViewIcon(view),
-                available: !this.model.busy && !this.model.drive.busy,
-                onAction: (): void => { this.onSelectMore(view); } })
+            ForEach(this.supportedMoreViews(), (view: DriveView, index: number): void => {
+              Column() {
+                WorkbenchActionRow({ label: driveViewLabel(view), icon: this.driveViewIcon(view),
+                  available: !this.model.busy && !this.model.drive.busy,
+                  onAction: (): void => { this.onSelectMore(view); } })
+                if (index < this.supportedMoreViews().length - 1) {
+                  Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
+                }
+              }.width('100%')
             }, (view: DriveView): string => view)
           }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).clip(true).backgroundColor($r('app.color.workbench_surface'))
         }
         Column() {
           WorkbenchActionRow({ label: this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.task_records').id),
             icon: $r('sys.symbol.clock'), onAction: this.onOpenTransfers })
+          Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
           WorkbenchActionRow({ label: '底栏设置', icon: $r('sys.symbol.slider_horizontal_2'), onAction: this.onCustomize })
         }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).clip(true).backgroundColor($r('app.color.workbench_surface'))
         this.driveNotices()
@@ -260,7 +262,13 @@ export struct DriveModulePage {
   }
 
   private driveRowSubtitle(entry: DriveEntry): string {
-    return entry.kind === DriveEntryKind.Folder ? '文件夹' : workbenchBytes(entry.sizeBytes);
+    const modified = workbenchRelativeDate(entry.modifiedAt);
+    if (entry.kind === DriveEntryKind.Folder) {
+      return modified.length > 0 ? '文件夹 · ' + modified : '文件夹';
+    }
+    const size = workbenchBytes(entry.sizeBytes);
+    return modified.length > 0 && size.length > 0 ? modified + ' · ' + size :
+      modified.length > 0 ? modified : size;
   }
 
   private driveViewIcon(view: DriveView): Resource {
@@ -375,8 +383,7 @@ export struct DriveModulePage {
         this.driveFileList()
       }
     }.width('100%').constraintSize({ maxWidth: 960 }).height('100%')
-      .backgroundColor(this.tabId === 'more' && this.moreView.length === 0 ?
-        $r('app.color.workbench_background') : $r('app.color.workbench_surface'))
+      .backgroundColor($r('app.color.workbench_background'))
       .bindSheet($$this.detailVisible, this.entryDetails(), {
         height: SheetSize.MEDIUM, detents: [SheetSize.MEDIUM, SheetSize.LARGE], title: { title: '文件详情' },
         showClose: true, backgroundColor: this.sheetMaterialAvailable ? Color.Transparent : $r('app.color.workbench_surface_elevated'),

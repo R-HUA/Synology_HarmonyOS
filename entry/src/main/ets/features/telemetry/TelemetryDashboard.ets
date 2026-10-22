@@ -1,13 +1,20 @@
 import { TelemetryMonitor, NasTelemetryStatus } from './TelemetryMonitor';
 import { NasTelemetryNetwork, NasTelemetryVolume, telemetryBytes, telemetryPercent,
   telemetryVolumeLabel, telemetryVolumesSorted } from '../../core/domain/TelemetryProtocol';
-
+import { workbenchUsageLevel } from '../workbench/WorkbenchPresentation';
 import { WorkbenchMetrics, WorkbenchSectionTitle, WorkbenchInfoRow, WorkbenchMetric } from '../workbench/WorkbenchUi';
 
 /** 三列小卡片宽度有限，缺失值用短占位符，避免把列宽撑破。 */
 const TELEMETRY_PLACEHOLDER = '—';
 /** 小卡片单行高度：固定下来才能让只有一行取值的卡片与两行的卡片底部对齐。 */
 const TELEMETRY_TILE_ROW_HEIGHT = 18;
+
+function volumeProgressColor(percentage: number): ResourceColor {
+  const level = workbenchUsageLevel(percentage);
+  if (level === 'danger') { return $r('app.color.workbench_danger'); }
+  if (level === 'warning') { return $r('app.color.workbench_warning'); }
+  return $r('sys.color.icon_emphasize');
+}
 
 /**
  * 小卡片取值行。这里必须是 @Param 子组件，不能用带值参数的 @Builder：
@@ -138,7 +145,8 @@ export struct NasTelemetryStorageCard {
             if (volume.totalBytes > 0) {
               Progress({ value: volume.usedBytes / volume.totalBytes * 100, total: 100, type: ProgressType.Linear })
                 .width('100%').height(4)
-                .color($r('sys.color.icon_emphasize')).backgroundColor($r('app.color.workbench_divider'))
+                .color(volumeProgressColor(volume.usedBytes / volume.totalBytes * 100))
+                .backgroundColor($r('app.color.workbench_divider'))
                 .accessibilityText(telemetryVolumeLabel(volume.id) + ' 已用 ' +
                   telemetryPercent(volume.usedBytes / volume.totalBytes * 100))
             }
@@ -288,6 +296,8 @@ export struct NasTelemetryDashboard {
           if (volume.totalBytes > 0) {
             Progress({ value: volume.usedBytes / volume.totalBytes * 100, total: 100, type: ProgressType.Linear })
               .width('100%').height(4)
+              .color(volumeProgressColor(volume.usedBytes / volume.totalBytes * 100))
+              .backgroundColor($r('app.color.workbench_divider'))
               .accessibilityText(telemetryVolumeLabel(volume.id) + ' 已用 ' +
                 telemetryPercent(volume.usedBytes / volume.totalBytes * 100))
           }

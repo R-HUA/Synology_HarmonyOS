@@ -36,12 +36,22 @@ export struct PhotoThumbnailCell {
           }
         }.width('100%').height('100%').backgroundColor($r('app.color.workbench_subtle'))
       }.width('100%').height('100%').type(ButtonType.Normal).backgroundColor(Color.Transparent)
-        .borderRadius(2).enabled(this.available).onClick((): void => { this.onOpen(this.item); })
+        .borderRadius(4).enabled(this.available).onClick((): void => { this.onOpen(this.item); })
         .accessibilityText(photoMediaLabel(this.item) + '，' + this.item.filename + '，' + photoTakenDate(this.item))
-      if (this.item.mediaType !== 'photo') {
-        Text(photoMediaLabel(this.item)).fontSize(12).fontColor(Color.White)
-          .padding({ left: 8, right: 8, top: 4, bottom: 4 })
-          .backgroundColor(Color.Black).opacity(0.8).borderRadius(8).margin(6).hitTestBehavior(HitTestMode.None)
+      if (this.item.favorite === true || this.item.mediaType !== 'photo') {
+        Row({ space: 6 }) {
+          if (this.item.favorite === true) {
+            Stack() {
+              SymbolGlyph($r('sys.symbol.heart_fill')).fontSize(12).fontColor([$r('app.color.workbench_danger')])
+            }.width(22).height(22).borderRadius(11).backgroundColor('#99000000')
+          }
+          Blank()
+          if (this.item.mediaType !== 'photo') {
+            Text(photoMediaLabel(this.item)).fontSize(11).fontColor(Color.White)
+              .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+              .backgroundColor('#99000000').borderRadius(6)
+          }
+        }.width('100%').padding(6).alignItems(VerticalAlign.Center).hitTestBehavior(HitTestMode.None)
       }
       if (this.state.errorText.length > 0) {
         Button('重试缩略图').fontSize(12).width('100%').constraintSize({ minHeight: 40 })
@@ -53,6 +63,6 @@ export struct PhotoThumbnailCell {
         Checkbox().select(this.selected).hitTestBehavior(HitTestMode.None)
           .position({ right: 4, top: 4 }).accessibilityLevel('no')
       }
-    }.width('100%').aspectRatio(1).borderRadius(2).clip(true)
+    }.width('100%').aspectRatio(1).borderRadius(4).clip(true)
   }
 }

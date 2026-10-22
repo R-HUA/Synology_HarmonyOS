@@ -10,7 +10,8 @@ const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.Scri
 const moduleFixture = { exports: {} };
 vm.runInNewContext(compiled.outputText, { module: moduleFixture, exports: moduleFixture.exports, Date });
 const { photoGridColumns, photoTimelineRows, photoTakenDate, photoMediaLabel,
-  workbenchBottomInset, workbenchShortcutColumns, photoAlbumColumns, photoAlbumRows } = moduleFixture.exports;
+  workbenchBottomInset, workbenchShortcutColumns, photoAlbumColumns, photoAlbumRows,
+  workbenchUsageLevel, workbenchRelativeDate, workbenchProtocolHint } = moduleFixture.exports;
 const plain = value => JSON.parse(JSON.stringify(value));
 const item = (id, year, month) => ({ id, space: 0, filename: '照片.jpg', bytes: 12, mediaType: 'photo',
   ...(year === undefined ? {} : { takenAt: new Date(year, month - 1, 15, 12).getTime() / 1000 }) });
@@ -76,4 +77,34 @@ test('album resizing preserves every album, its source space and partial final r
     assert.ok(rows.every(row => row.albums.length > 0 && row.albums.length <= columns));
   }
   assert.deepEqual(plain(photoAlbumRows([], 2)), []);
+});
+
+test('usage level thresholds distinguish normal, warning and danger capacity', () => {
+  assert.equal(workbenchUsageLevel(undefined), 'normal');
+  assert.equal(workbenchUsageLevel(0), 'normal');
+  assert.equal(workbenchUsageLevel(74.9), 'normal');
+  assert.equal(workbenchUsageLevel(75), 'warning');
+  assert.equal(workbenchUsageLevel(89.9), 'warning');
+  assert.equal(workbenchUsageLevel(90), 'danger');
+  assert.equal(workbenchUsageLevel(100), 'danger');
+});
+
+test('relative dates format today, yesterday and historical dates deterministically', () => {
+  const now = new Date(2026, 9, 22, 14, 30, 0).getTime();
+  const todayMorning = new Date(2026, 9, 22, 8, 5, 0).getTime() / 1000;
+  const yesterdayEvening = new Date(2026, 9, 21, 19, 45, 0).getTime() / 1000;
+  const earlierDate = new Date(2026, 2, 7, 10, 0, 0).getTime() / 1000;
+  assert.equal(workbenchRelativeDate(undefined, now), '');
+  assert.equal(workbenchRelativeDate(todayMorning, now), '今天 08:05');
+  assert.equal(workbenchRelativeDate(yesterdayEvening, now), '昨天 19:45');
+  assert.equal(workbenchRelativeDate(earlierDate, now), '2026/03/07');
+});
+
+test('protocol hint reflects explicit schemes, ports and default HTTPS/HTTP ports', () => {
+  assert.equal(workbenchProtocolHint('', true), '默认使用 HTTPS 加密连接（端口 443，可附加 :5001）');
+  assert.equal(workbenchProtocolHint('', false), '当前选择 HTTP 明文连接（端口 80，可附加 :5000）');
+  assert.equal(workbenchProtocolHint('192.168.1.10', true), '将通过 https://192.168.1.10 连接（未指定端口，若使用 DSM 默认端口请加 :5001）');
+  assert.equal(workbenchProtocolHint('192.168.1.10', false), '将通过 http://192.168.1.10 连接（未指定端口，若使用 DSM 默认端口请加 :5000）');
+  assert.equal(workbenchProtocolHint('192.168.1.10:5001', true), '将通过 https://192.168.1.10:5001 连接');
+  assert.equal(workbenchProtocolHint('https://nas.local:8443/', true), '将通过 https://nas.local:8443 连接');
 });

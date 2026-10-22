@@ -1,14 +1,14 @@
 import { ConnectionViewModel } from './ConnectionViewModel';
 import { NasConnectionAddress } from '../../core/domain/ConnectionRoutes';
 import { telemetryTimestamp } from '../../core/domain/TelemetryProtocol';
-
-import { WorkbenchMetrics, WorkbenchIconTile, WorkbenchNotice } from '../workbench/WorkbenchUi';
+import { connectionRouteLabel } from '../workbench/WorkbenchPresentation';
+import { WorkbenchMetrics, WorkbenchEmptyState, WorkbenchIconTile, WorkbenchNotice } from '../workbench/WorkbenchUi';
 
 @ComponentV2
 export struct NasConnectionAddressPage {
   @Param model: ConnectionViewModel = new ConnectionViewModel();
   @Param scroller: Scroller = new Scroller();
-  @Event onUseAddress: (address: NasConnectionAddress) => void = (address: NasConnectionAddress): void => {};
+  @Event onUseAddress: (address: NasConnectionAddress) => void = (_address: NasConnectionAddress): void => {};
 
   private disabled(): boolean {
     return this.model.busy || this.model.addressBook.busy || this.model.addressBook.probing;
@@ -38,11 +38,18 @@ export struct NasConnectionAddressPage {
             WorkbenchIconTile({ icon: $r('sys.symbol.externaldrive'), iconSize: 22, tileSize: 40, tileRadius: 12,
               iconColor: $r('sys.color.icon_emphasize'), tileColor: $r('app.color.workbench_accent_surface') })
             Column({ space: 2 }) {
-              Text(address.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
-                .width('100%').maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+              Row({ space: 6 }) {
+                Text(address.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).flexShrink(1)
+                Text(connectionRouteLabel(address.origin, address.kind)).fontSize(11)
+                  .fontColor($r('sys.color.font_emphasize'))
+                  .padding({ left: 6, right: 6, top: 2, bottom: 2 }).borderRadius(6)
+                  .backgroundColor($r('app.color.workbench_accent_surface'))
+              }.width('100%').alignItems(VerticalAlign.Center)
               if (address.insecureTls === true || this.model.authenticated && this.model.address === address.origin) {
-                Text(address.insecureTls === true ? '忽略证书校验' : '当前连接')
-                  .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
+                Text(this.model.authenticated && this.model.address === address.origin ?
+                  (address.insecureTls === true ? '当前连接 · 忽略证书校验' : '当前连接') : '忽略证书校验')
+                  .fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
               }
             }.layoutWeight(1).alignItems(HorizontalAlign.Start)
             if (!this.model.authenticated || this.model.address !== address.origin) {
@@ -56,7 +63,7 @@ export struct NasConnectionAddressPage {
             (!this.model.authenticated || this.model.address !== address.origin))
           .onClick((): void => { this.onUseAddress(address); })
           .accessibilityText(address.name + (this.model.authenticated && this.model.address === address.origin ? '，当前连接' : '，使用此地址'))
-        Button() { SymbolGlyph($r('sys.symbol.more')).fontSize(22).fontColor([$r('sys.color.font_secondary')]) }
+        Button() { SymbolGlyph($r('sys.symbol.dot_grid_1x2')).fontSize(20).fontColor([$r('sys.color.icon_secondary')]) }
           .width(48).constraintSize({ minHeight: 48 }).type(ButtonType.Normal).padding(0).backgroundColor(Color.Transparent)
           .enabled(!this.disabled()).bindMenu(this.addressMenu(address)).accessibilityText(address.name + '，更多操作')
       }.width('100%')
@@ -92,10 +99,12 @@ export struct NasConnectionAddressPage {
           }
         }
         if (this.model.addressBook.probeResult !== undefined) {
-          Text(this.model.addressBook.probeResult.origin).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
-          Text(this.model.addressBook.probeResult.message).fontSize(14).fontColor($r('sys.color.font_primary')).width('100%')
-          Text('测试时间 ' + telemetryTimestamp(this.model.addressBook.probeResult.observedAt)).fontSize(12)
-            .fontColor($r('sys.color.font_tertiary')).width('100%')
+          Column({ space: 4 }) {
+            Text(this.model.addressBook.probeResult.origin).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
+            Text(this.model.addressBook.probeResult.message).fontSize(14).fontColor($r('sys.color.font_primary')).width('100%')
+            Text('测试时间 ' + telemetryTimestamp(this.model.addressBook.probeResult.observedAt)).fontSize(12)
+              .fontColor($r('sys.color.font_tertiary')).width('100%')
+          }.width('100%').padding(14).borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
         }
         if (this.model.addressBook.errorText.length > 0 && this.model.addressBook.ready) {
           WorkbenchNotice({ text: this.model.addressBook.errorText, warning: true })
@@ -104,15 +113,22 @@ export struct NasConnectionAddressPage {
           Text(this.model.addressBook.notice).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
         }
         if (this.model.addressBook.ready && this.model.addressBook.addresses.length === 0) {
-          Text($r('app.string.connection_history_empty')).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
-            .padding(WorkbenchMetrics.pageMargin)
+          WorkbenchEmptyState({
+            icon: $r('sys.symbol.arrow_counterclockwise_clock'),
+            title: $r('app.string.connection_history_empty'),
+            description: '登录成功后会自动保存 NAS 连接地址，方便下次快速切换或测试连通性。'
+          })
         }
-        Column() {
-          ForEach(this.model.addressBook.addresses, (address: NasConnectionAddress): void => {
-            this.savedAddress(address)
-            Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
-          }, (address: NasConnectionAddress): string => address.origin)
-        }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
+        if (this.model.addressBook.addresses.length > 0) {
+          Column() {
+            ForEach(this.model.addressBook.addresses, (address: NasConnectionAddress, index: number): void => {
+              this.savedAddress(address)
+              if (index < this.model.addressBook.addresses.length - 1) {
+                Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
+              }
+            }, (address: NasConnectionAddress): string => address.origin)
+          }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).clip(true).backgroundColor($r('app.color.workbench_surface'))
+        }
       }.width('100%').constraintSize({ maxWidth: 840 }).padding({ left: 16, right: 16, top: 12, bottom: 32 })
         .alignItems(HorizontalAlign.Start)
     }.width('100%').height('100%').scrollBar(BarState.Auto).align(Alignment.TopStart)

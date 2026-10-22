@@ -6,7 +6,7 @@ import { PhotoLibrary, PhotoLibrarySection } from './PhotoLibrary';
 import { PhotoThumbnailCell } from './PhotoThumbnailCell';
 import { PhotoAlbumRow, PhotoTimelineRow, photoAlbumColumns, photoAlbumRows, photoGridColumns,
   photoTimelineRows } from '../workbench/WorkbenchPresentation';
-import { WorkbenchActionRow, WorkbenchChoice, WorkbenchMetrics, WorkbenchNotice,
+import { WorkbenchActionRow, WorkbenchChoice, WorkbenchEmptyState, WorkbenchMetrics, WorkbenchNotice,
   WorkbenchSectionTitle } from '../workbench/WorkbenchUi';
 import { supportsPhotoBackup } from '../workbench/ModuleNavigation';
 import { ExtensionStatusPanel } from '../extensions/ExtensionStatusPanel';
@@ -31,6 +31,7 @@ export struct PhotoModulePage {
   @Event onOpenTransfers: () => void = (): void => {};
   @Event onOpenShared: () => void = (): void => {};
   @Event onCustomize: () => void = (): void => {};
+  @Event onUpload: () => void = (): void => {};
   @Local private contentWidth: number = 360;
   @Local private contentHeight: number = 640;
   @Local private timelineRows: PhotoTimelineRow[] = [];
@@ -159,11 +160,27 @@ export struct PhotoModulePage {
 
   @Builder
   emptyState(title: string, description: string) {
-    Column({ space: 8 }) {
-      SymbolGlyph($r('sys.symbol.picture')).fontSize(32).fontColor([$r('sys.color.font_tertiary')])
-      Text(title).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
-      Text(description).fontSize(14).fontColor($r('sys.color.font_secondary')).textAlign(TextAlign.Center)
-    }.width('100%').padding({ top: 32, bottom: 32, left: 24, right: 24 })
+    WorkbenchEmptyState({ icon: $r('sys.symbol.picture'), title: title, description: description })
+  }
+
+  @Builder
+  emptyLibraryState() {
+    WorkbenchEmptyState({
+      icon: $r('sys.symbol.picture'),
+      title: '没有可见项目',
+      description: '当前账号在此空间没有可见的照片或相册。',
+      actionLabel: this.tabId === 'photos' && supportsPhotoBackup((api: string): boolean => this.model.supports(api)) ? '上传照片' : '',
+      onAction: (): void => { this.onUpload(); },
+      secondaryLabel: this.expectedSpace === PhotosSpace.Personal && this.supportsSpace(PhotosSpace.Shared) ? '切换至共享空间' :
+        (this.showBackupInMore && supportsPhotoBackup((api: string): boolean => this.model.supports(api)) ? '相册备份' : ''),
+      onSecondaryAction: (): void => {
+        if (this.expectedSpace === PhotosSpace.Personal && this.supportsSpace(PhotosSpace.Shared)) {
+          this.onSelectSpace(PhotosSpace.Shared);
+        } else {
+          this.onOpenBackup();
+        }
+      }
+    })
   }
 
   @Builder
@@ -211,7 +228,7 @@ export struct PhotoModulePage {
       Column({ space: 8 }) {
         Stack() {
           SymbolGlyph($r('sys.symbol.picture')).fontSize(32).fontColor([$r('sys.color.icon_emphasize')])
-        }.width('100%').aspectRatio(1).borderRadius(8)
+        }.width('100%').aspectRatio(1).borderRadius(12)
           .backgroundColor($r('app.color.workbench_accent_surface'))
         Text(album.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
           .width('100%').maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -237,6 +254,13 @@ export struct PhotoModulePage {
           }
           if (this.supportsSpace(PhotosSpace.Shared)) { this.photoSpaceButton(PhotosSpace.Shared, '共享空间') }
           if (this.supportsSpace(PhotosSpace.WithMe)) { this.photoSpaceButton(PhotosSpace.WithMe, '与我共享') }
+        }.width('100%')
+      } else if ((this.tabId === 'photos' || this.tabId === 'albums') &&
+        this.model.photoLibrary.selectedAlbum === undefined &&
+        this.supportsSpace(PhotosSpace.Personal) && this.supportsSpace(PhotosSpace.Shared)) {
+        Flex({ wrap: FlexWrap.Wrap }) {
+          this.photoSpaceButton(PhotosSpace.Personal, '个人空间')
+          this.photoSpaceButton(PhotosSpace.Shared, '共享空间')
         }.width('100%')
       }
       if (this.canShowLibrary()) {
@@ -286,15 +310,27 @@ export struct PhotoModulePage {
         if (this.showBackupInMore && supportsPhotoBackup((api: string): boolean => this.model.supports(api))) {
           WorkbenchActionRow({ icon: $r('sys.symbol.arrow_up_circle'), label: this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.photos_album_backup').id),
             available: this.active, onAction: (): void => { this.onOpenBackup(); } })
+          if (this.showTransfersInMore || (this.showSharedInMore && (this.supportsSpace(PhotosSpace.Shared) ||
+            this.supportsSpace(PhotosSpace.WithMe) || this.model.supports('SYNO.Foto.Browse.Album'))) ||
+            this.supportsSpace(this.model.photoLibrary.space)) {
+            Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
+          }
         }
         if (this.showTransfersInMore) {
           WorkbenchActionRow({ icon: $r('sys.symbol.arrow_down_circle'), label: '传输任务', available: this.active,
             onAction: (): void => { this.onOpenTransfers(); } })
+          if ((this.showSharedInMore && (this.supportsSpace(PhotosSpace.Shared) || this.supportsSpace(PhotosSpace.WithMe) ||
+            this.model.supports('SYNO.Foto.Browse.Album'))) || this.supportsSpace(this.model.photoLibrary.space)) {
+            Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
+          }
         }
         if (this.showSharedInMore && (this.supportsSpace(PhotosSpace.Shared) || this.supportsSpace(PhotosSpace.WithMe) ||
           this.model.supports('SYNO.Foto.Browse.Album'))) {
           WorkbenchActionRow({ icon: $r('sys.symbol.picture'), label: '共享相册', available: this.active,
             onAction: (): void => { this.onOpenShared(); } })
+          if (this.supportsSpace(this.model.photoLibrary.space)) {
+            Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
+          }
         }
         if (this.supportsSpace(this.model.photoLibrary.space)) {
           WorkbenchActionRow({ icon: $r('sys.symbol.arrow_clockwise'), label: '刷新照片', showChevron: false,
@@ -335,12 +371,12 @@ export struct PhotoModulePage {
             }
           } else if (!this.model.photoLibrary.busy && this.visiblePhotos().length === 0 &&
             this.visibleAlbums().length === 0 && this.model.photoLibrary.errorText.length === 0) {
-            ListItem() { this.emptyState('没有可见项目', '当前账号在此空间没有可见的照片或相册。') }
+            ListItem() { this.emptyLibraryState() }
           }
           Repeat<PhotoAlbumRow>(this.albumRows)
             .each((row: RepeatItem<PhotoAlbumRow>): void => {
               ListItem() {
-                Row({ space: 4 }) {
+                Row({ space: 8 }) {
                   ForEach(row.item.albums, (album: NasPhotoAlbum): void => { this.albumCard(album) },
                     (album: NasPhotoAlbum): string => album.space.toString() + ':' + album.id.toString())
                   ForEach([0, 1, 2, 3].slice(0, photoAlbumColumns(this.contentWidth) - row.item.albums.length),

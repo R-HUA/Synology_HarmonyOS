@@ -1,19 +1,20 @@
 import { image } from '@kit.ImageKit';
 import { uiMaterial } from '@kit.ArkUI';
-import { HdsTabs, hdsMaterial, ActionBarButton } from '@kit.UIDesignKit';
+import { ActionBarButton } from '@kit.UIDesignKit';
 import { WorkbenchInfoRow, WorkbenchNotice } from './WorkbenchUi';
 
 export interface PreviewInformation { label: ResourceStr; value: ResourceStr; }
 
-/** 页签自定义内容只挂载一次，按钮组件独立观察原生操作模型的变化。 */
+/** 悬浮工具栏按钮：独立观察操作模型的状态与语义颜色变化。 */
 @ComponentV2
 struct PreviewToolbarButton {
   @Param action: ActionBarButton = new ActionBarButton({});
+  @Param iconColor: ResourceColor = $r('sys.color.font_primary');
   @Event onAction: () => void = (): void => {};
 
   build() {
     Button({ type: ButtonType.Circle }) {
-      SymbolGlyph(this.action.baseIcon as Resource).fontSize(24).fontColor([$r('sys.color.font_primary')])
+      SymbolGlyph(this.action.baseIcon as Resource).fontSize(22).fontColor([this.iconColor])
     }.width(48).height(48).backgroundColor(Color.Transparent)
       .systemMaterial(uiMaterial.Material.empty)
       .enabled(this.action.enabled !== false).opacity(this.action.enabled === false ? 0.4 : 1)
@@ -22,7 +23,7 @@ struct PreviewToolbarButton {
   }
 }
 
-/** 三个套件共用手势与工具栏，操作回调仍由各套件处理。 */
+/** 三个套件共用手势与悬浮材质操作胶囊，操作回调仍由各套件处理。 */
 @ComponentV2
 export struct ImagePreview {
   @Param source: string | image.PixelMap = '';
@@ -61,6 +62,7 @@ export struct ImagePreview {
   @Local viewHeight: number = 0;
   @Local infoVisible: boolean = false;
   private material: uiMaterial.Material = new uiMaterial.ImmersiveMaterial({ style: uiMaterial.ImmersiveStyle.ULTRA_THICK });
+  private capsuleMaterial: uiMaterial.Material = new uiMaterial.ImmersiveMaterial({ style: uiMaterial.ImmersiveStyle.REGULAR });
   private materialAvailable: boolean = uiMaterial.isImmersiveMaterialSupported();
   @Local private shareAction: ActionBarButton = new ActionBarButton({ baseIcon: $r('sys.symbol.share'),
     accessibilityText: $r('app.string.preview_share') });
@@ -91,6 +93,19 @@ export struct ImagePreview {
   }
 
   private resetView(): void { this.scaleValue = 1; this.offsetX = 0; this.offsetY = 0; }
+
+  /** 双击在 1x 与 2.5x 之间双向缩放，缩回 1x 时同步归零平移偏移。 */
+  private toggleDoubleTapZoom(): void {
+    const nextScale = this.scaleValue > 1 ? 1 : 2.5;
+    this.getUIContext().animateTo({ duration: 240, curve: Curve.FastOutSlowIn }, (): void => {
+      if (nextScale === 1) {
+        this.resetView();
+      } else {
+        this.scaleValue = nextScale;
+      }
+    });
+    this.onRefine(nextScale);
+  }
 
   @Builder
   details() {
@@ -139,7 +154,12 @@ export struct ImagePreview {
         .gesture(GestureGroup(GestureMode.Parallel,
           PinchGesture().onActionStart((): void => { this.initialScale = this.scaleValue; })
             .onActionUpdate((event: GestureEvent): void => { this.scaleValue = Math.min(4, Math.max(1, this.initialScale * event.scale)); })
-            .onActionEnd((): void => { this.onRefine(this.scaleValue); if (this.scaleValue === 1) { this.resetView(); } }),
+            .onActionEnd((): void => {
+              this.onRefine(this.scaleValue);
+              if (this.scaleValue === 1) {
+                this.getUIContext().animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, (): void => { this.resetView(); });
+              }
+            }),
           PanGesture().onActionStart((): void => { this.initialX = this.offsetX; this.initialY = this.offsetY; })
             .onActionUpdate((event: GestureEvent): void => {
               if (this.scaleValue > 1) {
@@ -156,7 +176,7 @@ export struct ImagePreview {
               }
             }),
           GestureGroup(GestureMode.Exclusive,
-            TapGesture({ count: 2 }).onAction((): void => { this.resetView(); this.onRefine(1); }),
+            TapGesture({ count: 2 }).onAction((): void => { this.toggleDoubleTapZoom(); }),
             TapGesture({ count: 1 }).onAction((): void => { if (this.photos) { this.onToggleControls(); } })
           )
         ))
@@ -165,42 +185,40 @@ export struct ImagePreview {
     }.width('100%').height('100%').padding({ bottom: this.photos ? 0 : 68 })
   }
 
+  /** 原生悬浮材质操作胶囊，替代单页签 HdsTabs 伪装方案，修正无障碍语义与危险操作色。 */
   @Builder
   actionBar() {
     Row({ space: 8 }) {
       if (this.photos) {
         PreviewToolbarButton({ action: this.shareAction, onAction: (): void => { this.onShare(); } })
-        PreviewToolbarButton({ action: this.favoriteAction, onAction: (): void => { this.onFavorite(); } })
+        PreviewToolbarButton({ action: this.favoriteAction,
+          iconColor: this.favorite ? $r('app.color.workbench_danger') : $r('sys.color.font_primary'),
+          onAction: (): void => { this.onFavorite(); } })
         PreviewToolbarButton({ action: this.informationAction, onAction: (): void => { this.infoVisible = true; } })
-        PreviewToolbarButton({ action: this.deleteAction, onAction: (): void => { this.onDelete(); } })
+        PreviewToolbarButton({ action: this.deleteAction, iconColor: $r('app.color.workbench_danger'),
+          onAction: (): void => { this.onDelete(); } })
       } else {
         PreviewToolbarButton({ action: this.downloadAction, onAction: (): void => { this.onDownload(); } })
-        PreviewToolbarButton({ action: this.deleteAction, onAction: (): void => { this.onDelete(); } })
+        PreviewToolbarButton({ action: this.deleteAction, iconColor: $r('app.color.workbench_danger'),
+          onAction: (): void => { this.onDelete(); } })
         PreviewToolbarButton({ action: this.shareAction, onAction: (): void => { this.onShare(); } })
         PreviewToolbarButton({ action: this.informationAction, onAction: (): void => { this.infoVisible = true; } })
       }
-    }.padding({ left: 4, right: 4 }).width(224).height(48).justifyContent(FlexAlign.Center)
-  }
-
-  @Builder
-  previewTabs() {
-    HdsTabs({ index: 0 }) {
-      TabContent() { if (!this.photos) { this.content() } }.tabBar(this.actionBar())
-    }.width('100%').height(this.photos ? 68 + this.navigationInset : '100%').barPosition(BarPosition.End).scrollable(false)
-      .barOverlap(true).vertical(false).barHeight(56)
-      .barFloatingStyle({ barWidth: { smallWidth: 224, mediumWidth: 224, largeWidth: 224 }, barBottomMargin: this.photos ? this.navigationInset : 12,
-        gradientMask: { maskColor: Color.Transparent, maskHeight: 0 },
-        systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE },
-        thermoCtrl: true })
-      .backgroundColor(this.photos ? Color.Transparent : $r('app.color.workbench_background'))
+    }.padding({ left: 8, right: 8 }).height(56).borderRadius(28)
+      .justifyContent(FlexAlign.Center)
+      .backgroundColor(this.materialAvailable ? Color.Transparent : $r('app.color.workbench_surface_elevated'))
+      .systemMaterial(this.capsuleMaterial)
+      .shadow({ radius: 16, color: '#1F000000', offsetY: 4 })
+      .margin({ bottom: (this.photos ? this.navigationInset : 0) + 12 })
   }
 
   build() {
-    // 照片视口独立于操作栏，隐藏控件不会重建图片或改变缩放。
+    // 照片视口独立于操作栏，隐藏控件不会重建图片或改变缩放；沉浸态切换为纯黑底色。
     Stack({ alignContent: Alignment.Bottom }) {
-      if (this.photos) { this.content() }
-      if (!this.photos || this.controlsVisible) { this.previewTabs() }
+      this.content()
+      if (!this.photos || this.controlsVisible) { this.actionBar() }
     }.width('100%').height('100%')
+      .backgroundColor(this.photos && !this.controlsVisible ? Color.Black : $r('app.color.workbench_background'))
       .bindSheet($$this.infoVisible, this.details(), { height: SheetSize.FIT_CONTENT,
         title: { title: $r('app.string.preview_information') }, showClose: true,
         backgroundColor: this.materialAvailable ? Color.Transparent : $r('app.color.workbench_surface_elevated'), systemMaterial: this.material })

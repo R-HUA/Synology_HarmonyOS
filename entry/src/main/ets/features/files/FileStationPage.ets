@@ -1,7 +1,7 @@
 import { NasFileEntry } from '../../core/domain/DsmProtocol';
 import { ConnectionViewModel } from '../connection/ConnectionViewModel';
 import { WorkbenchBreadcrumb, workbenchBreadcrumbs, workbenchBytes } from '../workbench/WorkbenchPresentation';
-import { WorkbenchMetrics, WorkbenchEntryRow, WorkbenchNotice } from '../workbench/WorkbenchUi';
+import { WorkbenchMetrics, WorkbenchEmptyState, WorkbenchEntryRow, WorkbenchNotice } from '../workbench/WorkbenchUi';
 
 /** File Station 列表复用于文件页和独立的目录选择页，页面级工具由宿主标题栏承载。 */
 @ComponentV2
@@ -175,11 +175,8 @@ export struct FileStationPage {
   }
 
   @Builder
-  emptyState(icon: Resource, title: string) {
-    Column({ space: 8 }) {
-      SymbolGlyph(icon).fontSize(32).fontColor([$r('sys.color.font_tertiary')])
-      Text(title).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
-    }.width('100%').padding({ top: 32, bottom: 32, left: 24, right: 24 })
+  emptyState(icon: Resource, title: string, description: string = '') {
+    WorkbenchEmptyState({ icon: icon, title: title, description: description })
   }
 
   build() {
@@ -203,7 +200,8 @@ export struct FileStationPage {
         }
         if (!this.model.busy && this.visibleEntries().length === 0 && this.model.errorText.length === 0 && this.errorText.length === 0) {
           ListItem() {
-            this.emptyState($r('sys.symbol.folder'), this.pickerMode.length > 0 ? '没有可浏览的文件夹' : '此位置为空')
+            this.emptyState($r('sys.symbol.folder'), this.pickerMode.length > 0 ? '没有可浏览的文件夹' : '此位置为空',
+              this.pickerMode.length > 0 ? '当前目录下没有可选择的子文件夹。' : '当前目录没有可显示的文件或文件夹。')
           }
         }
         ForEach(this.visibleEntries(), (entry: NasFileEntry, index: number): void => {

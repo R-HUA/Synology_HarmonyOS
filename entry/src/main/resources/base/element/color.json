@@ -37,6 +37,18 @@
       "value": "#D93025"
     },
     {
+      "name": "workbench_danger_surface",
+      "value": "#FCE8E6"
+    },
+    {
+      "name": "workbench_success",
+      "value": "#1E8E3E"
+    },
+    {
+      "name": "workbench_success_surface",
+      "value": "#E6F4EA"
+    },
+    {
       "name": "workbench_warning",
       "value": "#B06000"
     },
