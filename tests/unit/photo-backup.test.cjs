@@ -119,6 +119,9 @@ test('automatic backup pages a large library, stages one item, persists success 
 test('new mode preserves its anchor across disabling and continue; all reuses success ledger', async () => {
   const f = await fixture();
   await f.backup.configure('new'); await f.settle();
+  assert.equal(f.backup.settings.enabled, false);
+  assert.equal(f.uploads.length, 0);
+  assert.equal(f.saves.at(-1).settings.mode, 'new');
   const anchor = f.backup.settings.since;
   await f.backup.setEnabled(true); await f.settle(); assert.equal(f.uploads.length, 0);
   await f.backup.setEnabled(false); await f.settle();

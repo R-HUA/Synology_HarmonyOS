@@ -80,6 +80,7 @@ struct Index {
   @Local private driveMoreView: string = '';
   private driveSearchScroller: Scroller = new Scroller();
   private photoBackupScroller: Scroller = new Scroller();
+  @Local private photoBackupViewportTop: number = 0;
   @Local private photoMoreShared: boolean = false;
   @Local private photoSpace: PhotosSpace = PhotosSpace.Personal;
   @Local private albumSpace: PhotosSpace = PhotosSpace.Personal;
@@ -1284,9 +1285,11 @@ struct Index {
         Column() {
           WorkbenchActionRow({ icon: $r('sys.symbol.rectangle_split_3x1'), label: '模块底栏',
             description: '选择 Drive 与照片的常用功能', onAction: (): void => { this.navStack.pushPathByName('module-tabs', 'root'); } })
+        }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
+        Column() {
           WorkbenchActionRow({ icon: $r('sys.symbol.arrow_right_and_square'), label: '登出 NAS', destructive: true, showChevron: false,
             available: !this.model.busy, onAction: (): void => { this.confirmLogout(); } })
-        }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
+        }.width('100%').margin({ top: 12 }).borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
         this.notices()
       }.width('100%').constraintSize({ maxWidth: 840 })
         .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin, top: this.contentTopInset() + 8, bottom: this.bottomInset() })
@@ -2100,14 +2103,19 @@ struct Index {
       HdsNavDestination() {
         Scroll(this.photoBackupScroller) {
           PhotoBackupSettingsPage({ backup: this.model.photoBackup, onChooseDirectory: (): void => { this.chooseBackupDirectory(); } })
-            .padding({ left: 16, right: 16, top: 16, bottom: this.navigationInset + 16 })
+            .padding({ left: 16, right: 16, top: Math.max(0, this.contentTopInset() - this.photoBackupViewportTop) + 16,
+              bottom: this.navigationInset + 16 })
         }.width('100%').height('100%')
+          .onAreaChange((_oldArea: Area, newArea: Area): void => {
+            this.photoBackupViewportTop = Number(newArea.globalPosition.y);
+          })
       }.backgroundColor($r('app.color.workbench_background'))
-        .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: $r('app.string.photos_album_backup') } },
+        // 滚动内容延伸到标题材质下方，首项仅补足视口尚未让出的标题区域。
+        .titleBar({ enableComponentSafeArea: false, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: $r('app.string.photos_album_backup') } },
           style: { systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE },
             scrollEffectOpts: { enableScrollEffect: true, scrollEffectType: ScrollEffectType.GRADIENT_BLUR } } })
         .bindToScrollable([this.photoBackupScroller])
-        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.BOTTOM])
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
     } else if (name === 'photo-actions') {
       HdsNavDestination() { this.photoActionsView() }
         .backgroundColor($r('app.color.workbench_background'))
@@ -2427,7 +2435,7 @@ struct Index {
         // 关闭按钮由 sheetTitleBar() 自绘，系统关闭图标关闭，避免出现两个关闭入口。
         // HDS 半模态标题栏自带关闭按钮时关掉系统的那个，避免两个关闭入口。
         showClose: !this.sheetUsesModalTitleBar() && this.sheetKind !== 'sort',
-        backgroundColor: this.sheetMaterialAvailable ? Color.Transparent : $r('app.color.workbench_surface'),
+        backgroundColor: this.sheetMaterialAvailable ? Color.Transparent : $r('app.color.workbench_surface_elevated'),
         systemMaterial: this.sheetMaterial,
         // 不给 title：传任何 builder 系统都会按标题栏占位，HDS 弹层的标题由 HdsNavigation 提供，
         // 小弹层的标题画在内容首行（sheetPlainTitle）。
