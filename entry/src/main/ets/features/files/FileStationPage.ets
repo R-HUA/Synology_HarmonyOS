@@ -198,7 +198,7 @@ export struct FileStationPage {
             this.selectionBar()
             WorkbenchNotice({ text: this.errorText, warning: true })
             if (this.errorText.length === 0) { WorkbenchNotice({ text: this.model.actionNotice }) }
-          }.width('100%').padding({ left: 16, right: 16, top: 4, bottom: 8 })
+          }.width('100%').padding({ top: 4, bottom: 8 })
             .alignItems(HorizontalAlign.Start)
         }
         if (!this.model.busy && this.visibleEntries().length === 0 && this.model.errorText.length === 0 && this.errorText.length === 0) {
@@ -206,7 +206,7 @@ export struct FileStationPage {
             this.emptyState($r('sys.symbol.folder'), this.pickerMode.length > 0 ? '没有可浏览的文件夹' : '此位置为空')
           }
         }
-        ForEach(this.visibleEntries(), (entry: NasFileEntry): void => {
+        ForEach(this.visibleEntries(), (entry: NasFileEntry, index: number): void => {
           ListItem() {
             Row() {
               if (this.selecting) {
@@ -220,6 +220,7 @@ export struct FileStationPage {
                 icon: entry.isDirectory ? $r('sys.symbol.folder') : $r('sys.symbol.doc'),
                 iconColor: entry.isDirectory ? $r('sys.color.icon_emphasize') : $r('sys.color.font_secondary'),
                 available: !this.model.busy, menuAvailable: !this.model.busy,
+                contentInset: this.selecting ? 12 : 16, showDivider: index < this.visibleEntries().length - 1,
                 menu: this.pickerMode.length === 0 && !this.selecting ? this.entryMenu(entry) : [],
                 onOpen: (): void => {
                   if (this.selecting) { this.onToggleSelection(entry); }
@@ -227,8 +228,11 @@ export struct FileStationPage {
                   else if (/\.(?:jpe?g|png|gif|webp|bmp|heic|heif|tiff?|dng|avif|avis)$/i.test(entry.name)) { this.onOpenImage(entry); }
                   else { this.onOpenForm('detail', entry); }
                 } }).layoutWeight(1)
-            }.width('100%')
-          }
+            }.width('100%').backgroundColor($r('app.color.workbench_surface'))
+          }.borderRadius({ topLeft: index === 0 ? WorkbenchMetrics.cardRadius : 0,
+            topRight: index === 0 ? WorkbenchMetrics.cardRadius : 0,
+            bottomLeft: index === this.visibleEntries().length - 1 ? WorkbenchMetrics.cardRadius : 0,
+            bottomRight: index === this.visibleEntries().length - 1 ? WorkbenchMetrics.cardRadius : 0 }).clip(true)
         }, (entry: NasFileEntry): string => this.model.address + ':' + this.model.account + ':' + entry.path)
         if (this.model.listLoading === 'more') {
           ListItem() {
@@ -238,6 +242,7 @@ export struct FileStationPage {
           }
         }
       }.width('100%').height('100%').scrollBar(BarState.Auto).contentEndOffset(this.bottomInset)
+        .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin })
         .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
         .onWillScroll((offset: number, _state: ScrollState, source: ScrollSource): void => {
           if (offset > 0 && (source === ScrollSource.DRAG || source === ScrollSource.FLING)) {
@@ -257,6 +262,6 @@ export struct FileStationPage {
           .justifyContent(FlexAlign.Center).hitTestBehavior(HitTestMode.None)
       }
     }.width('100%').height('100%')
-      .backgroundColor($r('app.color.workbench_surface'))
+      .backgroundColor($r('app.color.workbench_background'))
   }
 }

@@ -203,6 +203,6 @@ export struct ImagePreview {
     }.width('100%').height('100%')
       .bindSheet($$this.infoVisible, this.details(), { height: SheetSize.FIT_CONTENT,
         title: { title: $r('app.string.preview_information') }, showClose: true,
-        backgroundColor: this.materialAvailable ? Color.Transparent : $r('app.color.workbench_surface'), systemMaterial: this.material })
+        backgroundColor: this.materialAvailable ? Color.Transparent : $r('app.color.workbench_surface_elevated'), systemMaterial: this.material })
   }
 }

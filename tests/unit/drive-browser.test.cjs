@@ -74,7 +74,7 @@ test('tab return preserves folder and search state and ignores a late request fr
 
 for (const [relative, dataSource, view] of [
   ['features/drive/DriveModulePage.ets', 'this.model.drive.entries', V.MyDrive],
-  ['features/drive/DriveActionUi.ets', 'this.model.destinations.entries', V.TeamFolders],
+  ['features/drive/DriveActionUi.ets', 'this.folders', V.TeamFolders],
 ]) {
   test(`${relative} refreshes row data and captured actions after metadata-only reloads`, async () => {
     const keyOf = pageRenderKey(relative, dataSource);

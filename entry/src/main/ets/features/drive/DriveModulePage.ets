@@ -155,8 +155,7 @@ export struct DriveModulePage {
             }
             this.driveNotices()
           }.width('100%').alignItems(HorizontalAlign.Start)
-            .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin,
-              top: 4, bottom: 4 })
+            .padding({ top: 4, bottom: 4 })
         }
         if (this.canRenderEntries()) {
           if (!this.model.drive.busy && this.model.drive.entries.length === 0) {
@@ -170,7 +169,7 @@ export struct DriveModulePage {
               }
             }
           }
-          ForEach(this.model.drive.entries, (entry: DriveEntry): void => {
+          ForEach(this.model.drive.entries, (entry: DriveEntry, index: number): void => {
             ListItem() {
               WorkbenchEntryRow({ title: entry.name, subtitle: this.driveRowSubtitle(entry),
                   thumbnail: this.model.driveThumbnails.path(entry).length > 0 ?
@@ -182,8 +181,12 @@ export struct DriveModulePage {
                     (entry.kind === DriveEntryKind.Folder || entry.capabilities.canDownload &&
                       this.model.driveTransfers.ready && !this.model.driveTransfers.busy),
                   menu: this.driveEntryMenu(entry), menuAvailable: !this.model.busy && !this.model.drive.busy,
+                  showDivider: index < this.model.drive.entries.length - 1,
                   onOpen: (): void => { this.openDriveEntry(entry); } })
-            }
+            }.borderRadius({ topLeft: index === 0 ? WorkbenchMetrics.cardRadius : 0,
+              topRight: index === 0 ? WorkbenchMetrics.cardRadius : 0,
+              bottomLeft: index === this.model.drive.entries.length - 1 ? WorkbenchMetrics.cardRadius : 0,
+              bottomRight: index === this.model.drive.entries.length - 1 ? WorkbenchMetrics.cardRadius : 0 }).clip(true)
             .onVisibleAreaChange([0], (visible: boolean, ratio: number): void => {
               this.model.driveThumbnails.setVisible(entry, visible && ratio > 0 && this.canRenderEntries() &&
                 this.model.drive.view !== DriveView.Trash);
@@ -209,6 +212,7 @@ export struct DriveModulePage {
           }
         }
       }.width('100%').height('100%').scrollBar(BarState.Auto)
+        .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin })
         .contentEndOffset(this.bottomInset).edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
         .onWillScroll((offset: number, _state: ScrollState, source: ScrollSource): void => {
           if (offset > 0 && (source === ScrollSource.DRAG || source === ScrollSource.FLING)) {
@@ -227,7 +231,7 @@ export struct DriveModulePage {
         }.width('100%').height('100%').padding({ top: this.topInset, bottom: this.bottomInset })
           .justifyContent(FlexAlign.Center).hitTestBehavior(HitTestMode.None)
       }
-    }.width('100%').height('100%')
+    }.width('100%').height('100%').backgroundColor($r('app.color.workbench_background'))
   }
 
   @Builder
@@ -375,7 +379,7 @@ export struct DriveModulePage {
         $r('app.color.workbench_background') : $r('app.color.workbench_surface'))
       .bindSheet($$this.detailVisible, this.entryDetails(), {
         height: SheetSize.MEDIUM, detents: [SheetSize.MEDIUM, SheetSize.LARGE], title: { title: '文件详情' },
-        showClose: true, backgroundColor: this.sheetMaterialAvailable ? Color.Transparent : $r('app.color.workbench_surface'),
+        showClose: true, backgroundColor: this.sheetMaterialAvailable ? Color.Transparent : $r('app.color.workbench_surface_elevated'),
         systemMaterial: this.sheetMaterial
       })
   }

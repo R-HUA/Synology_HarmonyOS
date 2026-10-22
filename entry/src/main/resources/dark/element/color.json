@@ -6,35 +6,43 @@
     },
     {
       "name": "workbench_background",
-      "value": "#101113"
+      "value": "#000000"
     },
     {
       "name": "workbench_surface",
       "value": "#1C1E22"
     },
     {
+      "name": "workbench_surface_elevated",
+      "value": "#26292E"
+    },
+    {
       "name": "workbench_subtle",
       "value": "#282B30"
     },
     {
+      "name": "workbench_pressed",
+      "value": "#1AFFFFFF"
+    },
+    {
       "name": "workbench_accent_surface",
-      "value": "#1D3153"
+      "value": "#172B4D"
     },
     {
       "name": "workbench_divider",
-      "value": "#383C43"
+      "value": "#14FFFFFF"
     },
     {
       "name": "workbench_danger",
-      "value": "#FFB4AB"
+      "value": "#F28B82"
     },
     {
       "name": "workbench_warning",
-      "value": "#FFD596"
+      "value": "#FDD663"
     },
     {
       "name": "workbench_warning_surface",
-      "value": "#392D1A"
+      "value": "#33260D"
     }
   ]
 }

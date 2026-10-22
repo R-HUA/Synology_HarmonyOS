@@ -12,6 +12,11 @@ export struct DriveActionPage {
   @Event onSubmit: () => void = (): void => {};
   @Event onCancel: () => void = (): void => {};
 
+  @Computed
+  private get folders(): DriveEntry[] {
+    return this.model.destinations.entries.filter((entry: DriveEntry): boolean => entry.kind === DriveEntryKind.Folder);
+  }
+
   build() {
     List({ scroller: this.scroller }) {
       ListItem() {
@@ -75,26 +80,28 @@ export struct DriveActionPage {
           }
           WorkbenchNotice({ text: this.model.errorText, warning: true })
           if (this.model.busy || this.model.destinations.busy) { LoadingProgress().width(24).height(24) }
-        }.width('100%').padding({ left: 16, right: 16, top: 8, bottom: 8 }).alignItems(HorizontalAlign.Start)
+        }.width('100%').padding({ top: 8, bottom: 8 }).alignItems(HorizontalAlign.Start)
       }
       if (this.model.draft?.action === 'move' || this.model.draft?.action === 'copy') {
-        if (!this.model.destinations.busy && !this.model.destinations.entries.some((entry: DriveEntry): boolean => entry.kind === DriveEntryKind.Folder)) {
+        if (!this.model.destinations.busy && this.folders.length === 0) {
           ListItem() {
             Text('本页没有文件夹，可查看其他页或返回上级。').fontSize(14).fontColor($r('sys.color.font_secondary')).padding(16)
           }
         }
-        ForEach(this.model.destinations.entries, (entry: DriveEntry): void => {
-          if (entry.kind === DriveEntryKind.Folder) {
-            ListItem() {
-              WorkbenchEntryRow({ title: entry.name, subtitle: entry.capabilities.canWrite ? '可选为目标文件夹' : '只读文件夹',
-                  icon: $r('sys.symbol.folder'), iconColor: $r('sys.color.icon_emphasize'),
-                  available: entry.capabilities.canRead && !this.model.busy && !this.model.destinations.busy,
-                  actionLabel: '选择', actionAvailable: entry.capabilities.canRead && entry.capabilities.canWrite &&
-                    !this.model.busy && !this.model.destinations.busy,
-                  onOpen: (): void => { this.model.destinations.openFolder(entry); },
-                  onAction: (): void => { this.model.selectDestination(entry); } })
-            }
-          }
+        ForEach(this.folders, (entry: DriveEntry, index: number): void => {
+          ListItem() {
+            WorkbenchEntryRow({ title: entry.name, subtitle: entry.capabilities.canWrite ? '可选为目标文件夹' : '只读文件夹',
+                icon: $r('sys.symbol.folder'), iconColor: $r('sys.color.icon_emphasize'),
+                available: entry.capabilities.canRead && !this.model.busy && !this.model.destinations.busy,
+                actionLabel: '选择', actionAvailable: entry.capabilities.canRead && entry.capabilities.canWrite &&
+                  !this.model.busy && !this.model.destinations.busy,
+                showDivider: index < this.folders.length - 1,
+                onOpen: (): void => { this.model.destinations.openFolder(entry); },
+                onAction: (): void => { this.model.selectDestination(entry); } })
+          }.borderRadius({ topLeft: index === 0 ? WorkbenchMetrics.cardRadius : 0,
+            topRight: index === 0 ? WorkbenchMetrics.cardRadius : 0,
+            bottomLeft: index === this.folders.length - 1 ? WorkbenchMetrics.cardRadius : 0,
+            bottomRight: index === this.folders.length - 1 ? WorkbenchMetrics.cardRadius : 0 }).clip(true)
         }, (entry: DriveEntry): string => driveEntryRenderKey(entry))
         ListItem() {
           Row({ space: 8 }) {
@@ -104,10 +111,12 @@ export struct DriveActionPage {
             Button('下一页').buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
               .enabled(!this.model.busy && !this.model.destinations.busy && this.model.destinations.more())
               .onClick((): void => { this.model.destinations.nextPage(); })
-          }.width('100%').padding({ left: 16, right: 16, top: 4, bottom: 4 })
+          }.width('100%').padding({ top: 4, bottom: 4 })
         }
       }
     }.width('100%').height('100%').scrollBar(BarState.Auto)
+      .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin })
+      .backgroundColor($r('app.color.workbench_background'))
   }
 }
 

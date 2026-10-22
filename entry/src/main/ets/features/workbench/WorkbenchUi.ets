@@ -183,6 +183,9 @@ export struct WorkbenchEntryRow {
   @Param menuAvailable: boolean = true;
   @Param actionLabel: string = '';
   @Param actionAvailable: boolean = true;
+  /** 多选行让出复选框后缩小内边距，使文字与分隔线保持同一基准。 */
+  @Param contentInset: number = 16;
+  @Param showDivider: boolean = true;
   @Event onOpen: () => void = (): void => {};
   @Event onAction: () => void = (): void => {};
   @Local private pressed: boolean = false;
@@ -204,7 +207,7 @@ export struct WorkbenchEntryRow {
                 .textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('sys.color.font_primary')).width('100%')
               Text(this.subtitle).fontSize(14).fontColor($r('sys.color.font_secondary'))
             }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-          }.width('100%').padding({ left: 16, top: 10, bottom: 10, right: 16 })
+          }.width('100%').padding({ left: this.contentInset, top: 10, bottom: 10, right: 16 })
         }.layoutWeight(1).constraintSize({ minHeight: WorkbenchMetrics.rowMinHeight })
           .type(ButtonType.Normal).padding(0).backgroundColor(Color.Transparent).stateEffect(false).enabled(this.available)
           .onClick(this.onOpen).accessibilityText(this.title)
@@ -226,7 +229,9 @@ export struct WorkbenchEntryRow {
       }.width('100%').backgroundColor(this.pressed ? $r('app.color.workbench_pressed') : Color.Transparent)
         // 点击仍由各按钮处理，按压底色由整行共享，避免图标与菜单区域被截断。
         .onTouch((event: TouchEvent): void => { this.pressed = event.type === TouchType.Down; })
-      Divider().color($r('app.color.workbench_divider')).margin({ left: 16, right: 16 })
+      if (this.showDivider) {
+        Divider().color($r('app.color.workbench_divider')).margin({ left: this.contentInset + 52, right: 16 })
+      }
     }.width('100%').backgroundColor($r('app.color.workbench_surface'))
   }
 }

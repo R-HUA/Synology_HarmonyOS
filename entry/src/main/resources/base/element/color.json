@@ -6,10 +6,14 @@
     },
     {
       "name": "workbench_background",
-      "value": "#F3F4F6"
+      "value": "#F1F3F5"
     },
     {
       "name": "workbench_surface",
+      "value": "#FFFFFF"
+    },
+    {
+      "name": "workbench_surface_elevated",
       "value": "#FFFFFF"
     },
     {
@@ -18,27 +22,27 @@
     },
     {
       "name": "workbench_pressed",
-      "value": "#14000000"
+      "value": "#0D000000"
     },
     {
       "name": "workbench_accent_surface",
-      "value": "#E9F1FF"
+      "value": "#E8F0FE"
     },
     {
       "name": "workbench_divider",
-      "value": "#DFE2E7"
+      "value": "#0D000000"
     },
     {
       "name": "workbench_danger",
-      "value": "#B3261E"
+      "value": "#D93025"
     },
     {
       "name": "workbench_warning",
-      "value": "#855200"
+      "value": "#B06000"
     },
     {
       "name": "workbench_warning_surface",
-      "value": "#FFF4DC"
+      "value": "#FEF7E0"
     }
   ]
 }

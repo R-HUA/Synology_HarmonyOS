@@ -233,7 +233,7 @@ export struct DriveTransferCard {
       .borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_surface'))
       .bindSheet($$this.detailsVisible, this.transferDetails(), {
         height: SheetSize.MEDIUM, detents: [SheetSize.MEDIUM, SheetSize.LARGE], title: { title: '传输详情' },
-        showClose: true, backgroundColor: this.sheetMaterialAvailable ? Color.Transparent : $r('app.color.workbench_surface'),
+        showClose: true, backgroundColor: this.sheetMaterialAvailable ? Color.Transparent : $r('app.color.workbench_surface_elevated'),
         systemMaterial: this.sheetMaterial
       })
     }
