@@ -5,7 +5,7 @@
     "description": "$string:module_desc",
     "mainElement": "EntryAbility",
     "deviceTypes": [
-      "phone"
+      "phone", "tablet", "2in1"
     ],
     "deliveryWithInstall": true,
     "installationFree": false,
@@ -23,6 +23,8 @@
         "startWindowIcon": "$media:startIcon",
         "startWindowBackground": "$color:start_window_background",
         "exported": true,
+        "orientation": "auto_rotation",
+        "supportWindowMode": ["fullscreen", "split", "floating"],
         "backgroundModes": ["dataTransfer"],
         "skills": [
           {
@@ -51,6 +53,7 @@
     "requestPermissions": [
       { "name": "ohos.permission.INTERNET" },
       { "name": "ohos.permission.GET_NETWORK_INFO" },
+      { "name": "ohos.permission.VIBRATE" },
       { "name": "ohos.permission.READ_IMAGEVIDEO", "reason": "$string:photo_backup_permission", "usedScene": { "abilities": ["EntryAbility"], "when": "inuse" } },
       { "name": "ohos.permission.KEEP_BACKGROUND_RUNNING" }
     ]

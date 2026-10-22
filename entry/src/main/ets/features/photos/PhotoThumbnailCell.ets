@@ -2,6 +2,7 @@ import { fileUri } from '@kit.CoreFileKit';
 import { NasPhotoItem } from '../../core/domain/PhotosProtocol';
 import { PhotoLibrary, PhotoThumbnailState } from './PhotoLibrary';
 import { photoMediaLabel, photoTakenDate } from '../workbench/WorkbenchPresentation';
+import { interactionFeedback } from '../../platform/InteractionFeedback';
 
 @ComponentV2
 export struct PhotoThumbnailCell {
@@ -36,7 +37,10 @@ export struct PhotoThumbnailCell {
           }
         }.width('100%').height('100%').backgroundColor($r('app.color.workbench_subtle'))
       }.width('100%').height('100%').type(ButtonType.Normal).backgroundColor(Color.Transparent)
-        .borderRadius(4).enabled(this.available).onClick((): void => { this.onOpen(this.item); })
+        .borderRadius(0).enabled(this.available).onClick((): void => { this.onOpen(this.item); })
+        .gesture(LongPressGesture().onAction((): void => {
+          if (!this.selecting) { interactionFeedback(); this.library.beginSelection(); this.library.toggleSelection(this.item); }
+        }))
         .accessibilityText(photoMediaLabel(this.item) + '，' + this.item.filename + '，' + photoTakenDate(this.item))
       if (this.item.favorite === true || this.item.mediaType !== 'photo') {
         Row({ space: 6 }) {
@@ -46,8 +50,13 @@ export struct PhotoThumbnailCell {
             }.width(22).height(22).borderRadius(11).backgroundColor('#99000000')
           }
           Blank()
-          if (this.item.mediaType !== 'photo') {
-            Text(photoMediaLabel(this.item)).fontSize(11).fontColor(Color.White)
+          if (this.item.mediaType === 'live') {
+            SymbolGlyph($r('sys.symbol.livephoto')).fontSize(16).fontColor([Color.White])
+              .padding(4).backgroundColor('#99000000').borderRadius(6).accessibilityLevel('no')
+          } else if (this.item.mediaType === 'video') {
+            Text(this.item.mediaType === 'video' && this.item.durationMs !== undefined ?
+              Math.floor(this.item.durationMs / 60000).toString().padStart(2, '0') + ':' +
+                Math.floor(this.item.durationMs / 1000 % 60).toString().padStart(2, '0') : photoMediaLabel(this.item)).fontSize(11).fontColor(Color.White)
               .padding({ left: 6, right: 6, top: 2, bottom: 2 })
               .backgroundColor('#99000000').borderRadius(6)
           }
@@ -63,6 +72,7 @@ export struct PhotoThumbnailCell {
         Checkbox().select(this.selected).hitTestBehavior(HitTestMode.None)
           .position({ right: 4, top: 4 }).accessibilityLevel('no')
       }
-    }.width('100%').aspectRatio(1).borderRadius(4).clip(true)
+    }.width('100%').aspectRatio(1).borderRadius(0).clip(true)
+      .geometryTransition('photo-' + this.item.space.toString() + ':' + this.item.id.toString())
   }
 }

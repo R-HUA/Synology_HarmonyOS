@@ -23,6 +23,7 @@ function loadEts(relative, mocks) {
   const module = { exports: {} };
   vm.runInNewContext(output.outputText, {
     module, exports: module.exports, require: id => {
+      if (id === '../../core/domain/TransferRates') return require('../../work/core-build/domain/TransferRates.js');
       if (id === '../../platform/LocalSpaceBudget') { return mocks[id] || require('../helpers/load-space-budget.cjs')(mocks['../domain/DsmProtocol'] || mocks['../../core/domain/DsmProtocol']); }
       if (id === '../../platform/SdkTransferAgent') {
         return require('../helpers/load-sdk-transfer-agent.cjs')(mocks['@kit.BasicServicesKit'].request.agent, protocol);
@@ -270,6 +271,23 @@ test('Photos certificate exception uses the current connection upload and comple
   assert.equal(f.queue.items[0].state, 'completed');
   const saved = [...f.snapshots.values()].join('');
   assert.doesNotMatch(saved, /PRIVATE-SID|PRIVATE-TOKEN|entry.cgi/);
+  f.queue.detach();
+});
+
+test('manual backup pause survives condition changes and continues the same system task only on request', async () => {
+  const f = fixture(); await f.attach('alice');
+  await f.queue.setBackupAllowed(true);
+  await f.queue.uploadPhotos('/home/Photos/MobileBackup/Phone', [{ uri: 'selected', name: '照片.jpg', bytes: 37,
+    folderId: 12, modifiedAt: 1704067200, wifiOnly: true, backupKey: 'manual-pause' }], true);
+  const id = f.queue.items[0].id;
+  await f.queue.setPaused(id, true);
+  assert.equal(f.queue.items[0].state, 'paused');
+  await f.queue.setBackupAllowed(false); await f.queue.setBackupAllowed(true); await f.queue.reconcile();
+  assert.equal(f.queue.items[0].state, 'paused');
+  assert.equal(f.tasks.get('100').state, f.State.PAUSED);
+  await f.queue.setPaused(id, false);
+  assert.equal(f.tasks.get('100').state, f.State.RUNNING);
+  assert.equal(f.calls.filter(call => call.startsWith('create:')).length, 1);
   f.queue.detach();
 });
 

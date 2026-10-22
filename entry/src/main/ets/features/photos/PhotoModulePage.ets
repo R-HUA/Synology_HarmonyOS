@@ -1,4 +1,6 @@
 import { util } from '@kit.ArkTS';
+import { curves } from '@kit.ArkUI';
+import { interactionFeedback } from '../../platform/InteractionFeedback';
 import { NasPhotoAlbum, NasPhotoItem, PhotosSpace } from '../../core/domain/PhotosProtocol';
 import { PhotoBackupSettingsPage } from '../backup/PhotoBackupSettingsPage';
 import { ConnectionViewModel } from '../connection/ConnectionViewModel';
@@ -36,6 +38,14 @@ export struct PhotoModulePage {
   @Local private contentHeight: number = 640;
   @Local private timelineRows: PhotoTimelineRow[] = [];
   @Local private albumRows: PhotoAlbumRow[] = [];
+  @Local private preferredColumns: number = 0;
+  @Local private slideSelecting: boolean = false;
+  @Local private refreshing: boolean = false;
+  private slideAnchor: NasPhotoItem | undefined = undefined;
+  private slideStartX: number = 0;
+  private slideStartY: number = 0;
+  private photoAreas: Map<string, Area> = new Map();
+  private pinchColumns: number = 3;
   // ConnectionViewModel.photoLibrary 是只读普通字段，Monitor 从本地状态引用进入 @Trace 属性。
   @Local private observedLibrary: PhotoLibrary = new PhotoLibrary();
   private previousPhotos: NasPhotoItem[] = [];
@@ -54,7 +64,7 @@ export struct PhotoModulePage {
   aboutToDisappear(): void { this.mounted = false; this.model.photoLibrary.releaseView(this.viewId); }
 
   @Monitor('active', 'expectedSpace', 'expectedSection', 'tabId', 'contentWidth', 'contentHeight', 'model',
-    'observedLibrary.items', 'observedLibrary.albums', 'observedLibrary.dataGeneration')
+    'preferredColumns', 'observedLibrary.items', 'observedLibrary.albums', 'observedLibrary.dataGeneration', 'observedLibrary.errorText')
   private rowsChanged(): void {
     if (this.observedLibrary !== this.model.photoLibrary) { this.observedLibrary = this.model.photoLibrary; }
     this.syncRows();
@@ -63,7 +73,7 @@ export struct PhotoModulePage {
   private syncRows(): void {
     const photos = this.visiblePhotos();
     const albums = this.visibleAlbums();
-    const columns = photoGridColumns(this.contentWidth);
+    const columns = this.columns();
     const albumColumns = photoAlbumColumns(this.contentWidth);
     const generation = this.model.photoLibrary.dataGeneration;
     const replace = generation !== this.groupGeneration;
@@ -95,12 +105,14 @@ export struct PhotoModulePage {
     this.syncDemand();
   }
 
+  private columns(): number { return this.preferredColumns || photoGridColumns(this.contentWidth); }
+
   private syncDemand(): void {
     if (!this.mounted || !this.viewVisible || !this.canShowLibrary()) { this.model.photoLibrary.releaseView(this.viewId); return; }
     const photoRows = this.timelineRows;
     const rowCount = photoRows.length > 0 ? photoRows.length : this.albumRows.length;
     const columns = photoRows.length > 0 ? this.photoColumns : this.albumColumns;
-    const tile = (this.contentWidth - 32 - Math.max(0, columns - 1) * 4) / Math.max(1, columns);
+    const tile = (this.contentWidth - (photoRows.length > 0 ? 0 : 32) - Math.max(0, columns - 1) * (photoRows.length > 0 ? 2 : 4)) / Math.max(1, columns);
     const rowHeight = photoRows.length > 0 ? tile + 4 : tile + 76;
     const estimated = Math.max(1, Math.ceil(Math.max(1, this.contentHeight - this.topInset - this.bottomInset - 100) / rowHeight));
     const first = Math.max(0, this.startIndex - 1);
@@ -149,12 +161,12 @@ export struct PhotoModulePage {
   }
 
   private visibleAlbums(): NasPhotoAlbum[] {
-    return this.canShowLibrary() && this.expectedSection !== 'timeline' &&
+    return this.canShowLibrary() && this.model.photoLibrary.errorText.length === 0 && this.expectedSection !== 'timeline' &&
       this.model.photoLibrary.selectedAlbum === undefined ? this.model.photoLibrary.albums : [];
   }
 
   private visiblePhotos(): NasPhotoItem[] {
-    return this.canShowLibrary() && (this.expectedSection === 'timeline' ||
+    return this.canShowLibrary() && this.model.photoLibrary.errorText.length === 0 && (this.expectedSection === 'timeline' ||
       this.model.photoLibrary.selectedAlbum !== undefined) ? this.model.photoLibrary.items : [];
   }
 
@@ -181,6 +193,23 @@ export struct PhotoModulePage {
         }
       }
     })
+  }
+
+  @Builder
+  unavailableState(reason: ResourceStr, retryable: boolean) {
+    Column({ space: 12 }) {
+      SymbolGlyph($r('sys.symbol.exclamationmark_circle')).fontSize(48).fontColor([$r('sys.color.icon_tertiary')])
+      Text($r('app.string.photos_space_unavailable')).fontSize(16).fontWeight(FontWeight.Medium)
+        .fontColor($r('sys.color.font_primary'))
+      Text(reason).fontSize(14).fontColor($r('sys.color.font_secondary')).textAlign(TextAlign.Center)
+        .constraintSize({ maxWidth: 280 })
+      if (retryable) {
+        Button($r('app.string.photos_retry_read')).buttonStyle(ButtonStyleMode.NORMAL).controlSize(ControlSize.SMALL)
+          .enabled(!this.model.photoLibrary.busy).margin({ top: 8 })
+          .onClick((): void => { this.model.photoLibrary.refresh(); })
+      }
+    }.width('100%').height(Math.max(180, this.contentHeight - this.topInset - this.bottomInset - 72))
+      .justifyContent(FlexAlign.Center).padding({ left: 24, right: 24 })
   }
 
   @Builder
@@ -220,6 +249,8 @@ export struct PhotoModulePage {
         if (this.model.photoLibrary.selecting) { this.model.photoLibrary.toggleSelection(photo); }
         else { this.onOpenPhoto(photo); }
       } }).layoutWeight(1)
+      .onAreaChange((_old: Area, area: Area): void => { this.photoAreas.set(item.space.toString() + ':' + item.id.toString(), area); })
+      .onDisAppear((): void => { this.photoAreas.delete(item.space.toString() + ':' + item.id.toString()); })
   }
 
   @Builder
@@ -284,12 +315,6 @@ export struct PhotoModulePage {
         }
         WorkbenchNotice({ text: this.model.photoLibrary.thumbnailErrorText })
         WorkbenchNotice({ text: this.model.photoLibrary.selectionNotice })
-        if (this.model.photoLibrary.errorText.length > 0) {
-          WorkbenchNotice({ text: this.model.photoLibrary.errorText, warning: true })
-          Button('重试读取').constraintSize({ minHeight: WorkbenchMetrics.touchSize })
-            .buttonStyle(ButtonStyleMode.TEXTUAL).enabled(!this.model.photoLibrary.busy)
-            .onClick((): void => { if (this.canShowLibrary()) { this.model.photoLibrary.refresh(); } })
-        }
         if (this.model.photoLibrary.busy) { this.loadingState() }
       }
     }.width('100%').alignItems(HorizontalAlign.Start)
@@ -311,8 +336,7 @@ export struct PhotoModulePage {
           WorkbenchActionRow({ icon: $r('sys.symbol.arrow_up_circle'), label: this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.photos_album_backup').id),
             available: this.active, onAction: (): void => { this.onOpenBackup(); } })
           if (this.showTransfersInMore || (this.showSharedInMore && (this.supportsSpace(PhotosSpace.Shared) ||
-            this.supportsSpace(PhotosSpace.WithMe) || this.model.supports('SYNO.Foto.Browse.Album'))) ||
-            this.supportsSpace(this.model.photoLibrary.space)) {
+            this.supportsSpace(PhotosSpace.WithMe) || this.model.supports('SYNO.Foto.Browse.Album')))) {
             Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
           }
         }
@@ -320,7 +344,7 @@ export struct PhotoModulePage {
           WorkbenchActionRow({ icon: $r('sys.symbol.arrow_down_circle'), label: '传输任务', available: this.active,
             onAction: (): void => { this.onOpenTransfers(); } })
           if ((this.showSharedInMore && (this.supportsSpace(PhotosSpace.Shared) || this.supportsSpace(PhotosSpace.WithMe) ||
-            this.model.supports('SYNO.Foto.Browse.Album'))) || this.supportsSpace(this.model.photoLibrary.space)) {
+            this.model.supports('SYNO.Foto.Browse.Album')))) {
             Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
           }
         }
@@ -328,14 +352,6 @@ export struct PhotoModulePage {
           this.model.supports('SYNO.Foto.Browse.Album'))) {
           WorkbenchActionRow({ icon: $r('sys.symbol.picture'), label: '共享相册', available: this.active,
             onAction: (): void => { this.onOpenShared(); } })
-          if (this.supportsSpace(this.model.photoLibrary.space)) {
-            Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
-          }
-        }
-        if (this.supportsSpace(this.model.photoLibrary.space)) {
-          WorkbenchActionRow({ icon: $r('sys.symbol.arrow_clockwise'), label: '刷新照片', showChevron: false,
-            available: this.active && !this.model.photoLibrary.busy,
-            onAction: (): void => { this.model.photoLibrary.refresh(); } })
         }
       }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).clip(true).backgroundColor($r('app.color.workbench_surface'))
       Column() {
@@ -347,7 +363,8 @@ export struct PhotoModulePage {
   }
 
   build() {
-    Column() {
+    Stack({ alignContent: Alignment.TopEnd }) {
+      Refresh({ refreshing: $$this.refreshing }) {
       List({ space: 2, scroller: this.scroller }) {
         if (this.tabId === 'more') {
           ListItem() { this.moreView() }
@@ -359,7 +376,7 @@ export struct PhotoModulePage {
         } else {
           ListItem() { this.libraryHeader() }
           if (!this.supportsExpectedView()) {
-            ListItem() { this.emptyState('照片暂不可用', '当前账号在此空间未提供可用的照片或相册服务。') }
+            ListItem() { this.unavailableState($r('app.string.photos_space_unsupported'), false) }
           } else if (!this.canShowLibrary()) {
             ListItem() {
               if (this.active) {
@@ -369,6 +386,8 @@ export struct PhotoModulePage {
                 this.emptyState('尚未读取内容', '打开此页签后查看照片或相册。')
               }
             }
+          } else if (this.model.photoLibrary.errorText.length > 0) {
+            ListItem() { this.unavailableState(this.model.photoLibrary.errorText, true) }
           } else if (!this.model.photoLibrary.busy && this.visiblePhotos().length === 0 &&
             this.visibleAlbums().length === 0 && this.model.photoLibrary.errorText.length === 0) {
             ListItem() { this.emptyLibraryState() }
@@ -390,17 +409,16 @@ export struct PhotoModulePage {
               ListItem() {
                 Column({ space: 4 }) {
                   if (row.item.title.length > 0) {
-                    Text(row.item.title).fontSize(16).fontWeight(FontWeight.Medium)
-                      .fontColor($r('sys.color.font_secondary')).width('100%').padding({ top: 8 })
+                    Text(row.item.title).fontSize(15).fontWeight(FontWeight.Bold)
+                      .fontColor($r('sys.color.font_primary')).width('100%').padding({ top: 12, bottom: 4, left: 16, right: 16 })
                   }
                   Row({ space: 2 }) {
                     ForEach(row.item.items, (item: NasPhotoItem): void => { this.photoCard(item) },
                       (item: NasPhotoItem): string => item.space.toString() + ':' + item.id.toString())
-                    ForEach([0, 1, 2, 3, 4, 5].slice(0, photoGridColumns(this.contentWidth) - row.item.items.length),
+                    ForEach([0, 1, 2, 3, 4, 5].slice(0, this.columns() - row.item.items.length),
                       (slot: number): void => { Blank().layoutWeight(1) }, (slot: number): string => slot.toString())
                   }.width('100%')
                 }.width('100%').alignItems(HorizontalAlign.Start)
-                  .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin })
               }
             }).key((row: PhotoTimelineRow): string => row.key).virtualScroll()
           if (this.canShowLibrary() && this.model.photoLibrary.appendError.length > 0) {
@@ -425,12 +443,50 @@ export struct PhotoModulePage {
           }
         }
       }.width('100%').height('100%').scrollBar(BarState.Auto)
+        .enableScrollInteraction(!this.slideSelecting)
         .contentStartOffset(this.topInset + 8).contentEndOffset(this.bottomInset)
         .onScrollIndex((start: number, end: number): void => { this.startIndex = start; this.endIndex = end; this.syncDemand(); })
         .onScrollStart((): void => { this.scrolling = true; this.syncDemand(); })
         .onScrollStop((): void => { this.scrolling = false; this.syncDemand(); })
+        .parallelGesture(PinchGesture().onActionStart((): void => { this.pinchColumns = this.columns(); })
+          .onActionEnd((event: GestureEvent): void => {
+            if (this.timelineRows.length === 0) { return; }
+            const next = event.scale > 1.15 ? (this.pinchColumns > 4 ? 4 : 3) :
+              event.scale < 0.85 ? (this.pinchColumns < 4 ? 4 : 6) : this.pinchColumns;
+            if (next !== this.columns()) {
+              interactionFeedback();
+              this.getUIContext().animateTo({ curve: curves.interpolatingSpring(0, 1, 228, 30) }, (): void => { this.preferredColumns = next; });
+            }
+          }))
+      }.width('100%').height('100%')
+        .pullToRefresh(this.canShowLibrary() && !this.model.photoLibrary.busy && !this.model.photoLibrary.selecting)
+        .onRefreshing(async (): Promise<void> => {
+          try { await this.model.photoLibrary.refresh(); } finally { this.refreshing = false; }
+        })
     }.width('100%').constraintSize({ maxWidth: 960 }).height('100%')
       .onAreaChange((_oldArea: Area, newArea: Area): void => { this.contentWidth = Number(newArea.width); this.contentHeight = Number(newArea.height); })
       .onVisibleAreaChange([0], (visible: boolean): void => { this.viewVisible = visible; this.syncDemand(); })
+      .onTouch((event: TouchEvent): void => {
+        if (!this.model.photoLibrary.selecting || event.touches.length !== 1 ||
+          event.type === TouchType.Up || event.type === TouchType.Cancel) {
+          this.slideAnchor = undefined; this.slideSelecting = false; return;
+        }
+        const touch = event.touches[0];
+        if (event.type === TouchType.Down) { this.slideStartX = touch.windowX; this.slideStartY = touch.windowY; }
+        if (event.type === TouchType.Move && !this.slideSelecting) {
+          const horizontal = Math.abs(touch.windowX - this.slideStartX);
+          // 横向起手才进入滑选，保留多选模式下正常的纵向浏览。
+          this.slideSelecting = horizontal > 12 && horizontal > Math.abs(touch.windowY - this.slideStartY);
+        }
+        for (const item of this.visiblePhotos()) {
+          const area = this.photoAreas.get(item.space.toString() + ':' + item.id.toString());
+          if (area !== undefined && touch.windowX >= Number(area.globalPosition.x) && touch.windowX <= Number(area.globalPosition.x) + Number(area.width) &&
+            touch.windowY >= Number(area.globalPosition.y) && touch.windowY <= Number(area.globalPosition.y) + Number(area.height)) {
+            if (this.slideAnchor === undefined) { this.slideAnchor = item; }
+            if (event.type === TouchType.Move && this.slideSelecting) { this.model.photoLibrary.selectThrough(this.slideAnchor, item); event.stopPropagation(); }
+            break;
+          }
+        }
+      })
   }
 }

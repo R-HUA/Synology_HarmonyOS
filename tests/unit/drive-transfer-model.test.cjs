@@ -37,6 +37,7 @@ function fixture(options = {}) {
     }
   }
   const mocks = {
+    '../../core/domain/TransferRates': require('../../work/core-build/domain/TransferRates.js'),
     '@kit.PreviewKit': { filePreview: {
       async canPreview(_context, uri) { events.push(['can-preview', uri]); return options.previewSupported !== false; },
       async openPreview(_context, info) { events.push(['preview', clone(info)]); if (options.previewFailure) throw options.previewFailure; }

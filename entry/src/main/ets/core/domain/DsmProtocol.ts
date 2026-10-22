@@ -23,6 +23,8 @@ export interface NasFileEntry {
   name: string;
   isDirectory: boolean;
   bytes?: number;
+  modifiedAt?: number;
+  freeBytes?: number;
 }
 
 export interface NasFileInfo extends NasFileEntry { bytes: number; }
@@ -276,9 +278,12 @@ export function decodeNasFilePage(data: Record<string, Object>, shares: boolean,
     const row = nasRecord(raw);
     if (!shares && typeof row['isdir'] !== 'boolean') { throw protocolError(); }
     const additional = row['additional'] === undefined ? undefined : nasRecord(row['additional']);
+    const time = additional?.['time'] === undefined ? undefined : nasRecord(additional['time']);
     return { path: validateLogicalPath(nasString(row['path'])), name: nasString(row['name']),
       isDirectory: shares || row['isdir'] === true,
-      bytes: additional === undefined || additional['size'] === undefined ? undefined : nasInteger(additional['size']) };
+      bytes: additional === undefined || additional['size'] === undefined ? undefined : nasInteger(additional['size']),
+      freeBytes: additional?.['volume_status'] === undefined ? undefined : nasInteger(nasRecord(additional['volume_status'])['freespace']),
+      modifiedAt: time?.['mtime'] === undefined ? undefined : nasInteger(time['mtime']) * 1000 };
   });
   const identities = new Set<string>();
   for (const entry of entries) {

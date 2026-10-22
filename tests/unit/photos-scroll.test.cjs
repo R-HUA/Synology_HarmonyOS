@@ -26,7 +26,7 @@ function method(name) {
   assert.equal(depth, 0);
   return pageSource.slice(start, end).replace('private ', '');
 }
-const harness = ts.transpileModule('class PhotoPageHarness {' + method('syncRows') + method('syncDemand') + '} module.exports = PhotoPageHarness;',
+const harness = ts.transpileModule('class PhotoPageHarness {' + method('columns') + method('syncRows') + method('syncDemand') + '} module.exports = PhotoPageHarness;',
   { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS }, reportDiagnostics: true });
 assert.equal((harness.diagnostics || []).filter(d => d.category === ts.DiagnosticCategory.Error).length, 0);
 const pageModule = { exports: {} }; const groups = [];
@@ -57,7 +57,7 @@ test('page keeps existing row identities on append and thumbnail-only changes do
   library.items = library.items.concat([item(21), item(22, 10)]); p.syncRows();
   assert.strictEqual(p.timelineRows[0], first);
   assert.deepEqual(groups.at(-1), [21, 22]);
-  assert.equal(p.timelineRows.at(-1).title, '2026年10月');
+  assert.equal(p.timelineRows.at(-1).title, '2026年10月15日');
   assert.equal(p.timelineRows.flatMap(row => row.items).length, 22);
   const beforeResize = p.timelineRows;
   p.contentWidth = 700; p.syncRows();
@@ -70,8 +70,8 @@ test('page derives visible rows from List indexes and requests only one adjacent
   library.items = Array.from({ length: 60 }, (_, i) => item(i + 1)); p.syncRows();
   p.startIndex = 4; p.endIndex = 7; p.syncDemand();
   const demand = viewport.at(-1);
-  assert.deepEqual(Array.from(demand[1], i => i.id), Array.from({ length: 12 }, (_, i) => i + 10));
-  assert.deepEqual(Array.from(demand[2], i => i.id), [7, 8, 9, 22, 23, 24]);
+  assert.deepEqual(Array.from(demand[1], i => i.id), Array.from({ length: 16 }, (_, i) => i + 13));
+  assert.deepEqual(Array.from(demand[2], i => i.id), [9, 10, 11, 12, 29, 30, 31, 32]);
   assert.equal(demand[3], false);
   p.startIndex = 17; p.endIndex = 20; p.syncDemand();
   assert.equal(viewport.at(-1)[3], true, 'prefetch the next page when less than one visible screen remains');

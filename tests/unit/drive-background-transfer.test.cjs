@@ -111,7 +111,8 @@ function fixture(options = {}) {
     assert.equal((output.diagnostics || []).filter(d => d.category === ts.DiagnosticCategory.Error).length, 0);
     const mod = { exports: {} };
     vm.runInNewContext(output.outputText, { module: mod, exports: mod.exports, Date, canIUse: () => true, setInterval: () => 1, clearInterval() {},
-      require(id) { assert.ok(Object.hasOwn(mocks, id), id); return mocks[id]; } }); return mod.exports;
+      require(id) { if (id === '../../core/domain/TransferRates') return require('../../work/core-build/domain/TransferRates.js');
+        assert.ok(Object.hasOwn(mocks, id), id); return mocks[id]; } }); return mod.exports;
   }
   mocks['./DriveBackgroundTransfer'] = load('DriveBackgroundTransfer');
   mocks['./DriveUploadSlice'] = load('DriveUploadSlice');

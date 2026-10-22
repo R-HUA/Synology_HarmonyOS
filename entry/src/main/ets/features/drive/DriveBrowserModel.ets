@@ -1,5 +1,5 @@
 import { NasErrorKind, NasFailure } from '../../core/domain/DsmProtocol';
-import { DriveEntry, DriveEntryKind, DriveFolderRef, DriveSpace, DriveView, driveViewLabel } from '../../core/domain/DriveProtocol';
+import { DriveEntry, DriveEntryKind, DriveFolderRef, DriveSpace, DriveView, driveViewLabel, DriveSortBy, DriveSortDirection } from '../../core/domain/DriveProtocol';
 import type { DriveViewPage, DriveAncestor } from '../../core/domain/DriveProtocol';
 import { DriveAdapter } from '../../core/network/DriveAdapter';
 import { NasConnector } from '../../core/network/NasConnector';
@@ -66,6 +66,8 @@ export class DriveBrowserModel {
   @Trace total: number | undefined = undefined;
   @Trace view: DriveView = DriveView.MyDrive;
   @Trace searchText: string = '';
+  @Trace sortBy: DriveSortBy = DriveSortBy.Name;
+  @Trace sortDirection: DriveSortDirection = DriveSortDirection.Ascending;
   @Trace searchKeyword: string = '';
   @Trace searchScopeName: string = DRIVE_ROOT_LABEL;
   @Trace hasMore: boolean = false;
@@ -135,6 +137,13 @@ export class DriveBrowserModel {
   async reload(): Promise<void> {
     if (!this.supportsView(this.view)) { return; }
     await this.load(this.trail, 0);
+  }
+
+  async sort(by: DriveSortBy, descending: boolean): Promise<void> {
+    if (this.busy) { return; }
+    this.sortBy = by;
+    this.sortDirection = descending ? DriveSortDirection.Descending : DriveSortDirection.Ascending;
+    await this.reload();
   }
 
   supportsView(view: DriveView): boolean {
@@ -313,7 +322,7 @@ export class DriveBrowserModel {
         } else { page = await adapter.readView(view, offset); }
       }
       else {
-        const folderPage = await adapter.list(this.folderOf(current, view), offset);
+        const folderPage = await adapter.list(this.folderOf(current, view), offset, this.sortBy, this.sortDirection);
         page = { items: folderPage.items, total: folderPage.total, offset: folderPage.offset,
           hasMore: folderPage.offset + folderPage.items.length < folderPage.total };
       }

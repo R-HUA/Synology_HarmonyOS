@@ -251,8 +251,16 @@ export struct NasTelemetryDashboard {
             Text('网络接口 ' + network.id).fontSize(14)
               .fontColor($r('sys.color.font_secondary')).width('100%')
           }
-          WorkbenchInfoRow({ label: '接收', minHeight: 32, value: telemetryBytes(network.receiveBytesPerSecond) + '/s' })
-          WorkbenchInfoRow({ label: '发送', minHeight: 32, value: telemetryBytes(network.sendBytesPerSecond) + '/s' })
+          Row({ space: 8 }) {
+            Text($r('app.string.network_receive_rate', telemetryBytes(network.receiveBytesPerSecond) + '/s'))
+              .fontSize(14).fontColor($r('sys.color.font_primary')).layoutWeight(1)
+              .padding({ left: 12, right: 12, top: 8, bottom: 8 }).borderRadius(20)
+              .backgroundColor($r('app.color.workbench_subtle'))
+            Text($r('app.string.network_send_rate', telemetryBytes(network.sendBytesPerSecond) + '/s'))
+              .fontSize(14).fontColor($r('sys.color.font_primary')).layoutWeight(1)
+              .padding({ left: 12, right: 12, top: 8, bottom: 8 }).borderRadius(20)
+              .backgroundColor($r('app.color.workbench_subtle'))
+          }.width('100%')
         }.width('100%').alignItems(HorizontalAlign.Start)
       }, (network: NasTelemetryNetwork): string => network.id)
       TelemetrySectionNotice({ status: this.monitor.utilization.status, notice: this.monitor.utilization.notice })

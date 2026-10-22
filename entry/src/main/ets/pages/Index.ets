@@ -1,8 +1,8 @@
 import { common } from '@kit.AbilityKit';
-import { ComponentContent, DrawableDescriptor, LengthMetrics, SymbolGlyphModifier, uiMaterial, window } from '@kit.ArkUI';
+import { ComponentContent, curves, DrawableDescriptor, LengthMetrics, SymbolGlyphModifier, uiMaterial, window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileUri } from '@kit.CoreFileKit';
-import { HdsNavigation, HdsNavigationTitleMode, HdsNavDestination, HdsTabs, HdsTabsController, hdsMaterial, IconStyleMode, TextStyleMode, ScrollEffectType, HdsNavigationMenuItemOptions, HdsSnackBar, SnackBarOperationType } from '@kit.UIDesignKit';
+import { HdsNavigation, HdsSideBar, HdsNavigationTitleMode, HdsNavDestination, HdsTabs, HdsTabsController, hdsMaterial, IconStyleMode, TextStyleMode, ScrollEffectType, HdsNavigationMenuItemOptions, HdsSnackBar, SnackBarOperationType } from '@kit.UIDesignKit';
 import { NasFailure, NasFileEntry } from '../core/domain/DsmProtocol';
 import { DriveEntry, DriveView, driveViewLabel } from '../core/domain/DriveProtocol';
 import { DriveUploadReview, DriveTransferModePicker } from '../features/drive/DriveTransferUi';
@@ -17,13 +17,15 @@ import { ExtensionStatusPanel } from '../features/extensions/ExtensionStatusPane
 import { PhotoAction, PhotoActionInput, PhotoFolder } from '../core/domain/PhotoActions';
 import { systemShare } from '@kit.ShareKit';
 import { uniformTypeDescriptor } from '@kit.ArkData';
-import { takeDriveTransferIntent } from '../features/drive/DriveTransferIntent';
+import { takeAllTransferIntent, takeDriveTransferIntent } from '../features/drive/DriveTransferIntent';
 import { DriveSharingPage, DriveNotificationsPage } from '../features/drive/DriveCollaborationUi';
 import { NasPhotoAlbum, NasPhotoItem, PhotosSpace } from '../core/domain/PhotosProtocol';
 import { PhotoUpload } from '../features/photos/PhotoUpload';
 import { PhotoBackupSettingsPage } from '../features/backup/PhotoBackupSettingsPage';
-import { TransferUploadSource } from '../features/transfers/TransferQueue';
-import { TaskScope } from '../core/domain/TaskPresentation';
+import { TransferQueue, TransferUploadSource } from '../features/transfers/TransferQueue';
+import { DriveTransferModel } from '../features/drive/DriveTransferModel';
+import { TransferLiveView } from '../features/tasks/TransferLiveView';
+import { TaskScope, taskRecords, taskEnded } from '../core/domain/TaskPresentation';
 import { DownloadSubmitResult } from '../core/domain/DownloadSubmitResult';
 import { TaskPage } from '../features/tasks/TaskPage';
 import { TaskPageState } from '../features/tasks/TaskPageState';
@@ -45,6 +47,7 @@ import { ModuleTab, WorkbenchModule, ModuleTabSettings, rootTabs, driveTabs, dri
   moduleTabIndex, rootReturnIndex, ROOT_TASK_TAB, ROOT_SETTINGS_TAB, DRIVE_MORE_VIEWS, supportsPhotoSharing,
   supportsPhotos, supportsPhotoBackup } from '../features/workbench/ModuleNavigation';
 import { ModuleTabStore } from '../features/workbench/ModuleTabStore';
+import { WorkbenchSettings } from '../features/workbench/WorkbenchSettings';
 import { FileStationPage } from '../features/files/FileStationPage';
 import { DriveModulePage } from '../features/drive/DriveModulePage';
 import { PhotoModulePage } from '../features/photos/PhotoModulePage';
@@ -72,6 +75,9 @@ function titleMenu(items: TitleMenuItem[]) {
 @ComponentV2
 struct Index {
   @Local private model: ConnectionViewModel = new ConnectionViewModel();
+  @Local private observedQueue: TransferQueue = this.model.queue;
+  @Local private observedDriveTransfers: DriveTransferModel = this.model.driveTransfers;
+  @Local private transferLiveView: TransferLiveView = new TransferLiveView();
   @Local private activeTab: number = 0;
   @Local private module: WorkbenchModule = 'root';
   @Local private rootTab: number = 0;
@@ -92,6 +98,8 @@ struct Index {
   @Local private tabSettingsBusy: boolean = false;
   @Local private tabSettingsError: string = '';
   private tabStore: ModuleTabStore = new ModuleTabStore();
+  @Local private preferences: WorkbenchSettings = new WorkbenchSettings();
+  @Local private appearanceMenuVisible: boolean = false;
   @Local private pickerMode: string = '';
   @Local private navigationInset: number = 0;
   @Local private statusInset: number = 0;
@@ -124,7 +132,10 @@ struct Index {
   private driveActionScroller: Scroller = new Scroller();
   private driveLinksScroller: Scroller = new Scroller();
   private driveNotificationsScroller: Scroller = new Scroller();
-  private transferNotificationOpened = (): void => { if (takeDriveTransferIntent()) { this.openDriveTransfers(); } };
+  private transferNotificationOpened = (): void => {
+    if (takeAllTransferIntent()) { this.showAllTasks(); }
+    else if (takeDriveTransferIntent()) { this.openDriveTransfers(); }
+  };
   private foregroundChanged = (foreground: boolean): void => {
     this.foreground = foreground;
     this.model.driveTransfers.setForeground(foreground);
@@ -201,6 +212,7 @@ struct Index {
     this.pageActive = true;
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
     this.abilityContext = context;
+    this.preferences.load(context);
     this.applicationIcon = context.resourceManager.getDrawableDescriptor(context.applicationInfo.iconId);
     this.loadTabSettings();
     context.eventHub.on('nas-foreground-change', this.foregroundChanged);
@@ -341,8 +353,20 @@ struct Index {
   }
 
   /** 批量动作复用文件任务流程，确认删除前保留选择。 */
-  private selectedFileAction(kind: string): void {
+  private async selectedFileAction(kind: string): Promise<void> {
     if (this.model.busy || this.selectedFiles.length === 0) { return; }
+    if (kind === 'share') {
+      this.model.extensions.shareDraftPaths = this.selectedFiles.map((entry: NasFileEntry): string => entry.path);
+      this.model.extensions.selectedShare = undefined;
+      this.navStack.pushPathByName('share-links', undefined); this.cancelFileSelection(); return;
+    }
+    if (kind === 'download') {
+      for (const entry of this.selectedFiles.slice()) {
+        const result = await this.model.downloadFile(entry);
+        if (result.status !== 'created' && result.status !== 'duplicate') { this.transferErrorText = result.message; return; }
+      }
+      this.cancelFileSelection(); this.openModuleTasks('files'); return;
+    }
     if (kind === 'delete') {
       const entries = this.selectedFiles.slice();
       this.getUIContext().showAlertDialog({ title: $r('app.string.file_delete_selected'),
@@ -382,6 +406,9 @@ struct Index {
   }
 
   private pageTitle(): string {
+    if (this.module === 'root' && this.activeTab === 1 && this.fileSelecting) {
+      return this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.file_selected_count').id, this.selectedFiles.length);
+    }
     if (this.module === 'photos' && this.model.photoLibrary.selecting) {
       return this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.photos_selected_count').id, this.model.photoLibrary.selectedKeys.length);
     }
@@ -439,7 +466,7 @@ struct Index {
 
   private openNasDownloads(): void {
     if (this.model.extensions.downloadDestination.length === 0 && this.model.directory.length > 0) {
-      this.model.extensions.downloadDestination = this.model.directory.slice(1);
+      this.model.extensions.setDownloadDestination(this.model.directory.slice(1));
     }
     this.navStack.pushPathByName('nas-downloads', undefined);
     this.updateTelemetryMode();
@@ -465,7 +492,7 @@ struct Index {
 
   private useDownloadDirectory(): void {
     if (this.model.busy || this.model.directory.length === 0) { return; }
-    this.model.extensions.downloadDestination = this.model.directory.slice(1);
+    this.model.extensions.setDownloadDestination(this.model.directory.slice(1));
     this.pickerMode = ''; this.navStack.pop();
   }
 
@@ -479,7 +506,9 @@ struct Index {
 
   private openPhoto(item: NasPhotoItem): void {
     this.model.photoLibrary.openDetail(item);
-    this.navStack.pushPathByName('photo-detail', item.id);
+    this.getUIContext().animateTo({ curve: curves.interpolatingSpring(0, 1, 328, 36) }, (): void => {
+      this.navStack.pushPathByName('photo-detail', item.id);
+    });
   }
 
   private async selectBackup(): Promise<void> {
@@ -508,12 +537,64 @@ struct Index {
 
   private bottomInset(): number {
     if (this.module === 'photos' && this.model.photoLibrary.selecting) { return 16; }
-    return workbenchBottomInset(this.navigationInset);
+    return this.windowWidth >= 600 ? this.navigationInset + 16 : workbenchBottomInset(this.navigationInset);
   }
 
   /** 内容区延伸到标题栏之下，首项需要让出状态栏与单行标题栏的高度。 */
   private contentTopInset(): number {
-    return this.statusInset + 56;
+    return this.statusInset + 56 + (this.activeTransferCount() > 0 ? 44 : 0);
+  }
+
+  private activeTransferCount(): number {
+    return taskRecords('root', this.model.queue.items, this.model.driveTransfers.items, this.model.fileTasks, this.model.driveActions.items)
+      .filter((record): boolean => !taskEnded(record.state)).length;
+  }
+
+  @Monitor('observedQueue.items', 'observedDriveTransfers.items', 'model.authenticated')
+  private transferCountChanged(): void {
+    if (this.abilityContext !== undefined) {
+      this.transferLiveView.update(this.abilityContext, this.model.authenticated ?
+        taskRecords('root', this.observedQueue.items, this.observedDriveTransfers.items, [], [])
+          .filter((record): boolean => !taskEnded(record.state)).length : 0);
+    }
+  }
+
+  @Builder
+  sideBarPanel() {
+    Column({ space: 8 }) {
+      if (this.module !== 'root') {
+        Button($r('app.string.workspace_root')).height(48).width('100%').buttonStyle(ButtonStyleMode.TEXTUAL)
+          .onClick((): void => { this.onBackPress(); })
+      }
+      ForEach(this.visibleTabs(), (tab: ModuleTab, index: number): void => {
+        Button() {
+          Column({ space: 6 }) {
+            SymbolGlyph(this.tabIcon(tab.id)).fontSize(24)
+            Text(tab.label).fontSize(14).maxLines(1)
+          }.width('100%').padding(12)
+        }.width('100%').type(ButtonType.Normal).backgroundColor(index === this.activeTab ?
+          $r('app.color.workbench_accent_surface') : Color.Transparent).borderRadius(16)
+          .enabled(!this.navigationBusy()).onClick((): void => { this.selectModuleTab(index); })
+      }, (tab: ModuleTab): string => this.module + ':' + tab.id)
+    }.width('100%').height('100%').padding({ top: this.contentTopInset(), left: 8, right: 8, bottom: this.navigationInset })
+  }
+
+  @Builder
+  sideBarContent() {
+    this.modulePage(this.visibleTabs()[this.activeTab])
+  }
+
+  @Builder
+  transferCapsule() {
+    Row() {
+    if (this.model.authenticated && this.activeTransferCount() > 0) {
+      Button($r('app.string.global_transfer_count', this.activeTransferCount()))
+        .height(40).buttonStyle(ButtonStyleMode.TEXTUAL).borderRadius(20)
+        .backgroundColor($r('app.color.workbench_accent_surface'))
+        .onClick((): void => { this.showAllTasks(); })
+    }
+    }.width('100%').height(this.model.authenticated && this.activeTransferCount() > 0 ? 40 : 0)
+      .justifyContent(FlexAlign.Center).hitTestBehavior(HitTestMode.Transparent)
   }
 
   /** 未登录时隐藏了标题栏，顶部只需让出状态栏。 */
@@ -1149,17 +1230,33 @@ struct Index {
               Text(workbenchProtocolHint(this.model.address, this.model.useHttps))
                 .fontSize(12).fontColor($r('sys.color.font_tertiary')).padding({ left: 8, right: 8 })
             }.width('100%').alignItems(HorizontalAlign.Start)
-            TextInput({ text: this.model.account, placeholder: '用户名' })
+            Row({ space: 8 }) {
+            SymbolGlyph($r('sys.symbol.person')).fontSize(20).fontColor([$r('sys.color.icon_secondary')]).margin({ left: 8 })
+            TextInput({ text: this.model.account, placeholder: $r('app.string.connection_account') })
+              .backgroundColor(Color.Transparent).layoutWeight(1)
               .maxLength(128).constraintSize({ minHeight: 48 }).enabled(!this.model.busy)
               .onChange((text: string): void => { this.model.account = text; }).accessibilityText('NAS 用户名')
-            TextInput({ text: this.model.password, placeholder: '密码' })
+            }.width('100%')
+            Divider().color($r('app.color.workbench_divider')).margin({ left: 36 })
+            Row({ space: 8 }) {
+            SymbolGlyph($r('sys.symbol.lock')).fontSize(20).fontColor([$r('sys.color.icon_secondary')]).margin({ left: 8 })
+            TextInput({ text: this.model.password, placeholder: $r('app.string.connection_password') })
+              .backgroundColor(Color.Transparent).layoutWeight(1)
               .constraintSize({ minHeight: 48 }).type(InputType.Password).enabled(!this.model.busy)
               .enterKeyType(EnterKeyType.Go).onSubmit((): void => { this.submitLogin(); })
               .onChange((text: string): void => { this.model.password = text; }).accessibilityText('NAS 密码')
+            }.width('100%')
             if (this.model.needsOtp) {
               TextInput({ text: this.model.otp, placeholder: '6 位动态码' }).constraintSize({ minHeight: 48 })
                 .type(InputType.Number).maxLength(6).enabled(!this.model.busy)
                 .onChange((text: string): void => { this.model.otp = text; }).accessibilityText('双重验证动态码')
+              Row({ space: 8 }) {
+                Checkbox().select(this.model.trustDevice).enabled(!this.model.busy)
+                  .onChange((selected: boolean): void => { this.model.trustDevice = selected; })
+                  .accessibilityText($r('app.string.connection_trust_device'))
+                Text($r('app.string.connection_trust_device')).fontSize(16).fontColor($r('sys.color.font_primary'))
+              }.width('100%').constraintSize({ minHeight: 48 })
+                .transition(TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: -8 })))
             }
             Row({ space: 12 }) {
               Text($r('app.string.connection_ignore_certificate')).fontSize(16).fontColor($r('sys.color.font_primary')).layoutWeight(1)
@@ -1191,15 +1288,17 @@ struct Index {
   }
 
   @Builder
-  shortcut(icon: Resource, label: string, action: () => void) {
+  shortcut(icon: Resource, label: Resource, detail: ResourceStr, action: () => void) {
     Button() {
       Column({ space: 8 }) {
         WorkbenchIconTile({ icon: icon, iconSize: 26, tileSize: 48, tileRadius: 12,
           iconColor: $r('sys.color.icon_emphasize'), tileColor: $r('app.color.workbench_accent_surface') })
         Text(label).fontSize(14).fontColor($r('sys.color.font_primary')).textAlign(TextAlign.Center)
           .width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(detail).fontSize(12).fontColor($r('sys.color.font_secondary')).textAlign(TextAlign.Center)
+          .width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       }.width('100%').padding({ top: 12, bottom: 12, left: 4, right: 4 })
-    }.width('33.33%')
+    }.width(this.model.supports('SYNO.DownloadStation.Task') ? '33.33%' : '50%')
       .type(ButtonType.Normal).backgroundColor(Color.Transparent).enabled(!this.navigationBusy())
       .onClick(action).accessibilityText(label)
   }
@@ -1242,33 +1341,61 @@ struct Index {
   }
 
   @Builder
-  homeView() {
-    Scroll(this.homeScroller) {
-      Column({ space: WorkbenchMetrics.sectionGap }) {
+  homeDeviceColumn() {
+    Column({ space: WorkbenchMetrics.sectionGap }) {
         this.deviceHeader()
         Flex({ wrap: FlexWrap.Wrap }) {
           if (driveTabs((view: DriveView): boolean => this.model.drive.supportsView(view), this.drivePinned).length > 0) {
-            this.shortcut($r('sys.symbol.folder'), 'Synology Drive', (): void => {
+            this.shortcut($r('sys.symbol.folder'), $r('app.string.home_drive'),
+              this.model.driveTransfers.items.some((item): boolean => !taskEnded(item.state)) ?
+                $r('app.string.home_transfer_count', this.model.driveTransfers.items.filter((item): boolean => !taskEnded(item.state)).length) :
+                $r('app.string.home_browse_files'), (): void => {
               this.driveTabId = 'mydrive'; this.driveMoreView = ''; this.enterModule('drive');
             })
           }
           if (this.supportsPhotos()) {
-            this.shortcut($r('sys.symbol.picture'), '照片', (): void => {
+            this.shortcut($r('sys.symbol.picture'), $r('app.string.home_photos'),
+              this.model.photoBackup.settings.enabled ? $r('app.string.home_backup_enabled') : $r('app.string.home_backup_disabled'), (): void => {
               this.photoTabId = 'photos'; this.photoMoreShared = false; this.enterModule('photos');
             })
           }
           if (this.model.supports('SYNO.DownloadStation.Task')) {
-            this.shortcut($r('sys.symbol.arrow_down_circle'), 'NAS 下载', (): void => { this.openNasDownloads(); })
+            this.shortcut($r('sys.symbol.arrow_down_circle'), $r('app.string.home_downloads'),
+              $r('app.string.home_loaded_downloads', this.model.extensions.downloads.filter((item): boolean =>
+                ['downloading', 'waiting', 'finishing', 'hash_checking', 'seeding'].includes(item.status)).length),
+              (): void => { this.openNasDownloads(); })
           }
         }.width('100%').padding(4).borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
+    }.width('100%')
+  }
+
+  @Builder
+  homeMonitorColumn() {
+    Column({ space: WorkbenchMetrics.sectionGap }) {
         if (!this.model.telemetry.utilization.permissionDenied) {
           NasTelemetrySummary({ monitor: this.model.telemetry, onOpen: (): void => { this.openTelemetry(); } })
         }
         if (!this.model.telemetry.storage.permissionDenied) {
           NasTelemetryStorageCard({ monitor: this.model.telemetry, onOpen: (): void => { this.openTelemetry(); } })
         }
+    }.width('100%')
+  }
+
+  @Builder
+  homeView() {
+    Scroll(this.homeScroller) {
+      Column({ space: WorkbenchMetrics.sectionGap }) {
+        if (this.windowWidth >= 600) {
+          Row({ space: 16 }) {
+            Column() { this.homeDeviceColumn() }.layoutWeight(1)
+            Column() { this.homeMonitorColumn() }.layoutWeight(1)
+          }.width('100%').alignItems(VerticalAlign.Top)
+        } else {
+          this.homeDeviceColumn()
+          this.homeMonitorColumn()
+        }
         this.notices()
-      }.width('100%').constraintSize({ maxWidth: 840 })
+      }.width('100%').constraintSize({ maxWidth: 1280 })
         .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin, top: this.contentTopInset(), bottom: this.bottomInset() })
     }.width('100%').height('100%').align(Alignment.Top).scrollBar(BarState.Off)
   }
@@ -1294,18 +1421,66 @@ struct Index {
           }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
         }.width('100%')
 
+        Column({ space: 12 }) {
+          WorkbenchSectionTitle({ title: this.previewText($r('app.string.app_settings_title')) })
         Column() {
           WorkbenchActionRow({ icon: $r('sys.symbol.rectangle_split_3x1'), label: '模块底栏',
             description: '选择 Drive 与照片的常用功能', onAction: (): void => { this.navStack.pushPathByName('module-tabs', 'root'); } })
-        }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
+          Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
+          WorkbenchActionRow({ icon: $r('sys.symbol.moon'), label: this.previewText($r('app.string.appearance_title')),
+            value: this.appearanceLabel(this.preferences.appearance), available: !this.preferences.busy,
+            onAction: (): void => { this.appearanceMenuVisible = true; } })
+            .bindMenu(this.appearanceMenuVisible, this.appearanceMenu(), {
+              onDisappear: (): void => { this.appearanceMenuVisible = false; } })
+          Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
+          WorkbenchActionRow({ icon: $r('sys.symbol.trash'), label: this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.cache_title').id),
+            description: workbenchBytes(this.preferences.cacheBytes), available: !this.preferences.busy,
+            onAction: (): void => {
+              this.getUIContext().showAlertDialog({ title: $r('app.string.cache_clear'), message: $r('app.string.cache_confirm'),
+                primaryButton: { value: $r('app.string.action_cancel'), action: (): void => {} },
+                secondaryButton: { value: $r('app.string.action_confirm'), action: (): void => { this.clearMediaCache(); } } });
+            } })
+        }.width('100%').borderRadius(16).backgroundColor($r('app.color.workbench_surface'))
+        }.width('100%')
+        WorkbenchNotice({ text: this.preferences.errorText, warning: true })
+        WorkbenchNotice({ text: this.transferLiveView.errorText, warning: true })
         Column() {
           WorkbenchActionRow({ icon: $r('sys.symbol.arrow_right_and_square'), label: '登出 NAS', destructive: true, showChevron: false,
             available: !this.model.busy, onAction: (): void => { this.confirmLogout(); } })
         }.width('100%').margin({ top: 12 }).borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
         this.notices()
       }.width('100%').constraintSize({ maxWidth: 840 })
-        .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin, top: this.contentTopInset() + 8, bottom: this.bottomInset() })
+        .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin, top: this.contentTopInset() + 8, bottom: this.bottomInset() + 28 })
     }.width('100%').height('100%').scrollBar(BarState.Auto).align(Alignment.Top)
+  }
+
+  private appearanceLabel(mode: number): string {
+    return this.previewText(mode === 0 ? $r('app.string.appearance_system') : mode === 1 ?
+      $r('app.string.appearance_light') : $r('app.string.appearance_dark'));
+  }
+
+  @Builder
+  appearanceMenu() {
+    Menu() {
+      ForEach([0, 1, 2], (mode: number): void => {
+        MenuItem({ content: this.appearanceLabel(mode) }).selected(this.preferences.appearance === mode).selectIcon(true)
+          .enabled(!this.preferences.busy).onClick((): void => {
+            this.appearanceMenuVisible = false; this.preferences.setAppearance(mode);
+          })
+      }, (mode: number): string => mode.toString())
+    }
+  }
+
+  private async clearMediaCache(): Promise<void> {
+    this.preferences.busy = true;
+    try {
+      this.model.photoLibrary.clearCache();
+      this.model.driveThumbnails.clearCache();
+      await this.model.driveOriginal.close();
+      await this.model.fileOriginal.close();
+      await this.preferences.measureCache();
+    } catch (error) { this.preferences.errorText = (error as Error).message; }
+    finally { this.preferences.busy = false; }
   }
 
   @Builder
@@ -1314,15 +1489,9 @@ struct Index {
     Column() {
       Row({ space: 12 }) {
         Text(label).fontSize(16).fontColor($r('sys.color.font_primary')).layoutWeight(1)
-        if (permanent) {
-          Text('常驻').fontSize(12).fontColor($r('sys.color.font_secondary'))
-            .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-            .borderRadius(12).backgroundColor($r('app.color.workbench_subtle'))
-        } else {
           Toggle({ type: ToggleType.Switch, isOn: selected })
-            .enabled(enabled && this.tabSettingsReady && !this.tabSettingsBusy && !this.navigationBusy())
+            .enabled(!permanent && enabled && this.tabSettingsReady && !this.tabSettingsBusy && !this.navigationBusy())
             .onChange(onToggle).accessibilityText(label + '，显示在底栏')
-        }
       }.width('100%').constraintSize({ minHeight: WorkbenchMetrics.rowMinHeight }).padding({ left: 16, right: 16 })
       if (showDivider) {
         Divider().color($r('app.color.workbench_divider')).margin({ left: 16, right: 16 })
@@ -1336,7 +1505,8 @@ struct Index {
       Column({ space: WorkbenchMetrics.sectionGap }) {
         if (module !== 'photos' &&
           driveTabs((view: DriveView): boolean => this.model.drive.supportsView(view), this.drivePinned).length > 0) {
-          WorkbenchSectionTitle({ title: 'Synology Drive', subtitle: '最多可固定 2 个扩展视图至底栏（底栏上限 5 项）' })
+          WorkbenchSectionTitle({ title: 'Synology Drive', trailing: $r('app.string.tabs_enabled_count',
+            driveTabs((view: DriveView): boolean => this.model.drive.supportsView(view), this.drivePinned).length) })
           Column() {
             ForEach([DriveView.MyDrive, DriveView.TeamFolders].filter((view: DriveView): boolean => this.model.drive.supportsView(view)),
               (view: DriveView): void => {
@@ -1350,7 +1520,8 @@ struct Index {
           }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).clip(true).backgroundColor($r('app.color.workbench_surface'))
         }
         if (module !== 'drive' && this.supportsPhotos()) {
-          WorkbenchSectionTitle({ title: '照片', subtitle: '底栏最多同时展示 5 个页签（含常驻项）' })
+          WorkbenchSectionTitle({ title: '照片', trailing: $r('app.string.tabs_enabled_count',
+            photoTabs((api: string): boolean => this.model.supports(api), this.showPhotoShared, this.photoPinned).length) })
           Column() {
             this.tabSettingRow('照片', true, false, (_selected: boolean): void => {}, true, true)
             this.tabSettingRow('相册', true, false, (_selected: boolean): void => {}, true, true)
@@ -1381,7 +1552,7 @@ struct Index {
   @Builder
   modulePage(tab: ModuleTab) {
     if (this.module === 'drive') {
-      DriveModulePage({ model: this.model, tabId: tab.id, active: tab.id === this.driveTabId,
+      DriveModulePage({ model: this.model, wide: this.windowWidth >= 600, tabId: tab.id, active: tab.id === this.driveTabId,
         expectedView: tab.view ?? (this.driveMoreView.length > 0 ? this.driveMoreView as DriveView : DriveView.MyDrive),
         scroller: this.driveScrollerFor(tab.id), topInset: this.contentTopInset(), bottomInset: this.bottomInset(),
         moreView: this.driveMoreView, moreViews: this.driveMoreViews(),
@@ -1390,8 +1561,12 @@ struct Index {
         onDownload: (entry: DriveEntry, open: boolean): void => { this.submitDriveDownload(entry, '', open); },
         onUploadTo: (entry: DriveEntry): void => { this.prepareDriveUpload(entry); },
         onOpenAction: (action: DriveAction, entry?: DriveEntry): void => { if (entry !== undefined) { this.prepareDriveAction(entry, action); } },
+        onOpenBatchAction: (action: DriveAction, entries: DriveEntry[]): void => { this.prepareDriveAction(entries[0], action, entries); },
         onOpenOriginal: (entry: DriveEntry): void => { this.openDriveOriginal(entry); },
         onOpenLinks: (entry?: DriveEntry): void => { this.openDriveLinks(entry); },
+        onOpenBatchLinks: (entries: DriveEntry[]): void => {
+          if (this.model.driveSharing.prepare(entries[0], entries)) { this.navStack.pushPathByName('drive-links', undefined); }
+        },
         onCustomize: (): void => { this.navStack.pushPathByName('module-tabs', 'drive'); } })
     } else if (this.module === 'photos') {
       if (tab.id === 'transfers') { this.taskPage(this.photoTasks, this.photoTasksScroller, this.contentTopInset(), this.bottomInset()) }
@@ -1425,11 +1600,13 @@ struct Index {
       }
     } else if (tab.id === 'home') { this.homeView() }
     else if (tab.id === 'files') {
-      FileStationPage({ model: this.model, scroller: this.filesScroller, topInset: this.contentTopInset(), bottomInset: this.bottomInset(),
+      FileStationPage({ model: this.model, wide: this.windowWidth >= 600, scroller: this.filesScroller, topInset: this.contentTopInset(), bottomInset: this.bottomInset(),
         active: this.module === 'root' && this.activeTab === 1,
         errorText: this.visibleError(), pendingEntries: this.pendingEntries, pendingOperation: this.pendingOperation, canUseDestination: this.destinationAllowed(),
         selecting: this.fileSelecting, selectedPaths: this.selectedFiles.map((entry: NasFileEntry): string => entry.path),
         onToggleSelection: (entry: NasFileEntry): void => { this.toggleFileSelection(entry); },
+        onBeginSelection: (entry: NasFileEntry): void => { this.fileSelecting = true; this.selectedFiles = [entry]; },
+        onSort: (): void => { this.openForm('sort'); },
         onSelectAll: (): void => { this.selectedFiles = this.model.entries.slice(); },
         onCancelSelection: (): void => { this.cancelFileSelection(); },
         onSelectionAction: (kind: string): void => { this.selectedFileAction(kind); },
@@ -1498,8 +1675,8 @@ struct Index {
 
   /** Drive 面包屑。直接来自浏览模型自己的导航栈，不会与请求位置不一致。 */
 
-  private async prepareDriveAction(entry: DriveEntry, action: DriveAction): Promise<void> {
-    if (await this.model.driveActions.prepare(entry, action)) { this.navStack.pushPathByName('drive-action', undefined); }
+  private async prepareDriveAction(entry: DriveEntry, action: DriveAction, entries?: DriveEntry[]): Promise<void> {
+    if (await this.model.driveActions.prepare(entry, action, entries)) { this.navStack.pushPathByName('drive-action', undefined); }
   }
 
   private async submitDriveAction(): Promise<void> {
@@ -1533,7 +1710,7 @@ struct Index {
 
   @Builder
   taskPage(state: TaskPageState, scroller: Scroller, top: number, bottom: number) {
-    TaskPage({ model: this.model, state, scroller, rootScrollers: this.taskCategoryScrollers, topInset: top, bottomInset: bottom,
+    TaskPage({ model: this.model, wide: this.windowWidth >= 600, state, scroller, rootScrollers: this.taskCategoryScrollers, topInset: top, bottomInset: bottom,
       onAllTasks: (): void => { this.showAllTasks(); }, onRemoteDownloads: (): void => { this.openNasDownloads(); },
       onPhotoBackup: (): void => { this.openPhotoBackup(); },
       onDriveFiles: (): void => { this.returnDriveFiles(); },
@@ -1612,7 +1789,7 @@ struct Index {
           if (video) { this.submitDriveDownload(drive, 'drive-original', true); } else { this.model.driveOriginal.open(drive, true); }
         } else if (source === 'file' && file !== undefined) { this.model.fileOriginal.openFile(file, true); }
       } } }, { content: { label: this.previewText($r('app.string.preview_more')),
-        icon: source === 'photos' ? $r('sys.media.ohos_ic_public_more') : $r('sys.symbol.more'),
+        icon: $r('sys.symbol.more'),
         type: source === 'photos' ? IconStyleMode.NORMAL : IconStyleMode.SMALL,
         componentId: id, isEnabled: menu.length > 0, action: (): void => {
           this.openTitleMenu(id, menu.map((item: MenuElement): TitleMenuItem => new TitleMenuItem(
@@ -1878,6 +2055,7 @@ struct Index {
         this.model.photoLibrary.previewPath.length > 0 ? fileUri.getUriFromPath(this.model.photoLibrary.previewPath) : '',
       name: this.model.photoLibrary.detail?.filename ?? '', photos: true, video: this.model.photoLibrary.detail?.mediaType === 'video',
       controlsVisible: this.photoControlsVisible, navigationInset: this.navigationInset,
+      onDismiss: (): void => { this.getUIContext().animateTo({ curve: curves.interpolatingSpring(0, 1, 328, 36) }, (): void => { this.navStack.pop(); }); },
       onToggleControls: (): void => {
         this.photoControlsVisible = !this.photoControlsVisible;
         this.updatePhotoPreviewWindow();
@@ -1904,9 +2082,9 @@ struct Index {
     const opened = this.photoPreviewOpened;
     const visible = !opened || this.photoControlsVisible;
     this.photoWindowUpdate = this.photoWindowUpdate.then(async (): Promise<void> => {
-      await mainWindow.setSpecificSystemBarEnabled('status', visible);
-      await mainWindow.setSpecificSystemBarEnabled('navigation', visible);
-      await mainWindow.setSpecificSystemBarEnabled('navigationIndicator', visible);
+      await mainWindow.setSpecificSystemBarEnabled('status', visible, true);
+      await mainWindow.setSpecificSystemBarEnabled('navigation', visible, true);
+      await mainWindow.setSpecificSystemBarEnabled('navigationIndicator', visible, true);
       await mainWindow.setWindowLayoutFullScreen(opened || this.normalWindowFullScreen);
     }).catch((error: BusinessError): void => {
       hilog.error(0x0000, 'NasLayout', 'operation=photo_preview_window result=failed code=%{public}d', error.code);
@@ -1948,6 +2126,8 @@ struct Index {
         DriveModulePage({ model: this.model, tabId: 'search', expectedView: DriveView.Search, searchPage: true,
           scroller: this.driveSearchScroller, bottomInset: this.navigationInset + 16,
           onExitSearch: (): void => { this.exitDriveSearch(); },
+          onOpenBatchAction: (action: DriveAction, entries: DriveEntry[]): void => { this.prepareDriveAction(entries[0], action, entries); },
+          onOpenBatchLinks: (entries: DriveEntry[]): void => { this.model.driveSharing.prepare(entries[0], entries); this.navStack.pushPathByName('drive-links', undefined); },
           onOpenTransfers: (): void => { this.openDriveTransfers(); },
           onDownload: (entry: DriveEntry, open: boolean): void => { this.submitDriveDownload(entry, '', open); },
           onOpenOriginal: (entry: DriveEntry): void => { this.openDriveOriginal(entry); },
@@ -1978,6 +2158,9 @@ struct Index {
         .onShown((): void => { this.model.driveNotifications.refresh(); })
     } else if (name === 'drive-original') {
       HdsNavDestination() { DriveOriginalPage({ model: this.model.driveOriginal, information: this.drivePreviewInfo(),
+        fullscreen: true, controlsVisible: this.photoControlsVisible, navigationInset: this.navigationInset,
+        onToggleControls: (): void => { this.photoControlsVisible = !this.photoControlsVisible; this.updatePhotoPreviewWindow(); },
+        onDismiss: (): void => { this.navStack.pop(); },
         canDelete: this.model.driveOriginal.entry !== undefined && driveActionAllowed(this.model.driveOriginal.entry, 'delete') &&
           this.model.driveActions.available && this.model.driveActions.ready && !this.model.driveActions.busy && !this.model.driveActions.hasPending,
         canShare: this.model.driveOriginal.entry !== undefined && driveFileLinkAllowed(this.model.driveOriginal.entry) &&
@@ -1985,16 +2168,21 @@ struct Index {
         onDownload: (): void => { const entry = this.model.driveOriginal.entry; if (entry !== undefined) { this.submitDriveDownload(entry, 'drive-original'); } },
         onDelete: (): void => { this.deleteDrivePreview(); },
         onShare: (): void => { const entry = this.model.driveOriginal.entry; if (entry !== undefined) { this.openDriveLinks(entry); } } }) }
-        .backgroundColor($r('app.color.workbench_background'))
+        .backgroundColor(Color.Transparent).hideTitleBar(!this.photoControlsVisible)
         .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: this.model.driveOriginal.entry?.name || '原图' },
           menu: { value: this.previewMenus('drive'), maxCount: 2 } },
           style: { systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE } } })
         .onHidden((): void => {
+          this.photoPreviewOpened = false; this.photoControlsVisible = true; this.updatePhotoPreviewWindow();
           if (!this.navStack.getAllPathName().includes('drive-original')) { this.model.driveOriginal.close(); }
         })
+        .onShown((): void => { this.photoPreviewOpened = true; this.photoControlsVisible = true; this.updatePhotoPreviewWindow(); })
     } else if (name === 'file-preview') {
       HdsNavDestination() {
         ImagePreview({ source: this.model.fileOriginal.pixels ?? '', name: this.model.fileOriginal.fileEntry?.name ?? '',
+          fullscreen: true, controlsVisible: this.photoControlsVisible, navigationInset: this.navigationInset,
+          onToggleControls: (): void => { this.photoControlsVisible = !this.photoControlsVisible; this.updatePhotoPreviewWindow(); },
+          onDismiss: (): void => { this.navStack.pop(); },
           busy: this.model.fileOriginal.busy, original: this.model.fileOriginal.originalLoaded, errorText: this.model.fileOriginal.errorText,
           information: this.filePreviewInfo(),
           canDelete: this.model.supports('SYNO.FileStation.Delete'), canShare: this.model.extensions.canWrite('fileSharing'),
@@ -2004,11 +2192,15 @@ struct Index {
           onDelete: (): void => { const entry = this.model.fileOriginal.fileEntry; if (entry !== undefined) { this.confirmDelete(entry, true); } },
           onViewport: (width: number, height: number): void => { this.model.fileOriginal.setViewport(width, height); },
           onRefine: (scale: number): void => { this.model.fileOriginal.refine(scale); } })
-      }.backgroundColor($r('app.color.workbench_background'))
+      }.backgroundColor(Color.Transparent).hideTitleBar(!this.photoControlsVisible)
         .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: this.model.fileOriginal.fileEntry?.name ?? '' },
           menu: { value: this.previewMenus('file'), maxCount: 2 } },
           style: { systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE } } })
-        .onHidden((): void => { if (!this.navStack.getAllPathName().includes('file-preview')) { this.model.fileOriginal.close(); } })
+        .onShown((): void => { this.photoPreviewOpened = true; this.photoControlsVisible = true; this.updatePhotoPreviewWindow(); })
+        .onHidden((): void => {
+          this.photoPreviewOpened = false; this.photoControlsVisible = true; this.updatePhotoPreviewWindow();
+          if (!this.navStack.getAllPathName().includes('file-preview')) { this.model.fileOriginal.close(); }
+        })
     } else if (name === 'drive-action') {
       HdsNavDestination() {
         DriveActionPage({ model: this.model.driveActions, scroller: this.driveActionScroller,
@@ -2107,13 +2299,14 @@ struct Index {
         })
     } else if (name === 'photo-detail') {
       HdsNavDestination() { this.photoDetailView() }
-        .backgroundColor($r('app.color.workbench_background'))
+        .backgroundColor(Color.Transparent)
         .hideTitleBar(!this.photoControlsVisible)
         .titleBar({ enableComponentSafeArea: false, avoidLayoutSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL },
           menu: { value: this.previewMenus('photos'), maxCount: 2 } },
           style: { scrollEffectOpts: { enableScrollEffect: false, scrollEffectType: ScrollEffectType.IMMERSIVE_GRADIENT_BLUR },
             systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE },
-            originalStyle: { backgroundStyle: { blurRadius: 12, maskExtraHeight: 16 } } } })
+            originalStyle: { backgroundStyle: { blurRadius: 12, maskExtraHeight: 16 },
+              contentStyle: { menuStyle: { textColor: $r('sys.color.font_primary'), iconColor: $r('sys.color.font_primary') } } } } })
         .onShown((): void => {
           this.photoPreviewOpened = true;
           this.photoControlsVisible = true;
@@ -2131,7 +2324,7 @@ struct Index {
           PhotoBackupSettingsPage({ backup: this.model.photoBackup, onChooseDirectory: (): void => { this.chooseBackupDirectory(); } })
             .padding({ left: 16, right: 16, top: Math.max(0, this.contentTopInset() - this.photoBackupViewportTop) + 16,
               bottom: this.navigationInset + 16 })
-        }.width('100%').height('100%')
+        }.width('100%').height('100%').edgeEffect(EdgeEffect.Spring)
           .onAreaChange((_oldArea: Area, newArea: Area): void => {
             this.photoBackupViewportTop = Number(newArea.globalPosition.y);
           })
@@ -2413,7 +2606,16 @@ struct Index {
           } else {
             this.sharedInboxCard()
             if (this.model.authenticated) {
-              if (this.module === 'photos' && this.model.photoLibrary.selecting) {
+              if (this.windowWidth >= 600 && !(this.module === 'photos' && this.model.photoLibrary.selecting)) {
+                ForEach([this.module + ':' + this.activeTab.toString()], (_key: string): void => {
+                HdsSideBar({ isShowSideBar: true, sideBarWidth: this.windowWidth >= 840 ? 200 : 88,
+                  minSideBarWidth: 88, maxSideBarWidth: 200, minContentWidth: 360,
+                  autoHide: false, scaleContentEnabled: true, sideBarContainerType: SideBarContainerType.Embed,
+                  sideBarColor: $r('app.color.workbench_surface'), contentColor: $r('app.color.workbench_background'),
+                  sideBarPanelBuilder: (): void => { this.sideBarPanel(); },
+                  contentPanelBuilder: (): void => { this.sideBarContent(); } }).width('100%').layoutWeight(1)
+                }, (key: string): string => key)
+              } else if (this.module === 'photos' && this.model.photoLibrary.selecting) {
                 Column() {
                   this.modulePage(this.visibleTabs()[this.activeTab])
                 }.width('100%').layoutWeight(1)
@@ -2437,6 +2639,7 @@ struct Index {
             } else { this.loginView() }
           }
         }.width('100%').height('100%')
+          .overlay(this.transferCapsule(), { align: Alignment.Top, offset: { y: this.statusInset + 56 } })
       }.width('100%').height('100%').backgroundColor($r('app.color.workbench_background')).mode(NavigationMode.Stack).hideBackButton(this.module === 'root')
         .hideTitleBar(!this.model.authenticated)
         .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])

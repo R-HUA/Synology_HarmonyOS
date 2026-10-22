@@ -3,7 +3,7 @@ import { decodeNasResponse, dsmFailure, NasErrorKind, NasFailure, nasInteger, na
 
 export type TransferDirection = 'upload' | 'download';
 export type TransferSource = 'fileUpload' | 'shareUpload' | 'photoUpload' | 'photoBackup' | 'download' | 'legacy';
-export type TransferState = 'preparing' | 'queued' | 'creating' | 'running' | 'waiting' |
+export type TransferState = 'preparing' | 'queued' | 'creating' | 'running' | 'waiting' | 'paused' |
   'verifying' | 'completed' | 'failed' | 'unknown' | 'cancelled' | 'closed' | 'clearing';
 
 /** 普通记录只保存业务状态；URL、Cookie、SID 与系统配置不进入记录。 */
@@ -40,6 +40,9 @@ export interface TransferQueueRecord {
 }
 
 export interface TransferQueueItem {
+  bytesPerSecond?: number;
+  canPause?: boolean;
+  canResume?: boolean;
   id: string;
   direction: TransferDirection;
   source: TransferSource;
@@ -118,6 +121,7 @@ export function transferItem(record: TransferQueueRecord): TransferQueueItem {
     case 'creating': text = '正在建立任务'; break;
     case 'running': text = record.direction === 'upload' ? '正在上传' : '正在下载'; break;
     case 'waiting': text = '等待网络或系统调度'; break;
+    case 'paused': text = '已暂停'; break;
     case 'verifying': text = '正在校验'; break;
     case 'completed': text = record.contentVerified ? (record.direction === 'upload' ? '上传内容已核验' : '下载内容已核验') :
       record.direction === 'upload' ? '上传已确认' : '下载已校验'; break;
@@ -160,7 +164,7 @@ export function decodeTransferQueue(text: string, scope: string): TransferQueueR
       !['upload', 'download'].includes(direction as string) ||
       !['fileUpload', 'shareUpload', 'photoUpload', 'photoBackup', 'download', 'legacy'].includes(source as string) ||
       direction === 'download' && source !== 'download' && source !== 'legacy' || direction === 'upload' && source === 'download' ||
-      !['preparing', 'queued', 'creating', 'running', 'waiting', 'verifying', 'completed', 'failed', 'unknown', 'cancelled', 'closed', 'clearing'].includes(state as string) ||
+      !['preparing', 'queued', 'creating', 'running', 'waiting', 'paused', 'verifying', 'completed', 'failed', 'unknown', 'cancelled', 'closed', 'clearing'].includes(state as string) ||
       localName !== id + '-' + attempts.toString() + '.bin' || attempts < 1 ||
       typeof taskId !== 'string' || (taskId.length > 0 && !/^[0-9]+$/.test(taskId)) ||
       typeof errorText !== 'string' || errorText.length > 1024 ||

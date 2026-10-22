@@ -1,5 +1,6 @@
 import { image } from '@kit.ImageKit';
-import { uiMaterial } from '@kit.ArkUI';
+import { curves, display, uiMaterial } from '@kit.ArkUI';
+import { interactionFeedback } from '../../platform/InteractionFeedback';
 import { ActionBarButton } from '@kit.UIDesignKit';
 import { WorkbenchInfoRow, WorkbenchNotice } from './WorkbenchUi';
 
@@ -33,6 +34,8 @@ export struct ImagePreview {
   @Param canDownload: boolean = true;
   @Param video: boolean = false;
   @Param photos: boolean = false;
+  @Param fullscreen: boolean = false;
+  @Param transitionId: string = '';
   @Param controlsVisible: boolean = true;
   @Param navigationInset: number = 0;
   @Param itemKey: string = '';
@@ -52,6 +55,7 @@ export struct ImagePreview {
   @Event onViewport: (width: number, height: number) => void = (): void => {};
   @Event onRefine: (scale: number) => void = (): void => {};
   @Event onToggleControls: () => void = (): void => {};
+  @Event onDismiss: () => void = (): void => {};
   @Local scaleValue: number = 1;
   @Local initialScale: number = 1;
   @Local offsetX: number = 0;
@@ -61,6 +65,13 @@ export struct ImagePreview {
   @Local viewWidth: number = 0;
   @Local viewHeight: number = 0;
   @Local infoVisible: boolean = false;
+  @Local private dismissal: number = 0;
+  @Local private halfFolded: boolean = false;
+  @Local private containerHeight: number = 0;
+  private boundaryFeedback: boolean = false;
+  private foldChanged = (status: display.FoldStatus): void => {
+    this.halfFolded = status === display.FoldStatus.FOLD_STATUS_HALF_FOLDED;
+  };
   private material: uiMaterial.Material = new uiMaterial.ImmersiveMaterial({ style: uiMaterial.ImmersiveStyle.ULTRA_THICK });
   private capsuleMaterial: uiMaterial.Material = new uiMaterial.ImmersiveMaterial({ style: uiMaterial.ImmersiveStyle.REGULAR });
   private materialAvailable: boolean = uiMaterial.isImmersiveMaterialSupported();
@@ -75,7 +86,11 @@ export struct ImagePreview {
   @Local private downloadAction: ActionBarButton = new ActionBarButton({ baseIcon: $r('sys.symbol.arrow_down_circle'),
     accessibilityText: $r('app.string.preview_download') });
 
-  aboutToAppear(): void { this.updateActions(); }
+  aboutToAppear(): void {
+    this.updateActions();
+    if (display.isFoldable()) { this.foldChanged(display.getFoldStatus()); display.on('foldStatusChange', this.foldChanged); }
+  }
+  aboutToDisappear(): void { if (display.isFoldable()) { display.off('foldStatusChange', this.foldChanged); } }
 
   @Monitor('canShare', 'canDelete', 'canDownload', 'favorite')
   private updateActions(): void {
@@ -95,13 +110,16 @@ export struct ImagePreview {
   private resetView(): void { this.scaleValue = 1; this.offsetX = 0; this.offsetY = 0; }
 
   /** 双击在 1x 与 2.5x 之间双向缩放，缩回 1x 时同步归零平移偏移。 */
-  private toggleDoubleTapZoom(): void {
+  private toggleDoubleTapZoom(event: GestureEvent): void {
+    interactionFeedback();
     const nextScale = this.scaleValue > 1 ? 1 : 2.5;
-    this.getUIContext().animateTo({ duration: 240, curve: Curve.FastOutSlowIn }, (): void => {
+    this.getUIContext().animateTo({ curve: curves.interpolatingSpring(0, 1, 228, 30) }, (): void => {
       if (nextScale === 1) {
         this.resetView();
       } else {
         this.scaleValue = nextScale;
+        this.offsetX = (this.viewWidth / 2 - event.fingerList[0].localX) * (nextScale - 1);
+        this.offsetY = (this.viewHeight / 2 - event.fingerList[0].localY) * (nextScale - 1);
       }
     });
     this.onRefine(nextScale);
@@ -137,8 +155,11 @@ export struct ImagePreview {
               .onError((): void => { this.onDecodeError(); })
           } else {
             Image(this.source).width('100%').height('100%').objectFit(ImageFit.Contain)
+              .geometryTransition(this.photos ? 'photo-' + this.itemKey : this.transitionId)
               .syncLoad(!this.original)
-              .scale({ x: this.scaleValue, y: this.scaleValue }).translate({ x: this.offsetX, y: this.offsetY })
+              .scale({ x: this.scaleValue * (1 - this.dismissal / Math.max(1, this.viewHeight) * 0.3),
+                y: this.scaleValue * (1 - this.dismissal / Math.max(1, this.viewHeight) * 0.3) })
+              .translate({ x: this.offsetX, y: this.offsetY + this.dismissal })
               .accessibilityText(this.name).onError((): void => { this.onDecodeError(); })
           }
         }
@@ -152,8 +173,12 @@ export struct ImagePreview {
           this.onViewport(this.viewWidth, this.viewHeight);
         })
         .gesture(GestureGroup(GestureMode.Parallel,
-          PinchGesture().onActionStart((): void => { this.initialScale = this.scaleValue; })
-            .onActionUpdate((event: GestureEvent): void => { this.scaleValue = Math.min(4, Math.max(1, this.initialScale * event.scale)); })
+          PinchGesture().onActionStart((): void => { this.initialScale = this.scaleValue; this.boundaryFeedback = false; })
+            .onActionUpdate((event: GestureEvent): void => {
+              const value = this.initialScale * event.scale;
+              this.scaleValue = Math.min(4, Math.max(1, value));
+              if ((value >= 4 || value <= 1) && !this.boundaryFeedback) { this.boundaryFeedback = true; interactionFeedback(); }
+            })
             .onActionEnd((): void => {
               this.onRefine(this.scaleValue);
               if (this.scaleValue === 1) {
@@ -166,9 +191,15 @@ export struct ImagePreview {
                 const limitX = this.viewWidth * (this.scaleValue - 1) / 2, limitY = this.viewHeight * (this.scaleValue - 1) / 2;
                 this.offsetX = Math.min(limitX, Math.max(-limitX, this.initialX + event.offsetX));
                 this.offsetY = Math.min(limitY, Math.max(-limitY, this.initialY + event.offsetY));
+              } else if ((this.photos || this.fullscreen) && event.offsetY > Math.abs(event.offsetX)) {
+                this.dismissal = Math.max(0, event.offsetY);
               }
             })
             .onActionEnd((event: GestureEvent): void => {
+              if (this.dismissal > 100 || this.dismissal > 40 && event.velocityY > 900) {
+                this.onDismiss(); this.dismissal = 0; return;
+              }
+              this.getUIContext().animateTo({ curve: curves.interpolatingSpring(0, 1, 228, 30) }, (): void => { this.dismissal = 0; });
               // 缩放后的拖动只移动图片，原始比例下的横向滑动才切换照片。
               if (this.photos && this.canNavigate && this.scaleValue === 1 &&
                 Math.abs(event.offsetX) >= 48 && Math.abs(event.offsetX) > Math.abs(event.offsetY) * 1.5) {
@@ -176,13 +207,12 @@ export struct ImagePreview {
               }
             }),
           GestureGroup(GestureMode.Exclusive,
-            TapGesture({ count: 2 }).onAction((): void => { this.toggleDoubleTapZoom(); }),
-            TapGesture({ count: 1 }).onAction((): void => { if (this.photos) { this.onToggleControls(); } })
+            TapGesture({ count: 2 }).onAction((event: GestureEvent): void => { this.toggleDoubleTapZoom(event); }),
+            TapGesture({ count: 1 }).onAction((): void => { this.onToggleControls(); })
           )
         ))
       if (this.controlsVisible) { WorkbenchNotice({ text: this.errorText, warning: true }) }
-    // 照片在悬浮控件下保持完整比例，文件预览沿用原有操作区间距。
-    }.width('100%').height('100%').padding({ bottom: this.photos ? 0 : 68 })
+    }.width('100%').height('100%').padding({ bottom: this.halfFolded ? this.containerHeight / 2 : this.photos || this.fullscreen ? 0 : 68 })
   }
 
   /** 原生悬浮材质操作胶囊，替代单页签 HdsTabs 伪装方案，修正无障碍语义与危险操作色。 */
@@ -193,7 +223,7 @@ export struct ImagePreview {
         PreviewToolbarButton({ action: this.shareAction, onAction: (): void => { this.onShare(); } })
         PreviewToolbarButton({ action: this.favoriteAction,
           iconColor: this.favorite ? $r('app.color.workbench_danger') : $r('sys.color.font_primary'),
-          onAction: (): void => { this.onFavorite(); } })
+          onAction: (): void => { interactionFeedback(); this.onFavorite(); } })
         PreviewToolbarButton({ action: this.informationAction, onAction: (): void => { this.infoVisible = true; } })
         PreviewToolbarButton({ action: this.deleteAction, iconColor: $r('app.color.workbench_danger'),
           onAction: (): void => { this.onDelete(); } })
@@ -209,16 +239,27 @@ export struct ImagePreview {
       .backgroundColor(this.materialAvailable ? Color.Transparent : $r('app.color.workbench_surface_elevated'))
       .systemMaterial(this.capsuleMaterial)
       .shadow({ radius: 16, color: '#1F000000', offsetY: 4 })
-      .margin({ bottom: (this.photos ? this.navigationInset : 0) + 12 })
+      .margin({ bottom: (this.photos || this.fullscreen ? this.navigationInset : 0) + 12 })
   }
 
   build() {
     // 照片视口独立于操作栏，隐藏控件不会重建图片或改变缩放；沉浸态切换为纯黑底色。
     Stack({ alignContent: Alignment.Bottom }) {
+      Column().width('100%').height('100%')
+        .backgroundColor(!this.controlsVisible ? Color.Black : $r('app.color.workbench_background'))
+        .opacity(1 - Math.min(0.7, this.dismissal / Math.max(1, this.viewHeight)))
+        .hitTestBehavior(HitTestMode.None)
       this.content()
-      if (!this.photos || this.controlsVisible) { this.actionBar() }
+      if (this.controlsVisible) {
+        Column() {
+          if (this.halfFolded) { this.details() }
+          this.actionBar()
+        }.width('100%').height(this.halfFolded ? '50%' : 'auto').justifyContent(FlexAlign.End)
+          .hitTestBehavior(HitTestMode.Transparent).transition(TransitionEffect.OPACITY)
+      }
     }.width('100%').height('100%')
-      .backgroundColor(this.photos && !this.controlsVisible ? Color.Black : $r('app.color.workbench_background'))
+      .onAreaChange((_old: Area, area: Area): void => { this.containerHeight = Number(area.height); })
+      .backgroundColor(Color.Transparent)
       .bindSheet($$this.infoVisible, this.details(), { height: SheetSize.FIT_CONTENT,
         title: { title: $r('app.string.preview_information') }, showClose: true,
         backgroundColor: this.materialAvailable ? Color.Transparent : $r('app.color.workbench_surface_elevated'), systemMaterial: this.material })

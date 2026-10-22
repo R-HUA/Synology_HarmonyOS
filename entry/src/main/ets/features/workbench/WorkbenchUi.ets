@@ -1,4 +1,3 @@
-import { uiMaterial } from '@kit.ArkUI';
 import { workbenchUsageLevel } from './WorkbenchPresentation';
 
 export class WorkbenchMetrics {
@@ -48,10 +47,14 @@ export struct WorkbenchIconTile {
 export struct WorkbenchSectionTitle {
   @Param title: string = '';
   @Param subtitle: string = '';
+  @Param trailing: ResourceStr = '';
 
   build() {
     Column({ space: 2 }) {
-      Text(this.title).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
+      Row() {
+        Text(this.title).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).layoutWeight(1)
+        if (this.trailing !== '') { Text(this.trailing).fontSize(12).fontColor($r('sys.color.font_secondary')) }
+      }.width('100%')
       if (this.subtitle.length > 0) {
         Text(this.subtitle).fontSize(12).fontColor($r('sys.color.font_secondary'))
       }
@@ -133,29 +136,42 @@ export struct WorkbenchInfoRow {
 export struct WorkbenchNotice {
   @Param text: string = '';
   @Param warning: boolean = false;
-  private shownError: string = '';
+  @Param retryable: boolean = false;
+  @Event onRetry: () => void = (): void => {};
+  @Local private expanded: boolean = false;
+  @Local private dismissed: boolean = false;
 
-  aboutToAppear(): void { this.showError(); }
-
-  /** 页面保留完整错误，系统提示只展示首句，避免遮挡当前操作。 */
-  @Monitor('text', 'warning')
-  private showError(): void {
-    const text = this.text.trim();
-    if (!this.warning || text.length === 0) { this.shownError = ''; return; }
-    if (text === this.shownError) { return; }
-    this.shownError = text;
-    const sentence = text.split(/[。；\n]/)[0];
-    this.getUIContext().getPromptAction().showToast({ message: sentence.length > 36 ? sentence.slice(0, 36) + '…' : sentence,
-      duration: 2500, systemMaterial: new uiMaterial.ImmersiveMaterial({ style: uiMaterial.ImmersiveStyle.REGULAR }) });
-  }
+  @Monitor('text')
+  private resetNotice(): void { this.expanded = false; this.dismissed = false; }
 
   build() {
-    if (!this.warning && this.text.length > 0) {
-      Text(this.text).fontSize(14)
-        .fontColor($r('sys.color.font_secondary'))
-        .width('100%').padding(12).borderRadius(WorkbenchMetrics.innerRadius)
-        .backgroundColor($r('app.color.workbench_subtle'))
-        .accessibilityText(this.text)
+    if (this.text.length > 0 && !this.dismissed) {
+      Column({ space: 4 }) {
+        Row({ space: 8 }) {
+          if (this.warning) {
+            SymbolGlyph($r('sys.symbol.exclamationmark_circle')).fontSize(20)
+              .fontColor([$r('app.color.workbench_danger')]).accessibilityLevel('no')
+          }
+          Text(this.expanded || !this.warning ? this.text : this.text.split(/[。；\n]/)[0])
+            .fontSize(14).fontColor(this.warning ? $r('app.color.workbench_danger') : $r('sys.color.font_secondary'))
+            .layoutWeight(1).maxLines(this.expanded ? 30 : 2).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }.width('100%')
+        if (this.warning) {
+          Row() {
+            Button(this.expanded ? $r('app.string.notice_collapse') : $r('app.string.notice_details'))
+              .buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: 48 })
+              .onClick((): void => { this.expanded = !this.expanded; })
+            if (this.retryable) {
+              Button($r('app.string.task_retry')).buttonStyle(ButtonStyleMode.TEXTUAL)
+                .constraintSize({ minHeight: 48 }).onClick(this.onRetry)
+            }
+            Blank()
+            Button($r('app.string.notice_dismiss')).buttonStyle(ButtonStyleMode.TEXTUAL)
+              .constraintSize({ minHeight: 48 }).onClick((): void => { this.dismissed = true; })
+          }.width('100%')
+        }
+      }.width('100%').padding(12).borderRadius(WorkbenchMetrics.innerRadius)
+        .backgroundColor(this.warning ? $r('app.color.workbench_warning_surface') : $r('app.color.workbench_subtle'))
     }
   }
 }
@@ -181,6 +197,7 @@ export struct WorkbenchChoice {
 export struct WorkbenchActionRow {
   @Param label: string = '';
   @Param description: string = '';
+  @Param value: string = '';
   @Param icon: Resource = $r('sys.symbol.folder');
   @Param available: boolean = true;
   @Param destructive: boolean = false;
@@ -202,6 +219,9 @@ export struct WorkbenchActionRow {
               .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
           }
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        if (this.value.length > 0) {
+          Text(this.value).fontSize(14).fontColor($r('sys.color.font_secondary')).maxLines(1)
+        }
         if (this.showChevron) {
           SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(WorkbenchMetrics.rowArrowSize)
             .fontColor([$r('sys.color.font_secondary')]).opacity(WorkbenchMetrics.rowArrowOpacity)
@@ -220,12 +240,14 @@ export struct WorkbenchActionRow {
  */
 @ComponentV2
 export struct WorkbenchEntryRow {
+  @Param grid: boolean = false;
   @Param title: string = '';
   @Param subtitle: string = '';
   @Param icon: Resource = $r('sys.symbol.doc');
   @Param iconColor: ResourceColor = $r('sys.color.font_secondary');
   @Param available: boolean = true;
   @Param thumbnail: string = '';
+  @Param transitionId: string = '';
   @Param menu: MenuElement[] = [];
   @Param menuAvailable: boolean = true;
   @Param actionLabel: string = '';
@@ -236,14 +258,40 @@ export struct WorkbenchEntryRow {
   @Event onOpen: () => void = (): void => {};
   @Event onAction: () => void = (): void => {};
   @Local private pressed: boolean = false;
+  @Event onLongPress: () => void = (): void => {};
 
   build() {
+    if (this.grid) {
+      Column({ space: 4 }) {
+        Button() {
+          Column({ space: 8 }) {
+            if (this.thumbnail.length > 0) {
+              Image(this.thumbnail).width(64).height(64).objectFit(ImageFit.Cover).borderRadius(12)
+                .geometryTransition(this.transitionId)
+            } else {
+              WorkbenchIconTile({ icon: this.icon, iconSize: 40, tileSize: 64, iconColor: this.iconColor })
+            }
+            Text(this.title).fontSize(14).fontColor($r('sys.color.font_primary')).maxLines(2)
+              .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%').textAlign(TextAlign.Center)
+            Text(this.subtitle).fontSize(12).fontColor($r('sys.color.font_secondary')).maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+          }.width('100%')
+        }.type(ButtonType.Normal).backgroundColor(Color.Transparent).width('100%').layoutWeight(1)
+          .enabled(this.available).onClick(this.onOpen).gesture(LongPressGesture().onAction(this.onLongPress))
+        if (this.menu.length > 0) {
+          Button() { SymbolGlyph($r('sys.symbol.ellipsis_circle')).fontSize(22).fontColor([$r('sys.color.icon_secondary')]) }
+            .width(48).height(48).backgroundColor(Color.Transparent).bindMenu(this.menu).enabled(this.menuAvailable)
+            .accessibilityText(this.title + '，操作菜单')
+        }
+      }.width('100%').height(220).padding(12).borderRadius(16).backgroundColor($r('app.color.workbench_surface'))
+    } else {
     Column() {
       Row() {
         Button() {
           Row({ space: 12 }) {
             if (this.thumbnail.length > 0) {
               Image(this.thumbnail).width(40).height(40).objectFit(ImageFit.Cover).borderRadius(8)
+                .geometryTransition(this.transitionId)
                 .accessibilityLevel('no')
             } else {
               WorkbenchIconTile({ icon: this.icon, iconSize: 22, tileSize: 40, tileRadius: 12,
@@ -258,9 +306,10 @@ export struct WorkbenchEntryRow {
         }.layoutWeight(1).constraintSize({ minHeight: WorkbenchMetrics.rowMinHeight })
           .type(ButtonType.Normal).padding(0).backgroundColor(Color.Transparent).stateEffect(false).enabled(this.available)
           .onClick(this.onOpen).accessibilityText(this.title)
+          .gesture(LongPressGesture().onAction((): void => { this.onLongPress(); }))
         if (this.menu.length > 0) {
           Button() {
-            SymbolGlyph($r('sys.symbol.dot_grid_1x2')).fontSize(20)
+            SymbolGlyph($r('sys.symbol.ellipsis_circle')).fontSize(22)
               .fontColor([$r('sys.color.icon_secondary')]).accessibilityLevel('no')
           }.width(48).constraintSize({ minHeight: WorkbenchMetrics.touchSize }).type(ButtonType.Normal).padding(0)
             .margin({ right: 8 }).backgroundColor(Color.Transparent).stateEffect(false).enabled(this.menuAvailable)
@@ -279,6 +328,7 @@ export struct WorkbenchEntryRow {
         Divider().color($r('app.color.workbench_divider')).margin({ left: this.contentInset + 52, right: 16 })
       }
     }.width('100%').backgroundColor($r('app.color.workbench_surface'))
+    }
   }
 }
 
@@ -298,11 +348,11 @@ export struct WorkbenchMetric {
   build() {
     Column({ space: 6 }) {
       Text(this.label).fontSize(14).fontColor($r('sys.color.font_secondary'))
-      Text(this.value).fontSize(24).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
-      if (this.percentage !== undefined) {
-        Progress({ value: this.percentage, total: 100, type: ProgressType.Linear }).width('100%').height(4)
+      Stack() {
+        Progress({ value: this.percentage ?? 0, total: 100, type: ProgressType.Ring }).width(88).height(88)
           .color(this.barColor()).backgroundColor($r('app.color.workbench_divider'))
           .accessibilityText(this.label + '，' + this.value)
+        Text(this.value).fontSize(20).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
       }
     }.width('100%').padding(12).borderRadius(WorkbenchMetrics.innerRadius)
       .backgroundColor($r('app.color.workbench_subtle')).alignItems(HorizontalAlign.Start)

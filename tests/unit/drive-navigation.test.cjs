@@ -201,6 +201,7 @@ test('backup uses Photos folders and NAS downloads retain the File Station picke
   state.cancelDirectoryPicker(); state.calls.length = 0;
   method(index, 'chooseDownloadDirectory').call(state);
   assert.deepEqual(state.calls, [['directory-picker', 'download']]); assert.equal(state.model.extensions.downloadFormRequested, true);
+  state.model.extensions.setDownloadDestination = path => { state.model.extensions.downloadDestination = path; };
   method(index, 'useDownloadDirectory').call(state); assert.equal(state.model.extensions.downloadDestination, 'hidden');
   assert.equal(state.pickerMode, ''); assert.equal(state.module, 'photos');
   assert.match(index, /name === 'directory-picker'/); assert.match(photoPage, /onChooseBackup/);
@@ -307,7 +308,9 @@ test('Drive file menu keeps metadata details available without granting unavaila
 });
 test('one floating HdsTabs owns every module and file tools remain in the title bar', () => {
   assert.equal((index.match(/HdsTabs\(/g) || []).length, 1);
-  assert.doesNotMatch(drivePage + photoPage + filePage, /HdsTabs|HdsNavigation|NavPathStack/);
+  assert.doesNotMatch(drivePage + photoPage + filePage, /HdsTabs|HdsNavigation/);
+  assert.match(drivePage, /NavigationMode.Split/);
+  assert.match(filePage, /NavigationMode.Split/);
   assert.match(index, /barPosition\(BarPosition.End\).*scrollable\(false\)/);
   assert.match(index, /barOverlap\(true\).vertical\(false\)/);
   assert.match(index, /barFloatingStyle\(\{ barBottomMargin: this.navigationInset/);

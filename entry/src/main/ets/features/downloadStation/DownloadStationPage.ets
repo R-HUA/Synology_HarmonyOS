@@ -87,7 +87,7 @@ export struct DownloadStationPage {
   }
 
   private async paste(): Promise<void> {
-    try { this.model.downloadUri = (await pasteboard.getSystemPasteboard().getData()).getPrimaryText(); }
+    try { this.model.downloadUri = (await pasteboard.getSystemPasteboard().getData()).getPrimaryText(); this.model.clearTorrent(); }
     catch { this.model.downloadError = this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.task_paste_failed').id); }
   }
 
@@ -261,8 +261,17 @@ export struct DownloadStationPage {
           .onClick((_event: ClickEvent, result: PasteButtonOnClickResult): void => { if (result === PasteButtonOnClickResult.SUCCESS) { this.paste(); } })
       }.width('100%')
       TextInput({ text: this.model.downloadUri, placeholder: $r('app.string.task_link_placeholder') }).enabled(!this.model.busy)
-        .onChange((value: string): void => { this.model.downloadUri = value; })
+        .onChange((value: string): void => { this.model.clearTorrent(); this.model.downloadUri = value; })
+      Button($r('app.string.torrent_pick')).buttonStyle(ButtonStyleMode.TEXTUAL).height(48).enabled(!this.model.busy)
+        .onClick((): void => { this.model.chooseTorrent(); })
+      if (this.model.torrentName.length > 0) {
+        Text($r('app.string.torrent_selected', this.model.torrentName)).fontSize(14).fontColor($r('sys.color.font_secondary'))
+      }
       WorkbenchInfoRow({ label: $r('app.string.task_remote_directory'), value: this.model.downloadDestination.length === 0 ? '尚未选择' : '/' + this.model.downloadDestination })
+      if (this.model.downloadFreeBytes !== undefined) {
+        WorkbenchInfoRow({ label: $r('app.string.download_free_space'), value: workbenchBytes(this.model.downloadFreeBytes) })
+      }
+      WorkbenchNotice({ text: this.model.downloadSpaceError, warning: true })
       Button($r('app.string.task_choose_directory')).buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: 48 }).enabled(!this.model.busy)
         .onClick((): void => { this.creating = false; this.onChooseDirectory(); })
       ExtensionStatusPanel({ model: this.model, feature: 'nasDownloads' })
@@ -271,7 +280,7 @@ export struct DownloadStationPage {
         WorkbenchNotice({ text: '当前无法在此 NAS 创建下载任务，可查看和管理已有任务。', warning: true })
       }
       Button($r('app.string.task_remote_create')).width('100%').constraintSize({ minHeight: 48 })
-        .enabled(this.model.canCreateDownload && this.model.canWrite('nasDownloads') && this.model.downloadUri.trim().length > 0 &&
+        .enabled(this.model.canCreateDownload && this.model.canWrite('nasDownloads') && (this.model.downloadUri.trim().length > 0 || this.model.torrentName.length > 0) &&
           this.model.downloadDestination.length > 0).onClick((): void => { this.confirmCreate(); })
     }.width('100%').padding(16).alignItems(HorizontalAlign.Start)
   }

@@ -24,7 +24,9 @@ export class DriveSharingModel {
   @Trace notice: string = '';
   @Trace items: DriveLinkRecord[] = [];
   @Trace draft: DriveLinkDraft | undefined = undefined;
+  @Trace draftCount: number = 0;
   private draftEntry: DriveEntry | undefined = undefined;
+  private draftEntries: DriveEntry[] | undefined = undefined;
   private session: DriveSharingSession | undefined = undefined;
   private tail: Promise<void> = Promise.resolve();
   private foreground: boolean = true;
@@ -45,6 +47,7 @@ export class DriveSharingModel {
 
   detach(): void {
     this.session = undefined; this.items = []; this.draft = undefined; this.draftEntry = undefined;
+    this.draftEntries = undefined; this.draftCount = 0;
     this.ready = false; this.available = false; this.busy = false; this.errorText = ''; this.notice = '';
   }
   setForeground(foreground: boolean): void { this.foreground = foreground; }
@@ -59,18 +62,21 @@ export class DriveSharingModel {
   }
 
   /** 仅准备确认界面；选择项目不会调用 create_link。 */
-  prepare(entry: DriveEntry): boolean {
+  prepare(entry: DriveEntry, entries?: DriveEntry[]): boolean {
     const session = this.session;
     if (session === undefined || this.busy) { return false; }
     this.errorText = ''; this.notice = '';
     try {
-      this.requireWrite(session); driveFileLinkFields(entry);
+      this.requireWrite(session);
+      for (const item of entries ?? [entry]) { driveFileLinkFields(item); }
       this.draftEntry = copyDriveLinkEntry(entry);
+      this.draftEntries = entries?.map(copyDriveLinkEntry);
+      this.draftCount = entries?.length ?? 1;
       this.draft = { fileId: entry.fileId, name: entry.name };
       return true;
     } catch (error) { this.errorText = error instanceof NasFailure ? error.message : '此项目的文件链接无法获取。'; return false; }
   }
-  clearDraft(): void { if (!this.busy) { this.draft = undefined; this.draftEntry = undefined; } }
+  clearDraft(): void { if (!this.busy) { this.draft = undefined; this.draftEntry = undefined; this.draftEntries = undefined; } }
 
   /** 确认后先落盘 unknown，再发送唯一一次 create_link；unknown 只能人工核对关闭。 */
   async submit(): Promise<boolean> {
@@ -78,8 +84,8 @@ export class DriveSharingModel {
     const submittedSession = this.session;
     await this.run(async (session: DriveSharingSession): Promise<void> => {
       this.requireWrite(session);
-      const entry = this.draftEntry;
-      if (entry === undefined) { return; }
+      if (this.draftEntry === undefined) { return; }
+      for (const entry of this.draftEntries ?? [this.draftEntry]) {
       const fields = driveFileLinkFields(entry);
       const record: DriveLinkRecord = { id: util.generateRandomUUID(), nasOrigin: session.origin, account: session.account,
         fileId: entry.fileId, name: entry.name, createdAt: Date.now(), state: 'unknown' };
@@ -103,6 +109,8 @@ export class DriveSharingModel {
       await this.replace(session, record.id, 'completed', url);
       this.check(session); this.publish(session);
       this.notice = '文件链接已获取，访问权限以 NAS 当前设置为准。'; completed = true;
+      }
+      this.draftEntries = undefined;
     });
     return completed && this.session === submittedSession;
   }

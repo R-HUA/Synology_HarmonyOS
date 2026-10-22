@@ -19,6 +19,7 @@ import { DriveBackgroundTransfer } from './DriveBackgroundTransfer';
 import { DriveUploadRequest } from '../../core/domain/DriveTransferProtocol';
 import { DownloadSubmitResult } from '../../core/domain/DownloadSubmitResult';
 import { copyDriveUploadRemainder } from './DriveUploadSlice';
+import { TransferRates } from '../../core/domain/TransferRates';
 
 export interface DriveUploadDraft { parent: DriveEntry; uri: string; name: string; bytes: number; modifiedTime: number; }
 interface DriveTransferSession {
@@ -66,6 +67,8 @@ export class DriveTransferModel {
   private tail: Promise<void> = Promise.resolve();
   private foreground: boolean = true;
   private timer: number = -1;
+  private rates: TransferRates = new TransferRates();
+  private processed: Map<string, number> = new Map();
   get hasPending(): boolean { return this.busy || this.items.some((item: DriveTransferRecord): boolean => ['preparing', 'creating', 'waiting', 'running', 'paused', 'verifying', 'unknown'].includes(item.state)); }
   get hasActive(): boolean { return this.busy || this.items.some((item: DriveTransferRecord): boolean => ['preparing', 'creating', 'waiting', 'running', 'paused'].includes(item.state)); }
 
@@ -94,6 +97,7 @@ export class DriveTransferModel {
   }
 
   detach(): void {
+    this.rates.clear(); this.processed.clear();
     this.cancellation?.cancel();
     this.session?.background?.detach();
     if (this.timer !== -1) { clearInterval(this.timer); this.timer = -1; }
@@ -726,11 +730,19 @@ export class DriveTransferModel {
     if (this.session !== session) { throw new NasFailure(NasErrorKind.Cancelled, '连接已变化，传输已停止。'); }
   }
   private publish(session: DriveTransferSession): void {
-    if (this.session === session) { this.items = session.records.map(copyDriveTransfer); }
+    if (this.session === session) {
+      this.items = session.records.map((record: DriveTransferRecord): DriveTransferRecord => {
+        const item = copyDriveTransfer(record);
+        item.processed = record.background?.processed ?? this.processed.get(record.id);
+        item.bytesPerSecond = this.rates.sample(record.id, item.processed ?? 0, record.state);
+        return item;
+      });
+    }
   }
   private acceptProgress(session: DriveTransferSession, record: DriveTransferRecord, value: NasTransferProgress): void {
     if (this.session !== session || this.activeId !== record.id) { return; }
     this.progress = value.total !== undefined && value.total > 0 ? Math.min(99, Math.max(0, value.processed / value.total * 100)) : undefined;
+    this.processed.set(record.id, value.processed); this.publish(session);
   }
   private async run(work: (session: DriveTransferSession) => Promise<void>, requireReady: boolean = true): Promise<void> {
     const session = this.session;

@@ -86,6 +86,7 @@ async function fixture(options = {}) {
     close() {},
   };
   const { ConnectionViewModel } = loadSource('features/connection/ConnectionViewModel.ets', {
+    './TrustedDeviceStore': { TrustedDeviceStore: class { async load() { return ''; } async save() {} } },
     '../../core/domain/DsmProtocol': protocol,
     '../../core/network/NasConnector': { NasConnector: class {} },
     '../../core/network/RcpNasTransport': { RcpNasTransport: class {} },

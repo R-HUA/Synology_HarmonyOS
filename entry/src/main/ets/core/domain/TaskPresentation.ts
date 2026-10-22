@@ -22,6 +22,7 @@ export interface TaskRecordView {
   bytes?: number;
   processed?: number;
   progress?: number;
+  bytesPerSecond?: number;
   canRemove: boolean;
 }
 
@@ -43,7 +44,7 @@ export function taskRecords(scope: TaskScope, transfers: TransferQueueItem[], dr
       if (item.source === 'legacy' || item.state === 'cancelled' || scope === 'photos' && !photo || scope === 'files' && photo) { return; }
       result.push({ key: 'transfer:' + item.id, model: 'transfer', id: item.id,
         group: item.direction, name: item.name, path: item.remotePath, state: item.state, stateText: item.stateText,
-        errorText: item.errorText, bytes: item.bytes > 0 ? item.bytes : undefined, processed: item.processed,
+        errorText: item.errorText, bytes: item.bytes > 0 ? item.bytes : undefined, processed: item.processed, bytesPerSecond: item.bytesPerSecond,
         progress: item.bytes > 0 ? Math.min(100, item.processed / item.bytes * 100) : undefined,
         canRemove: item.canRemove });
     });
@@ -54,9 +55,9 @@ export function taskRecords(scope: TaskScope, transfers: TransferQueueItem[], dr
       result.push({ key: 'driveTransfer:' + item.id, model: 'driveTransfer', id: item.id,
         group: item.direction, name: item.name, path: item.locationName, state: item.state,
         stateText: driveTransferStateText(item.state), errorText: item.errorText, bytes: item.bytes,
-        processed: item.state === 'completed' ? item.bytes : item.background?.processed,
-        progress: item.state === 'completed' ? 100 : item.bytes !== undefined && item.bytes > 0 && item.background !== undefined ?
-          Math.min(99, item.background.processed / item.bytes * 100) : undefined,
+        processed: item.state === 'completed' ? item.bytes : item.processed ?? item.background?.processed, bytesPerSecond: item.bytesPerSecond,
+        progress: item.state === 'completed' ? 100 : item.bytes !== undefined && item.bytes > 0 && (item.processed ?? item.background?.processed) !== undefined ?
+          Math.min(99, (item.processed ?? item.background!.processed) / item.bytes * 100) : undefined,
         canRemove: taskEnded(item.state) });
     });
     actions.forEach((item: DriveActionRecord): void => {

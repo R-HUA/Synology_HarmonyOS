@@ -20,7 +20,7 @@ export class PhotoBackupSettings {
 export interface LocalBackupAsset {
   uri: string; name: string; bytes: number; modifiedAt: number; takenAt: number; addedAt: number; album: string;
 }
-export interface PhotoBackupSnapshot { version: number; scope: string; settings: PhotoBackupSettings; completed: string[]; }
+export interface PhotoBackupSnapshot { version: number; scope: string; settings: PhotoBackupSettings; completed: string[]; lastSuccessAt?: number; }
 
 /** 成功标识包含内容版本与目标，修改文件或目标目录后可以再次备份。 */
 export function backupAssetKey(asset: LocalBackupAsset, directory: string, digest: string): string {
@@ -42,6 +42,9 @@ export function backupDirectory(settings: PhotoBackupSettings, model: string, as
 export function decodePhotoBackup(text: string, scope: string): PhotoBackupSnapshot {
   const data = nasRecord(JSON.parse(text) as Object);
   const settings = nasRecord(data['settings']);
+  if (data['lastSuccessAt'] !== undefined && (!Number.isSafeInteger(data['lastSuccessAt']) || (data['lastSuccessAt'] as number) < 0)) {
+    throw new NasFailure(NasErrorKind.Protocol, '备份成功时间无效。');
+  }
   if (data['version'] !== 1 || data['scope'] !== scope || !Array.isArray(data['completed']) ||
     !(data['completed'] as Object[]).every((key: Object): boolean => typeof key === 'string') ||
     !['continue', 'new', 'all'].includes(settings['mode'] as string) || !['date', 'album', 'flat'].includes(settings['layout'] as string) ||
@@ -56,5 +59,7 @@ export function decodePhotoBackup(text: string, scope: string): PhotoBackupSnaps
   result.wifiOnly = settings['wifiOnly'] as boolean; result.chargingOnly = settings['chargingOnly'] as boolean;
   result.since = settings['since'] as number;
   if (result.directory.length > 0) { result.directory.split('/').forEach(validateTransferName); }
-  return { version: 1, scope, settings: result, completed: data['completed'] as string[] };
+  const snapshot: PhotoBackupSnapshot = { version: 1, scope, settings: result, completed: data['completed'] as string[] };
+  if (data['lastSuccessAt'] !== undefined) { snapshot.lastSuccessAt = data['lastSuccessAt'] as number; }
+  return snapshot;
 }

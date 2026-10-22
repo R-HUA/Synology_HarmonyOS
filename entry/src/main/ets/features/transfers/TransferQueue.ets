@@ -4,6 +4,7 @@ import { fileIo, fileUri, picker } from '@kit.CoreFileKit';
 import { sha256 } from '../../platform/SdkDigest';
 import { sdkTransferAgent } from '../../platform/SdkTransferAgent';
 import { util } from '@kit.ArkTS';
+import { TransferRates } from '../../core/domain/TransferRates';
 import { DownloadSubmitResult } from '../../core/domain/DownloadSubmitResult';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { NasConnector, NasTransferPlan } from '../../core/network/NasConnector';
@@ -61,7 +62,9 @@ export class TransferQueue {
   private polling: boolean = false;
   private backupAllowed: boolean = false;
   private photoUploads: Map<string, NasTransferCancellation> = new Map();
+  private rates: TransferRates = new TransferRates();
   backupCompleted: ((key: string) => Promise<void>) | undefined = undefined;
+  photosChanged: (() => void) | undefined = undefined;
 
   async attach(context: common.UIAbilityContext, connector: NasConnector, origin: string, account: string,
     canUpload: () => boolean = (): boolean => true, insecureTls: boolean = false): Promise<void> {
@@ -107,6 +110,7 @@ export class TransferQueue {
 
   /** 离开页面仅解除监听；账号退出需先 await stopAll()。 */
   detach(): void {
+    this.rates.clear(); this.photosChanged = undefined;
     this.photoUploads.forEach((cancellation: NasTransferCancellation): void => cancellation.cancel());
     this.photoUploads.clear();
     this.backupAllowed = false;
@@ -184,6 +188,22 @@ export class TransferQueue {
       }
       await this.save(session);
     }, false);
+  }
+
+  /** 暂停与继续沿用系统任务 ID，不重新提交上传。 */
+  async setPaused(id: string, paused: boolean): Promise<void> {
+    const session = this.requireSession();
+    await this.operation(session, async (): Promise<void> => {
+      const record = session.records.find((item: TransferQueueRecord): boolean => item.id === id)!;
+      if (record.taskId.length === 0 || !(paused ? ['running', 'waiting'].includes(record.state) : record.state === 'paused')) {
+        throw new NasFailure(NasErrorKind.InvalidInput, '当前任务无法暂停或继续，请刷新状态。');
+      }
+      if (!paused && record.source === 'photoBackup' && !this.backupAllowed) { throw new NasFailure(NasErrorKind.InvalidInput, '自动备份条件尚未满足。'); }
+      const task = await sdkTransferAgent.getTask(session.context, record.taskId);
+      if (paused) { await sdkTransferAgent.pause(task); record.state = 'paused'; }
+      else { await sdkTransferAgent.resume(task); record.state = 'running'; this.bind(session, record, task); }
+      record.errorText = ''; await this.save(session);
+    });
   }
 
   async download(entry: NasFileEntry): Promise<DownloadSubmitResult> {
@@ -730,7 +750,8 @@ export class TransferQueue {
       }
       await this.save(session); this.unbind(record.taskId);
     } else if (progress.state === request.agent.State.PAUSED) {
-      record.state = 'waiting'; record.errorText = record.protocol === 'photos' && record.source === 'photoBackup' ? '' : '系统任务已暂停，请取消后重新处理。'; await this.save(session);
+      record.state = record.state !== 'paused' && record.protocol === 'photos' && record.source === 'photoBackup' && !this.backupAllowed ? 'waiting' : 'paused';
+      record.errorText = ''; await this.save(session);
     } else {
       const state = progress.state === request.agent.State.WAITING ? 'waiting' : 'running';
       if (record.state !== state) { record.state = state; record.errorText = ''; await this.save(session); }
@@ -804,6 +825,7 @@ export class TransferQueue {
     record.state = 'completed'; record.processed = record.bytes; record.errorText = '';
     await this.save(session);
     if (record.backupKey !== undefined && this.backupCompleted !== undefined) { await this.backupCompleted(record.backupKey); }
+    if (record.protocol === 'photos') { this.photosChanged?.(); }
     this.unbind(record.taskId);
     // 先保存可验证结果，再释放含凭据的系统配置。
     if (record.taskId.length > 0) { await this.removeTask(record.taskId); record.taskId = ''; await this.save(session); }
@@ -936,7 +958,15 @@ export class TransferQueue {
   }
 
   private publish(session: QueueSession): void {
-    if (this.session === session) { this.items = session.records.map(transferItem); }
+    if (this.session === session) {
+      this.items = session.records.map((record: TransferQueueRecord): TransferQueueItem => {
+        const item = transferItem(record);
+        item.bytesPerSecond = this.rates.sample(record.id, record.processed, record.state);
+        item.canPause = record.taskId.length > 0 && ['running', 'waiting'].includes(record.state);
+        item.canResume = record.taskId.length > 0 && record.state === 'paused' && (record.source !== 'photoBackup' || this.backupAllowed);
+        return item;
+      });
+    }
   }
 
   private localPath(session: QueueSession, record: TransferQueueRecord): string { return session.directory + '/' + record.localName; }

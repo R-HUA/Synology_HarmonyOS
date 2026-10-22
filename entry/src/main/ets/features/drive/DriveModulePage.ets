@@ -1,6 +1,8 @@
 import { fileUri } from '@kit.CoreFileKit';
 import { uiMaterial } from '@kit.ArkUI';
-import { DriveEntry, DriveEntryKind, DriveView, driveViewLabel, driveEntryRenderKey } from '../../core/domain/DriveProtocol';
+import { DriveEntry, DriveEntryKind, DriveView, driveViewLabel, driveEntryRenderKey, DriveSortBy } from '../../core/domain/DriveProtocol';
+import { interactionFeedback } from '../../platform/InteractionFeedback';
+import { DriveOriginalPage } from './DriveOriginalUi';
 import { driveActionAllowed } from '../../core/domain/DriveActionProtocol';
 import type { DriveAction } from '../../core/domain/DriveActionProtocol';
 import { canPreviewDriveOriginal, canPreviewDriveMedia } from '../../core/domain/DriveOriginalProtocol';
@@ -22,6 +24,8 @@ export struct DriveModulePage {
   @Param topInset: number = 0;
   @Param bottomInset: number = 0;
   @Param active: boolean = true;
+  @Param wide: boolean = false;
+  private detailStack: NavPathStack = new NavPathStack();
   @Param searchPage: boolean = false;
   @Param moreView: string = '';
   @Param moreViews: DriveView[] = [];
@@ -32,13 +36,43 @@ export struct DriveModulePage {
   @Event onUploadTo: (entry: DriveEntry) => void = (_entry: DriveEntry): void => {};
   @Event onOpenAction: (action: DriveAction, entry?: DriveEntry) => void =
     (_action: DriveAction, _entry?: DriveEntry): void => {};
+  @Event onOpenBatchAction: (action: DriveAction, entries: DriveEntry[]) => void = (): void => {};
   @Event onOpenOriginal: (entry: DriveEntry) => void = (_entry: DriveEntry): void => {};
   @Event onOpenLinks: (entry?: DriveEntry) => void = (_entry?: DriveEntry): void => {};
+  @Event onOpenBatchLinks: (entries: DriveEntry[]) => void = (): void => {};
   @Event onCustomize: () => void = (): void => {};
   @Local private detailVisible: boolean = false;
   @Local private detailEntry: DriveEntry | undefined = undefined;
   @Local private refreshing: boolean = false;
   @Local private refreshedCount: number | undefined = undefined;
+  @Local private grid: boolean = false;
+  @Local private selecting: boolean = false;
+  @Local private selectedIds: string[] = [];
+  @Local private sizeSort: boolean = false;
+  private breadcrumbScroller: Scroller = new Scroller();
+
+  @Monitor('model.drive.trail', 'expectedView', 'active')
+  private resetSelection(): void {
+    this.selecting = false; this.selectedIds = [];
+    setTimeout((): void => { this.breadcrumbScroller.scrollEdge(Edge.End); }, 0);
+  }
+
+  private entries(): DriveEntry[] {
+    return this.sizeSort ? this.model.drive.entries.slice().sort((left: DriveEntry, right: DriveEntry): number =>
+      (left.sizeBytes ?? 0) - (right.sizeBytes ?? 0)) : this.model.drive.entries;
+  }
+
+  private toggleSelection(entry: DriveEntry): void {
+    this.selectedIds = this.selectedIds.includes(entry.fileId) ? this.selectedIds.filter((id: string): boolean => id !== entry.fileId) : this.selectedIds.concat([entry.fileId]);
+  }
+
+  private sortMenu(): MenuElement[] {
+    return [{ value: this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.sort_name').id), action: (): void => {
+      this.sizeSort = false; this.model.drive.sort(DriveSortBy.Name, false);
+    } }, { value: this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.sort_time').id), action: (): void => {
+      this.sizeSort = false; this.model.drive.sort(DriveSortBy.ModifiedTime, true);
+    } }, { value: this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.sort_size_loaded').id), action: (): void => { this.sizeSort = true; } }];
+  }
   private sheetMaterial: uiMaterial.Material =
     new uiMaterial.ImmersiveMaterial({ style: uiMaterial.ImmersiveStyle.ULTRA_THICK });
   private sheetMaterialAvailable: boolean = uiMaterial.isImmersiveMaterialSupported();
@@ -99,7 +133,7 @@ export struct DriveModulePage {
   /** 面包屑直接使用浏览模型的导航栈。 */
   @Builder
   driveBreadcrumb() {
-    Scroll() {
+    Scroll(this.breadcrumbScroller) {
       Row({ space: 4 }) {
         ForEach(this.model.drive.trail, (item: DriveTrailItem, index: number): void => {
           Button(index === 0 && this.model.drive.view === DriveView.Search ?
@@ -115,7 +149,7 @@ export struct DriveModulePage {
         }, (item: DriveTrailItem): string =>
           this.model.drive.view + ':' + (item.fileId ?? 'root') + ':' + item.name)
       }.justifyContent(FlexAlign.Start)
-    }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%').align(Alignment.Start)
+    }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%').height(40).align(Alignment.Start)
   }
 
   @Builder
@@ -135,24 +169,46 @@ export struct DriveModulePage {
   }
 
   @Builder
+  listHeader() {
+    Column({ space: 4 }) {
+      if (this.refreshedCount !== undefined) {
+        Text(this.refreshedCount.toString() + ' 项').fontSize(12).fontColor($r('sys.color.font_secondary'))
+          .width('100%').height(32).textAlign(TextAlign.Center)
+      }
+      this.driveNotices()
+    }.width('100%').alignItems(HorizontalAlign.Start).padding({ top: 4, bottom: 4 })
+  }
+
+  @Builder
   driveFileList() {
-    Stack({ alignContent: Alignment.Center }) {
+    Column() {
+      Column() {
+        if (this.searchPage) { this.driveSearch() }
+        if (this.canRenderEntries() && this.model.drive.trail.length > 1) { this.driveBreadcrumb() }
+        Row() {
+          if (this.selecting) {
+            Text($r('app.string.file_selected_count', this.selectedIds.length)).fontSize(16).layoutWeight(1)
+            Button($r('app.string.file_select_loaded')).height(48).buttonStyle(ButtonStyleMode.TEXTUAL)
+              .onClick((): void => { this.selectedIds = this.model.drive.entries.map((entry: DriveEntry): string => entry.fileId); })
+            Button($r('app.string.action_cancel')).height(48).buttonStyle(ButtonStyleMode.TEXTUAL)
+              .onClick((): void => { this.selecting = false; this.selectedIds = []; })
+          } else {
+          Blank()
+          Button() { SymbolGlyph($r('sys.symbol.slider_horizontal_2')).fontSize(20).fontColor([$r('sys.color.icon_secondary')]) }
+            .width(48).height(40).backgroundColor($r('app.color.workbench_subtle')).margin({ right: 8 })
+            .bindMenu(this.sortMenu()).accessibilityText($r('app.string.file_sort'))
+          Button() { SymbolGlyph(this.grid ? $r('sys.symbol.list_bullet') : $r('sys.symbol.square_grid_2x2'))
+            .fontSize(20).fontColor([$r('sys.color.icon_secondary')]) }
+            .width(48).height(40).backgroundColor($r('app.color.workbench_subtle'))
+            .accessibilityText(this.grid ? $r('app.string.view_list') : $r('app.string.view_grid'))
+            .onClick((): void => { this.grid = !this.grid; })
+          }
+        }.width('100%').constraintSize({ minHeight: 48 })
+      }.padding({ left: 16, right: 16, top: this.topInset }).width('100%')
+    Stack({ alignContent: Alignment.Bottom }) {
       Refresh({ refreshing: $$this.refreshing }) {
       List({ space: 0, scroller: this.scroller }) {
-        ListItem() {
-          Column({ space: 4 }) {
-            if (this.refreshedCount !== undefined) {
-              Text(this.refreshedCount.toString() + ' 项').fontSize(12).fontColor($r('sys.color.font_secondary'))
-                .width('100%').height(32).textAlign(TextAlign.Center)
-            }
-            if (this.searchPage) { this.driveSearch() }
-            if (this.canRenderEntries() && (this.model.drive.trail.length > 1 || this.searchPage)) {
-              this.driveBreadcrumb()
-            }
-            this.driveNotices()
-          }.width('100%').alignItems(HorizontalAlign.Start)
-            .padding({ top: 4, bottom: 4 })
-        }
+        ListItemGroup({ header: this.listHeader }) {
         if (this.canRenderEntries()) {
           if (!this.model.drive.busy && this.model.drive.entries.length === 0) {
             ListItem() {
@@ -165,9 +221,15 @@ export struct DriveModulePage {
               }
             }
           }
-          ForEach(this.model.drive.entries, (entry: DriveEntry, index: number): void => {
+          ForEach(this.entries(), (entry: DriveEntry, index: number): void => {
             ListItem() {
-              WorkbenchEntryRow({ title: entry.name, subtitle: this.driveRowSubtitle(entry),
+              Row() {
+              if (this.selecting) {
+                Checkbox().select(this.selectedIds.includes(entry.fileId)).width(24).height(24).margin({ left: 12 })
+                  .onChange((value: boolean): void => { if (value !== this.selectedIds.includes(entry.fileId)) { this.toggleSelection(entry); } })
+              }
+              WorkbenchEntryRow({ title: entry.name, subtitle: this.driveRowSubtitle(entry), grid: this.grid,
+                  transitionId: 'drive-' + entry.fileId,
                   thumbnail: this.model.driveThumbnails.path(entry).length > 0 ?
                     fileUri.getUriFromPath(this.model.driveThumbnails.path(entry)) : '',
                   icon: entry.kind === DriveEntryKind.Folder ? $r('sys.symbol.folder') : $r('sys.symbol.doc'),
@@ -176,13 +238,12 @@ export struct DriveModulePage {
                     this.model.drive.view !== DriveView.Trash &&
                     (entry.kind === DriveEntryKind.Folder || entry.capabilities.canDownload &&
                       this.model.driveTransfers.ready && !this.model.driveTransfers.busy),
-                  menu: this.driveEntryMenu(entry), menuAvailable: !this.model.busy && !this.model.drive.busy,
+                  menu: this.selecting ? [] : this.driveEntryMenu(entry), menuAvailable: !this.model.busy && !this.model.drive.busy,
                   showDivider: index < this.model.drive.entries.length - 1,
-                  onOpen: (): void => { this.openDriveEntry(entry); } })
-            }.borderRadius({ topLeft: index === 0 ? WorkbenchMetrics.cardRadius : 0,
-              topRight: index === 0 ? WorkbenchMetrics.cardRadius : 0,
-              bottomLeft: index === this.model.drive.entries.length - 1 ? WorkbenchMetrics.cardRadius : 0,
-              bottomRight: index === this.model.drive.entries.length - 1 ? WorkbenchMetrics.cardRadius : 0 }).clip(true)
+                  onLongPress: (): void => { interactionFeedback(); this.selecting = true; this.selectedIds = [entry.fileId]; },
+                  onOpen: (): void => { if (this.selecting) { this.toggleSelection(entry); } else { this.openDriveEntry(entry); } } }).layoutWeight(1)
+              }.width('100%')
+            }.borderRadius(this.grid ? WorkbenchMetrics.cardRadius : 0).clip(true)
             .onVisibleAreaChange([0], (visible: boolean, ratio: number): void => {
               this.model.driveThumbnails.setVisible(entry, visible && ratio > 0 && this.canRenderEntries() &&
                 this.model.drive.view !== DriveView.Trash);
@@ -196,6 +257,12 @@ export struct DriveModulePage {
               }.width('100%').height(50).justifyContent(FlexAlign.Center)
             }
           }
+          if (!this.model.drive.hasMore && this.model.drive.errorText.length === 0 && this.model.drive.entries.length > 0) {
+            ListItem() {
+              Text($r('app.string.file_total_count', this.model.drive.total ?? this.model.drive.entries.length))
+                .fontSize(12).fontColor($r('sys.color.font_secondary')).width('100%').height(40).textAlign(TextAlign.Center)
+            }
+          }
         } else if (!this.model.drive.busy && !this.searchPage) {
           ListItem() {
             Column({ space: 8 }) {
@@ -207,9 +274,11 @@ export struct DriveModulePage {
             }.width('100%')
           }
         }
+        }
       }.width('100%').height('100%').scrollBar(BarState.Auto)
-        .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin })
-        .contentEndOffset(this.bottomInset).edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+        .lanes(this.grid && this.model.drive.entries.length > 0 ? 2 : 1)
+        .padding({ left: this.grid ? WorkbenchMetrics.pageMargin : 0, right: this.grid ? WorkbenchMetrics.pageMargin : 0 })
+        .contentEndOffset(this.bottomInset + (this.selecting ? 128 : 0)).edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
         .onWillScroll((offset: number, _state: ScrollState, source: ScrollSource): void => {
           if (offset > 0 && (source === ScrollSource.DRAG || source === ScrollSource.FLING)) {
             this.refreshedCount = undefined;
@@ -218,7 +287,7 @@ export struct DriveModulePage {
         .onReachEnd((): void => {
           if (this.canRenderEntries() && !this.model.busy && this.model.drive.errorText.length === 0) { this.model.drive.loadMore(); }
         })
-      }.width('100%').height('100%').padding({ top: this.topInset })
+      }.width('100%').height('100%')
         .pullToRefresh(this.canRenderEntries() && !this.model.busy && !this.model.drive.busy)
         .onRefreshing((): void => { this.refreshFiles(); })
       if (this.active && this.model.drive.listLoading === 'content' && !this.refreshing) {
@@ -227,7 +296,55 @@ export struct DriveModulePage {
         }.width('100%').height('100%').padding({ top: this.topInset, bottom: this.bottomInset })
           .justifyContent(FlexAlign.Center).hitTestBehavior(HitTestMode.None)
       }
-    }.width('100%').height('100%').backgroundColor($r('app.color.workbench_background'))
+      if (this.selecting) { this.selectionBar() }
+    }.width('100%').layoutWeight(1)
+    }.width('100%').height('100%').backgroundColor(this.grid ? $r('app.color.workbench_background') : $r('app.color.workbench_surface'))
+  }
+
+  @Builder
+  selectionBar() {
+    Column() {
+      Row() {
+        Text($r('app.string.file_selected_count', this.selectedIds.length)).layoutWeight(1).fontSize(14)
+        Button($r('app.string.file_select_loaded')).buttonStyle(ButtonStyleMode.TEXTUAL).height(48)
+          .onClick((): void => { this.selectedIds = this.model.drive.entries.map((entry: DriveEntry): string => entry.fileId); })
+        Button($r('app.string.action_cancel')).buttonStyle(ButtonStyleMode.TEXTUAL).height(48)
+          .onClick((): void => { this.selecting = false; this.selectedIds = []; })
+      }.width('100%')
+      Flex({ wrap: FlexWrap.Wrap }) {
+      Button($r('app.string.preview_download')).height(48)
+        .enabled(this.selectedIds.length > 0 && this.model.drive.entries.filter((entry: DriveEntry): boolean => this.selectedIds.includes(entry.fileId))
+          .every((entry: DriveEntry): boolean => entry.kind === DriveEntryKind.File && entry.capabilities.canDownload))
+        .onClick((): void => { this.downloadSelected(); })
+      ForEach(['move', 'copy', 'delete'] as DriveAction[], (action: DriveAction): void => {
+        Button(action === 'move' ? $r('app.string.preview_move') : action === 'copy' ? $r('app.string.preview_copy') : $r('app.string.preview_delete'))
+          .height(48).buttonStyle(ButtonStyleMode.TEXTUAL)
+          .enabled(this.selectedIds.length > 0 && this.batchActionAllowed(action) && !this.model.driveActions.busy && !this.model.driveActions.hasPending &&
+            this.model.drive.entries.filter((entry: DriveEntry): boolean => this.selectedIds.includes(entry.fileId)).every((entry: DriveEntry): boolean => driveActionAllowed(entry, action)))
+          .onClick((): void => { this.onOpenBatchAction(action, this.model.drive.entries.filter((entry: DriveEntry): boolean => this.selectedIds.includes(entry.fileId))); })
+      }, (action: DriveAction): string => action)
+      Button($r('app.string.preview_share')).height(48).buttonStyle(ButtonStyleMode.TEXTUAL)
+        .enabled(this.selectedIds.length > 0 && this.model.driveSharing.available && !this.model.driveSharing.hasPending &&
+          this.model.drive.entries.filter((entry: DriveEntry): boolean => this.selectedIds.includes(entry.fileId)).every(driveFileLinkAllowed))
+        .onClick((): void => { this.onOpenBatchLinks(this.model.drive.entries.filter((entry: DriveEntry): boolean => this.selectedIds.includes(entry.fileId))); })
+      }.width('100%')
+    }.width('100%').padding(12).margin({ bottom: this.bottomInset }).borderRadius(24).backgroundColor($r('app.color.workbench_surface_elevated'))
+  }
+
+  private async downloadSelected(): Promise<void> {
+    const origin = this.model.address, account = this.model.account;
+    for (const entry of this.model.drive.entries.filter((entry: DriveEntry): boolean => this.selectedIds.includes(entry.fileId))) {
+      if (origin !== this.model.address || account !== this.model.account) { return; }
+      await this.model.driveTransfers.download(entry);
+      if (this.model.driveTransfers.errorText.length > 0) { return; }
+    }
+    this.selecting = false; this.selectedIds = []; this.onOpenTransfers();
+  }
+
+  private batchActionAllowed(action: DriveAction): boolean {
+    if (this.model.drive.trail.length !== 1) { return true; }
+    return action === 'copy' ? this.model.drive.view !== DriveView.TeamFolders :
+      ![DriveView.TeamFolders, DriveView.SharedWithMe, DriveView.SharedWithOthers].includes(this.model.drive.view);
   }
 
   @Builder
@@ -328,6 +445,11 @@ export struct DriveModulePage {
     if (this.model.drive.busy || !entry.capabilities.canRead) { return; }
     if (entry.kind === DriveEntryKind.Folder) { this.model.drive.openFolder(entry); return; }
     if (this.model.drive.view === DriveView.Trash) { return; }
+    if (this.wide) {
+      this.detailEntry = entry; this.detailStack.replacePathByName('detail', undefined);
+      if (canPreviewDriveMedia(entry)) { this.model.driveOriginal.open(entry); }
+      return;
+    }
     if (canPreviewDriveMedia(entry)) { this.openDriveOriginal(entry); return; }
     if (!entry.capabilities.canDownload) { return; }
     if (this.model.driveTransfers.canPreview(entry)) { this.onDownload(entry, true); }
@@ -373,6 +495,17 @@ export struct DriveModulePage {
       .nestedScroll({ scrollForward: NestedScrollMode.PARENT_FIRST, scrollBackward: NestedScrollMode.SELF_FIRST })
   }
 
+  @Builder
+  wideDetails(_name: string) {
+    NavDestination() {
+      Column() {
+        if (this.detailEntry !== undefined && canPreviewDriveMedia(this.detailEntry)) {
+          DriveOriginalPage({ model: this.model.driveOriginal, onDownload: (): void => { this.onDownload(this.detailEntry!, false); } })
+        } else { this.entryDetails() }
+      }.width('100%').height('100%').padding({ top: this.topInset, bottom: this.bottomInset })
+    }.hideTitleBar(true)
+  }
+
   build() {
     Column() {
       if (!this.active) {
@@ -380,9 +513,12 @@ export struct DriveModulePage {
       } else if (this.tabId === 'more' && this.moreView.length === 0) {
         this.driveMore()
       } else {
-        this.driveFileList()
+        if (this.wide) {
+          Navigation(this.detailStack) { this.driveFileList() }.mode(NavigationMode.Split).navBarWidth('40%')
+            .hideTitleBar(true).hideToolBar(true).navDestination(this.wideDetails).width('100%').height('100%')
+        } else { this.driveFileList() }
       }
-    }.width('100%').constraintSize({ maxWidth: 960 }).height('100%')
+    }.width('100%').height('100%')
       .backgroundColor($r('app.color.workbench_background'))
       .bindSheet($$this.detailVisible, this.entryDetails(), {
         height: SheetSize.MEDIUM, detents: [SheetSize.MEDIUM, SheetSize.LARGE], title: { title: '文件详情' },

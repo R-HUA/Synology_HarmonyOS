@@ -1,4 +1,4 @@
-import { nasRecord, nasOriginScheme, NasErrorKind, NasFailure, normalizeNasOrigin } from './DsmProtocol';
+import { nasRecord, nasInteger, nasOriginScheme, NasErrorKind, NasFailure, normalizeNasOrigin } from './DsmProtocol';
 
 export type NasConnectionRouteKind = 'lan' | 'remote' | 'private';
 
@@ -13,6 +13,7 @@ export interface NasConnectionAddress {
   /** 风险确认只适用于本记录的完整地址与证书策略。 */
   riskConfirmedAt?: number;
   device?: NasConnectionDeviceBinding;
+  lastLoginAt?: number;
 }
 
 export interface NasConnectionDeviceIdentity { model: string; serial: string; }
@@ -70,7 +71,7 @@ function addressInsecureTls(input: Object | undefined, origin: string): boolean 
 
 export function validateConnectionAddress(input: Object): NasConnectionAddress {
   const row = addressRecord(input);
-  validateFields(row, ['origin', 'name', 'kind', 'insecureTls', 'riskConfirmedAt', 'device']);
+  validateFields(row, ['origin', 'name', 'kind', 'insecureTls', 'riskConfirmedAt', 'device', 'lastLoginAt']);
   if (typeof row['origin'] !== 'string') {
     throw new NasFailure(NasErrorKind.InvalidInput, '请输入连接地址。');
   }
@@ -93,6 +94,7 @@ export function validateConnectionAddress(input: Object): NasConnectionAddress {
     address.riskConfirmedAt = confirmedAt;
   }
   if (row['device'] !== undefined) { address.device = validateDeviceBinding(row['device']); }
+  if (row['lastLoginAt'] !== undefined) { address.lastLoginAt = nasInteger(row['lastLoginAt']); }
   return address;
 }
 

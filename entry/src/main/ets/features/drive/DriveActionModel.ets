@@ -12,7 +12,7 @@ import { NasConnector } from '../../core/network/NasConnector';
 import { DriveActionStore } from './DriveActionStore';
 import { DriveBrowserModel } from './DriveBrowserModel';
 
-export interface DriveActionDraft { action: DriveAction; entry: DriveEntry; target?: DriveEntry; conflicts?: number; }
+export interface DriveActionDraft { action: DriveAction; entry: DriveEntry; entries?: DriveEntry[]; target?: DriveEntry; conflicts?: number; }
 interface DriveActionSession {
   context: common.UIAbilityContext; origin: string; account: string; adapter: DriveActionAdapter;
   store: DriveActionStore; records: DriveActionRecord[]; onSessionFailure: (error: NasFailure) => Promise<void>;
@@ -84,12 +84,12 @@ export class DriveActionModel {
     }, false);
   }
 
-  async prepare(entry: DriveEntry, action: DriveAction): Promise<boolean> {
+  async prepare(entry: DriveEntry, action: DriveAction, entries?: DriveEntry[]): Promise<boolean> {
     let prepared = false;
     await this.run(async (session: DriveActionSession): Promise<void> => {
       this.requireWrite(session);
-      if (!driveActionAllowed(entry, action)) { throw new NasFailure(NasErrorKind.Permission, '没有权限执行此操作。'); }
-      this.draft = { action, entry };
+      if (!(entries ?? [entry]).every((item: DriveEntry): boolean => driveActionAllowed(item, action))) { throw new NasFailure(NasErrorKind.Permission, '没有权限执行此操作。'); }
+      this.draft = { action, entry, entries };
       this.newName = action === 'create' ? '' : entry.name;
       this.destinations.reset();
       if (action === 'move' || action === 'copy') { await this.destinations.open(); this.check(session); }
@@ -105,10 +105,14 @@ export class DriveActionModel {
       this.requireWrite(session);
       const draft = this.draft;
       if (draft === undefined || draft.action !== 'move' && draft.action !== 'copy') { return; }
-      this.draft = { action: draft.action, entry: draft.entry };
-      const conflicts = await session.adapter.preflight({ action: draft.action, entry: draft.entry, target });
+      this.draft = { action: draft.action, entry: draft.entry, entries: draft.entries };
+      let conflicts = 0;
+      for (const entry of draft.entries ?? [draft.entry]) {
+        conflicts += await session.adapter.preflight({ action: draft.action, entry, target });
+        this.check(session);
+      }
       this.check(session);
-      this.draft = { action: draft.action, entry: draft.entry, target, conflicts };
+      this.draft = { action: draft.action, entry: draft.entry, entries: draft.entries, target, conflicts };
     });
   }
 
@@ -119,7 +123,11 @@ export class DriveActionModel {
       this.requireWrite(session);
       const draft = this.draft;
       if (draft === undefined) { return; }
-      const input: DriveActionInput = { action: draft.action, entry: draft.entry, name: this.newName, target: draft.target };
+      for (const entry of draft.entries ?? [draft.entry]) {
+        driveActionFields({ action: draft.action, entry, name: this.newName, target: draft.target });
+      }
+      for (const entry of draft.entries ?? [draft.entry]) {
+      const input: DriveActionInput = { action: draft.action, entry, name: this.newName, target: draft.target };
       driveActionFields(input);
       if ((input.action === 'move' || input.action === 'copy') && draft.conflicts === undefined) {
         throw new NasFailure(NasErrorKind.InvalidInput, '请先选择并检查目标文件夹。');
@@ -159,6 +167,7 @@ export class DriveActionModel {
       this.draft = undefined;
       this.newName = '';
       this.notice = record.state === 'completed' ? '操作已完成，请刷新目录核对。' : '操作已提交，可在任务页查看状态。';
+      }
     });
     return sent && this.session === submittedSession;
   }

@@ -25,6 +25,8 @@ async function fixture(options = {}) {
     .replace(/^@ObservedV2\s*$/gm, '').replace(/@Trace\s+/g, '');
   const output = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS } });
   const mocks = {
+    '@kit.CoreFileKit': { fileIo: {}, fileUri: {}, picker: {} },
+    '@kit.ArkTS': { util: {} },
     '@kit.PerformanceAnalysisKit': { hilog: { error() {} } },
     '../../core/domain/DsmProtocol': protocol,
     '../../core/domain/ExtensionWriteState': state,

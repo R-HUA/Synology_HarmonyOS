@@ -3,6 +3,7 @@ import { NasConnector } from '../../core/network/NasConnector';
 import { RcpNasTransport } from '../../core/network/RcpNasTransport';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { NasSessionStore, NasSessionStoreFailure } from './NasSessionStore';
+import { TrustedDeviceStore } from './TrustedDeviceStore';
 import { common } from '@kit.AbilityKit';
 import { NasPhotoAlbum, NasPhotoItem, NasSharedAlbum, PhotosSpace } from '../../core/domain/PhotosProtocol';
 import { TransferQueue, TransferUploadSource } from '../transfers/TransferQueue';
@@ -36,6 +37,7 @@ export class ConnectionViewModel {
   @Trace password: string = '';
   @Trace otp: string = '';
   @Trace needsOtp: boolean = false;
+  @Trace trustDevice: boolean = false;
   @Trace busy: boolean = false;
   @Trace mutationInFlight: boolean = false;
   @Trace sessionTransition: boolean = false;
@@ -106,6 +108,7 @@ export class ConnectionViewModel {
   private history: string[] = [];
   private nextFileOffset: number = 0;
   private store: NasSessionStore = new NasSessionStore();
+  private trustedDevice: TrustedDeviceStore = new TrustedDeviceStore();
   private fileTaskStore: FileTaskStore = new FileTaskStore();
   private context: common.UIAbilityContext | undefined = undefined;
   private submittedShares: string[] = [];
@@ -320,7 +323,9 @@ export class ConnectionViewModel {
     this.errorText = '';
     let authorized = false;
     try {
-      await connector.login(this.account, this.password, this.otp);
+      const deviceId = await this.trustedDevice.load(this.address, this.account.trim());
+      const trustedId = await connector.login(this.account, this.password, this.otp,
+        { trustDevice: this.trustDevice && this.needsOtp, deviceId });
       authorized = true;
       if (ticket !== this.generation) { return; }
       this.password = '';
@@ -328,6 +333,7 @@ export class ConnectionViewModel {
       this.needsOtp = false;
       await this.verifyDevice(connector, this.address, this.account);
       if (ticket !== this.generation) { return; }
+      if (this.trustDevice && trustedId.length > 0) { await this.trustedDevice.save(this.address, this.account.trim(), trustedId); }
       this.authenticated = true;
       hilog.info(0x0000, 'NasConnection', 'operation=login result=success');
     } catch (error) {
@@ -940,6 +946,7 @@ export class ConnectionViewModel {
       await this.queue.attach(this.context, connector, this.address, this.account.trim(),
         (): boolean => ticket === this.generation && connector === this.connector && this.canWriteAccount('transferQueue'), this.insecureTls);
       if (ticket !== this.generation) { return; }
+      this.queue.photosChanged = (): void => { if (ticket === this.generation) { this.photoLibrary.uploadsChanged(); } };
       await this.photoBackup.attach(this.context, connector, this.queue, this.address, this.account.trim());
     }
     catch (error) {

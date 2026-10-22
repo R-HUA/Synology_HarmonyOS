@@ -45,6 +45,8 @@ export interface NasEnvironment { model: string; dsmVersion: string; fileStation
 /** 首页设备卡所需的身份信息；读不到的字段一律留空串，由界面兜底。 */
 export interface NasDeviceIdentity { model: string; serverName: string; }
 export interface NasTransferPlan { address: string; fields: NasFormField[]; session: NasLoginSession; }
+/** 可选的可信设备参数；设备凭证由调用方按服务器和账号隔离保存。 */
+export interface NasLoginOptions { trustDevice?: boolean; deviceId?: string; }
 
 export const NAS_DISCOVERY_QUERY = 'SYNO.API.Auth,SYNO.FileStation.List,SYNO.FileStation.Info,' +
   'SYNO.FileStation.Upload,SYNO.FileStation.Download,SYNO.Foto.Browse.Item,SYNO.FotoTeam.Browse.Item,' +
@@ -114,7 +116,7 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     return this.capabilities.slice();
   }
 
-  async login(account: string, password: string, otp: string): Promise<void> {
+  async login(account: string, password: string, otp: string, options: NasLoginOptions = {}): Promise<string> {
     this.ensureOpen();
     if (account.trim().length === 0 || password.length === 0) { throw new NasFailure(NasErrorKind.InvalidInput, '请输入账号和密码。'); }
     if (otp.length > 0 && !/^[0-9]{6}$/.test(otp)) { throw new NasFailure(NasErrorKind.InvalidInput, '动态码应为 6 位数字。'); }
@@ -126,24 +128,34 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     const ticket = this.generation;
     this.authenticating = true;
     try {
-      const authorization = decodeNasSession(await this.call('SYNO.API.Auth', 6, 'login',
-        this.loginFields(this.sessionName, account, password, otp)));
+      const response = await this.call('SYNO.API.Auth', 6, 'login',
+        this.loginFields(this.sessionName, account, password, otp, options));
+      const authorization = decodeNasSession(response);
       this.ensureCurrent(ticket);
       this.sessions.register(this.sessionName, authorization);
       const revision = this.sessions.revision(this.sessionName);
-      await this.loginDownloadStation(account, password, otp);
+      await this.loginDownloadStation(account, password, otp, options);
       this.ensureSessionCurrent(ticket, this.sessionName, revision);
+      const deviceId = response['did'];
+      if (deviceId !== undefined && typeof deviceId !== 'string') { throw new NasFailure(NasErrorKind.Protocol, '设备凭证格式无效。'); }
+      return typeof deviceId === 'string' ? deviceId : '';
     }
     finally { this.authenticating = false; }
   }
 
-  private loginFields(session: BusinessSessionName, account: string, password: string, otp: string): NasFormField[] {
+  private loginFields(session: BusinessSessionName, account: string, password: string, otp: string,
+    options: NasLoginOptions = {}): NasFormField[] {
     const fields: NasFormField[] = [
       { name: 'account', content: account.trim() }, { name: 'passwd', content: password },
       { name: 'session', content: session }, { name: 'format', content: 'sid' },
       { name: 'enable_syno_token', content: 'yes' }
     ];
     if (otp.length > 0) { fields.push({ name: 'otp_code', content: otp }); }
+    if (options.trustDevice || options.deviceId) {
+      fields.push({ name: 'device_name', content: 'NAS Workbench HarmonyOS' });
+      if (options.trustDevice) { fields.push({ name: 'enable_device_token', content: 'yes' }); }
+      if (options.deviceId) { fields.push({ name: 'device_id', content: options.deviceId }); }
+    }
     return fields;
   }
 
@@ -151,13 +163,13 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
    * Download Station 按 DSM 规范使用独立套件会话；主会话登录成功后凭同一凭据尽力建立。
    * 失败不阻止主登录（含动态码一次性导致二次登录被拒的场景），NAS 下载入口在使用时提示重新登录。
    */
-  private async loginDownloadStation(account: string, password: string, otp: string): Promise<void> {
+  private async loginDownloadStation(account: string, password: string, otp: string, options: NasLoginOptions): Promise<void> {
     if (this.sessionName !== 'FileStation' ||
       !this.capabilities.some((api: NasApiDescriptor): boolean => api.name === 'SYNO.DownloadStation.Task')) { return; }
     const ticket = this.generation;
     const revision = this.sessions.revision(this.sessionName);
     try {
-      await this.authenticateDownloadStation(account, password, otp);
+      await this.authenticateDownloadStation(account, password, otp, options);
       this.ensureSessionCurrent(ticket, this.sessionName, revision);
     } catch (error) {
       this.ensureOpen();
@@ -167,7 +179,7 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
   }
 
   /** 只替换下载套件会话，主会话及已提交任务保持原有归属。 */
-  async authenticateDownloadStation(account: string, password: string, otp: string): Promise<void> {
+  async authenticateDownloadStation(account: string, password: string, otp: string, options: NasLoginOptions = {}): Promise<void> {
     this.requireSession('FileStation');
     if (this.downloadAuthenticating || account.trim().length === 0 || password.length === 0 || otp.length > 0 && !/^[0-9]{6}$/.test(otp)) {
       throw new NasFailure(NasErrorKind.InvalidInput, '请输入账号密码和有效的六位动态码，且不要重复提交认证。');
@@ -177,7 +189,7 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     const revision = this.sessions.revision('FileStation');
     this.downloadAuthenticating = true;
     try {
-      const authorization = decodeNasSession(await this.call('SYNO.API.Auth', 6, 'login', this.loginFields('DownloadStation', account, password, otp), false));
+      const authorization = decodeNasSession(await this.call('SYNO.API.Auth', 6, 'login', this.loginFields('DownloadStation', account, password, otp, options), false));
       this.ensureSessionCurrent(ticket, 'FileStation', revision);
       this.sessions.register('DownloadStation', authorization);
     } finally { this.downloadAuthenticating = false; }
@@ -200,7 +212,7 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
       { name: 'offset', content: offset.toString() }, { name: 'limit', content: '100' },
       { name: 'sort_by', content: api.jsonParameters ? JSON.stringify(sortBy) : sortBy },
       { name: 'sort_direction', content: api.jsonParameters ? JSON.stringify(sortDirection) : sortDirection },
-      { name: 'additional', content: JSON.stringify(['size']) }
+      { name: 'additional', content: JSON.stringify(path.length === 0 ? ['size', 'time', 'volume_status'] : ['size', 'time']) }
     ];
     if (path.length > 0) {
       validateLogicalPath(path);
@@ -449,8 +461,10 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
       throw new NasFailure(NasErrorKind.InvalidInput, '照片空间不正确。');
     }
     const api = this.photoApi(space, 'Browse.Item');
+    const version = this.photoListVersion(api);
+    const fields = this.photoListFields(offset, version);
     const read = async (): Promise<NasPhotoPage> =>
-      decodePhotosPage(await this.photosCall(api, 'list', this.photoListFields(offset)), space, offset, 20);
+      decodePhotosPage(await this.photosCall(api, 'list', fields, version), space, offset, 20);
     return offset === 0 ? this.featureRegistry.read(space === PhotosSpace.Personal ? 'personalPhotos' : 'sharedPhotos', read) : read();
   }
 
@@ -483,9 +497,11 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     this.validatePhotosOffset(offset);
     if (!Number.isSafeInteger(album.id) || album.id < 0) { throw new NasFailure(NasErrorKind.InvalidInput, '相册标识不正确。'); }
     if (album.space === PhotosSpace.WithMe) { return this.sharedAlbumPhotos(album, offset); }
-    const fields = this.photoListFields(offset);
+    const api = this.photoApi(album.space, 'Browse.Item');
+    const version = this.photoListVersion(api);
+    const fields = this.photoListFields(offset, version);
     fields.push({ name: 'id', content: album.id.toString() });
-    return decodePhotosPage(await this.photosCall(this.photoApi(album.space, 'Browse.Item'), 'list', fields), album.space, offset, 20);
+    return decodePhotosPage(await this.photosCall(api, 'list', fields, version), album.space, offset, 20);
   }
 
   async photoDetail(item: NasPhotoItem): Promise<NasPhotoItem> {
@@ -702,10 +718,19 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
       '当前服务器不支持' + operation + '，请检查 Synology Photos 套件版本及空间设置。', code);
   }
 
-  private photoListFields(offset: number): NasFormField[] {
+  private photoListFields(offset: number, version: number): NasFormField[] {
     return [ { name: 'offset', content: offset.toString() }, { name: 'limit', content: '20' },
       { name: 'sort_by', content: 'takentime' }, { name: 'sort_direction', content: 'desc' },
-      { name: 'additional', content: JSON.stringify(['thumbnail', 'resolution', 'orientation']) } ];
+      { name: 'additional', content: JSON.stringify(version === 7 ?
+        ['thumbnail', 'resolution', 'orientation', 'video_meta', 'favorite'] : ['thumbnail', 'resolution', 'orientation']) } ];
+  }
+
+  private photoListVersion(name: string): number {
+    try { return selectVerifiedApi(this.capabilities, name, [7, 1]).version; }
+    catch (error) {
+      if (error instanceof NasFailure && error.kind === NasErrorKind.Unsupported) { throw this.photoUnsupportedFailure(name, error.code); }
+      throw error;
+    }
   }
 
   async sharedAlbums(offset: number = 0): Promise<NasSharedAlbumPage> {
@@ -721,11 +746,12 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     this.validatePhotosOffset(offset);
     if (!Number.isSafeInteger(album.id) || album.id < 0) { throw new NasFailure(NasErrorKind.InvalidInput, '相册标识不正确。'); }
     const api = this.selectPhotoApi('SYNO.Foto.Browse.Item');
-    const fields = this.photoListFields(offset);
+    const version = this.photoListVersion(api.name);
+    const fields = this.photoListFields(offset, version);
     if (album.passphrase !== undefined && album.passphrase.length > 0) {
       fields.push({ name: 'passphrase', content: api.jsonParameters ? JSON.stringify(album.passphrase) : album.passphrase });
     } else { fields.push({ name: 'album_id', content: album.id.toString() }); }
-    return decodePhotosPage(await this.photosCall(api.name, 'list', fields), PhotosSpace.WithMe, offset, 20);
+    return decodePhotosPage(await this.photosCall(api.name, 'list', fields, version), PhotosSpace.WithMe, offset, 20);
   }
 
   private validatePhotosOffset(offset: number): void {
@@ -909,6 +935,30 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
       if (error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) { this.invalidateSession(sessionName); }
       throw error;
     }
+  }
+
+  /** Download Station 的种子上传使用独立会话，multipart 的 file 由传输层固定放在最后。 */
+  async uploadDownloadTorrent(source: NasUploadSource, filename: string, destination: string,
+    cancellation: NasTransferCancellation): Promise<Object> {
+    const selected = selectVerifiedApi(this.capabilities, 'SYNO.DownloadStation.Task', [3]);
+    const session = this.requireSession('DownloadStation');
+    const transport = this.transport.transfers;
+    if (transport === undefined) { throw new NasFailure(NasErrorKind.Unsupported, '当前连接不支持种子上传。'); }
+    validateNasUploadSource(source);
+    const ticket = this.generation, revision = this.sessions.revision('DownloadStation');
+    const request: NasTransferRequest = { address: this.origin + '/webapi/' + validateApiPath(selected.api.path),
+      method: 'POST', session, fields: [{ name: 'api', content: selected.api.name }, { name: 'version', content: selected.version.toString() },
+        { name: 'method', content: 'create' }, { name: 'destination', content: destination }] };
+    this.driveTransfers.add(cancellation);
+    try {
+      const reply = await transport.upload(request, source, filename, { cancellation });
+      this.ensureSessionCurrent(ticket, 'DownloadStation', revision);
+      return decodeExtensionResponse('SYNO.DownloadStation.Task', 'create', reply.status, reply.text);
+    } catch (error) {
+      this.ensureSessionCurrent(ticket, 'DownloadStation', revision);
+      if (error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) { this.invalidateSession('DownloadStation'); }
+      throw error;
+    } finally { this.driveTransfers.delete(cancellation); }
   }
 
   supportsExtensionAction(feature: 'fileSharing' | 'nasDownloads', method: string): boolean {

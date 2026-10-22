@@ -60,6 +60,12 @@ export class DriveThumbnailStore {
 
   path(entry: DriveEntry): string { return this.paths[this.key(entry)] ?? ''; }
 
+  /** 设置页清理时释放请求与文件，保留当前连接以便下一次按需加载。 */
+  clearCache(): void {
+    const context = this.context, connector = this.connector, failure = this.onSessionFailure;
+    if (connector !== undefined && failure !== undefined) { this.attach(context, connector, failure); }
+  }
+
   setVisible(entry: DriveEntry, visible: boolean): void {
     const key = this.key(entry);
     const visibleKey = JSON.stringify(entry);

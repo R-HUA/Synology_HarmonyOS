@@ -10,6 +10,7 @@ export interface NasPhotoItem {
   bytes: number;
   space: PhotosSpace;
   mediaType: string;
+  durationMs?: number;
   takenAt?: number;
   width?: number;
   height?: number;
@@ -83,6 +84,10 @@ export function decodePhotosPage(data: Record<string, Object>, space: PhotosSpac
     }
     if (row['additional'] !== undefined) {
       const additional = nasRecord(row['additional']);
+      if (additional['video_meta'] !== undefined) {
+        const video = nasRecord(additional['video_meta']);
+        if (video['duration'] !== undefined) { item.durationMs = nasInteger(video['duration']); }
+      }
       if (additional['favorite'] !== undefined) {
         if (typeof additional['favorite'] !== 'boolean') { throw incompatiblePhotos(); }
         item.favorite = additional['favorite'] as boolean;

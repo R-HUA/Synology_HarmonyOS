@@ -1,4 +1,8 @@
 import { common } from '@kit.AbilityKit';
+import { fileIo, fileUri, picker } from '@kit.CoreFileKit';
+import { util } from '@kit.ArkTS';
+import { NasTransferCancellation } from '../../core/network/NasTransferTransport';
+import { decodeDownloadCreateResult, validateDownloadDestination } from '../downloadStation/DownloadStationProtocol';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { NasConnector } from '../../core/network/NasConnector';
 import { NasErrorKind, NasFailure, NasFormField } from '../../core/domain/DsmProtocol';
@@ -45,7 +49,11 @@ export class NasExtensionsModel {
   @Trace downloadDetailError: string = '';
   @Trace selectedDownload: DownloadTask | undefined = undefined;
   @Trace downloadUri: string = '';
+  @Trace torrentName: string = '';
+  private torrentPath: string = '';
   @Trace downloadDestination: string = '';
+  @Trace downloadFreeBytes: number | undefined = undefined;
+  @Trace downloadSpaceError: string = '';
   @Trace downloadFormRequested: boolean = false;
   @Trace canCreateDownload: boolean = false;
   @Trace downloadAuthenticationRequired: boolean = false;
@@ -78,6 +86,7 @@ export class NasExtensionsModel {
   }
 
   reset(): void {
+    this.clearTorrent();
     this.generation++;
     this.connector = undefined;
     this.context = undefined;
@@ -115,6 +124,7 @@ export class NasExtensionsModel {
     this.selectedDownload = undefined;
     this.downloadUri = '';
     this.downloadDestination = '';
+    this.downloadFreeBytes = undefined; this.downloadSpaceError = '';
     this.downloadFormRequested = false;
     this.canCreateDownload = false;
     this.cancelDownloadAuthentication();
@@ -266,16 +276,79 @@ export class NasExtensionsModel {
     const ticket = this.generation;
     const uri = this.downloadUri;
     const destination = this.downloadDestination;
+    const torrentPath = this.torrentPath, torrentName = this.torrentName;
     const confirmed = await this.write('nasDownloads', 'create', async (connector: NasConnector): Promise<boolean> => {
-      const result = await this.station(connector).create(uri, destination);
+      validateDownloadDestination(destination);
+      const result = torrentPath.length > 0 ? decodeDownloadCreateResult(await connector.uploadDownloadTorrent(
+        { path: torrentPath, bytes: fileIo.statSync(torrentPath).size }, torrentName, destination, new NasTransferCancellation())) :
+        await this.station(connector).create(uri, destination);
       if (result.taskId === undefined) { return false; }
       await this.station(connector).getInfo(result.taskId);
       return true;
     });
     if (ticket !== this.generation) { return false; }
-    if (confirmed || this.hasPending('nasDownloads')) { this.downloadUri = ''; }
+    if (confirmed || this.hasPending('nasDownloads')) { this.downloadUri = ''; this.clearTorrent(); }
     await this.refreshDownloads(0);
     return confirmed;
+  }
+
+  async chooseTorrent(): Promise<void> {
+    const context = this.context;
+    if (context === undefined || this.busy) { return; }
+    this.downloadError = '';
+    const ticket = this.generation;
+    this.busy = true;
+    let copiedPath = '';
+    try {
+      const options = new picker.DocumentSelectOptions(); options.maxSelectNumber = 1;
+      options.fileSuffixFilters = ['种子文件|.torrent'];
+      const uris = await new picker.DocumentViewPicker(context).select(options);
+      if (ticket !== this.generation) { return; }
+      if (uris.length === 0) { return; }
+      const name = new fileUri.FileUri(uris[0]).name;
+      if (!name.toLowerCase().endsWith('.torrent')) { throw new NasFailure(NasErrorKind.InvalidInput, '请选择种子文件。'); }
+      const source = await fileIo.open(uris[0], fileIo.OpenMode.READ_ONLY);
+      try {
+        const stat = await fileIo.stat(source.fd);
+        if (!stat.isFile() || stat.size <= 0 || stat.size > 10 * 1024 * 1024) { throw new NasFailure(NasErrorKind.InvalidInput, '请选择不超过 10 MB 的有效种子文件。'); }
+        this.clearTorrent();
+        const path = context.cacheDir + '/download-torrent-' + util.generateRandomUUID();
+        copiedPath = path;
+        await fileIo.copyFile(source.fd, path);
+        if (ticket !== this.generation) { await fileIo.unlink(path); return; }
+        this.torrentPath = path;
+        this.torrentName = name; this.downloadUri = '';
+      } finally { await fileIo.close(source); }
+    } catch (error) {
+      if (copiedPath.length > 0 && fileIo.accessSync(copiedPath)) { fileIo.unlinkSync(copiedPath); }
+      if (ticket === this.generation) { this.torrentPath = ''; this.torrentName = ''; this.downloadError = (error as Error).message; }
+    } finally { if (ticket === this.generation) { this.busy = false; } }
+  }
+
+  async setDownloadDestination(path: string): Promise<void> {
+    this.downloadDestination = path; this.downloadFreeBytes = undefined; this.downloadSpaceError = '';
+    const connector = this.connector, ticket = this.generation;
+    if (connector === undefined || path.length === 0) { return; }
+    try {
+      let offset = 0;
+      while (true) {
+        const page = await connector.list('', offset);
+        if (ticket !== this.generation || path !== this.downloadDestination) { return; }
+        const share = page.entries.find((entry): boolean => entry.path === '/' + path.split('/')[0]);
+        if (share !== undefined) {
+          if (share.freeBytes === undefined) { throw new Error('服务器未返回此卷的可用空间。'); }
+          this.downloadFreeBytes = share.freeBytes; return;
+        }
+        offset += page.entries.length;
+        if (offset >= page.total) { throw new Error('所选目录的存储卷不可读取。'); }
+        if (page.entries.length === 0) { throw new Error('服务器返回的共享目录分页未前进。'); }
+      }
+    } catch (error) { if (ticket === this.generation && path === this.downloadDestination) { this.downloadSpaceError = (error as Error).message; } }
+  }
+
+  clearTorrent(): void {
+    if (this.torrentPath.length > 0 && fileIo.accessSync(this.torrentPath)) { fileIo.unlinkSync(this.torrentPath); }
+    this.torrentPath = ''; this.torrentName = '';
   }
 
   async controlDownload(id: string, operation: 'pause' | 'resume' | 'delete'): Promise<void> {

@@ -20,7 +20,7 @@ export struct DriveSharingPage {
       ListItem() {
         Column({ space: 8 }) {
           if (this.model.draft !== undefined) {
-            Text('获取“' + this.model.draft.name + '”的文件链接')
+            Text(this.model.draftCount > 1 ? $r('app.string.drive_batch_share', this.model.draftCount) : '获取“' + this.model.draft.name + '”的文件链接')
               .fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
             Text('链接访问以 NAS 当前权限为准。')
               .fontSize(12).fontColor($r('sys.color.font_secondary')).width('100%')

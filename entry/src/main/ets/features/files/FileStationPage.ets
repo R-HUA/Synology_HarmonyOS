@@ -1,7 +1,9 @@
 import { NasFileEntry } from '../../core/domain/DsmProtocol';
 import { ConnectionViewModel } from '../connection/ConnectionViewModel';
-import { WorkbenchBreadcrumb, workbenchBreadcrumbs, workbenchBytes } from '../workbench/WorkbenchPresentation';
-import { WorkbenchMetrics, WorkbenchEmptyState, WorkbenchEntryRow, WorkbenchNotice } from '../workbench/WorkbenchUi';
+import { WorkbenchBreadcrumb, workbenchBreadcrumbs, workbenchBytes, workbenchRelativeDate } from '../workbench/WorkbenchPresentation';
+import { interactionFeedback } from '../../platform/InteractionFeedback';
+import { ImagePreview } from '../workbench/ImagePreview';
+import { WorkbenchMetrics, WorkbenchEmptyState, WorkbenchEntryRow, WorkbenchNotice, WorkbenchInfoRow } from '../workbench/WorkbenchUi';
 
 /** File Station 列表复用于文件页和独立的目录选择页，页面级工具由宿主标题栏承载。 */
 @ComponentV2
@@ -11,6 +13,9 @@ export struct FileStationPage {
   @Param topInset: number = 0;
   @Param bottomInset: number = 0;
   @Param active: boolean = true;
+  @Param wide: boolean = false;
+  @Local private inspected: NasFileEntry | undefined = undefined;
+  private detailStack: NavPathStack = new NavPathStack();
   @Param errorText: string = '';
   @Param pendingEntries: NasFileEntry[] = [];
   @Param selecting: boolean = false;
@@ -33,8 +38,15 @@ export struct FileStationPage {
   @Event onSelectAll: () => void = (): void => {};
   @Event onCancelSelection: () => void = (): void => {};
   @Event onSelectionAction: (kind: string) => void = (): void => {};
+  @Event onBeginSelection: (entry: NasFileEntry) => void = (): void => {};
+  @Event onSort: () => void = (): void => {};
+  @Local private grid: boolean = false;
+  private breadcrumbScroller: Scroller = new Scroller();
   @Local private refreshing: boolean = false;
   @Local private refreshedCount: number | undefined = undefined;
+
+  @Monitor('model.directory')
+  private revealBreadcrumb(): void { setTimeout((): void => { this.breadcrumbScroller.scrollEdge(Edge.End); }, 0); }
 
   @Monitor('active', 'model.busy')
   private clearRefreshedCount(): void {
@@ -54,7 +66,7 @@ export struct FileStationPage {
 
   @Builder
   breadcrumbBar() {
-    Scroll() {
+    Scroll(this.breadcrumbScroller) {
       Row({ space: 8 }) {
         ForEach(workbenchBreadcrumbs(this.model.directory), (crumb: WorkbenchBreadcrumb): void => {
           Button(crumb.title).type(ButtonType.Normal).constraintSize({ minHeight: 40 }).fontSize(14)
@@ -68,7 +80,7 @@ export struct FileStationPage {
           }
         }, (crumb: WorkbenchBreadcrumb): string => crumb.path)
       }
-    }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%').align(Alignment.Start)
+    }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%').height(40).align(Alignment.Start)
   }
 
   @Builder
@@ -107,15 +119,25 @@ export struct FileStationPage {
           Button($r('app.string.action_cancel')).buttonStyle(ButtonStyleMode.TEXTUAL)
             .constraintSize({ minHeight: WorkbenchMetrics.touchSize }).enabled(!this.model.busy).onClick(this.onCancelSelection)
         }.width('100%')
-        Row({ space: 12 }) {
+        Flex({ wrap: FlexWrap.Wrap }) {
+          if (this.model.supports('SYNO.FileStation.Download')) {
+            Button($r('app.string.preview_download')).height(48).buttonStyle(ButtonStyleMode.TEXTUAL)
+              .enabled(this.selectedPaths.length > 0 && this.model.entries.filter((entry: NasFileEntry): boolean => this.selectedPaths.includes(entry.path)).every((entry: NasFileEntry): boolean => !entry.isDirectory))
+              .onClick((): void => { this.onSelectionAction('download'); })
+          }
+          if (this.model.supports('SYNO.FileStation.Sharing')) {
+            Button($r('app.string.preview_share')).height(48).buttonStyle(ButtonStyleMode.TEXTUAL)
+              .enabled(this.selectedPaths.length > 0 && this.model.extensions.canWrite('fileSharing'))
+              .onClick((): void => { this.onSelectionAction('share'); })
+          }
           if (this.model.supports('SYNO.FileStation.CopyMove')) {
-            Button($r('app.string.file_copy')).layoutWeight(1).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
+            Button($r('app.string.file_copy')).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
               .enabled(!this.model.busy && this.selectedPaths.length > 0).onClick((): void => { this.onSelectionAction('copy'); })
-            Button($r('app.string.file_move')).layoutWeight(1).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
+            Button($r('app.string.file_move')).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
               .enabled(!this.model.busy && this.selectedPaths.length > 0).onClick((): void => { this.onSelectionAction('move'); })
           }
           if (this.model.supports('SYNO.FileStation.Delete')) {
-            Button($r('app.string.file_delete')).layoutWeight(1).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
+            Button($r('app.string.file_delete')).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
               .enabled(!this.model.busy && this.selectedPaths.length > 0).onClick((): void => { this.onSelectionAction('delete'); })
           }
         }.width('100%')
@@ -179,25 +201,43 @@ export struct FileStationPage {
     WorkbenchEmptyState({ icon: icon, title: title, description: description })
   }
 
-  build() {
-    Stack({ alignContent: Alignment.Center }) {
+  @Builder
+  listHeader() {
+    Column({ space: 8 }) {
+      if (this.refreshedCount !== undefined) {
+        Text(this.refreshedCount.toString() + ' 项').fontSize(12).fontColor($r('sys.color.font_secondary'))
+          .width('100%').height(32).textAlign(TextAlign.Center)
+      }
+      this.destinationBar()
+      this.pickerBar()
+      WorkbenchNotice({ text: this.errorText, warning: true })
+      if (this.errorText.length === 0) { WorkbenchNotice({ text: this.model.actionNotice }) }
+    }.width('100%').padding({ top: 4, bottom: 8 }).alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  fileList() {
+    Column() {
+      Column({ space: 4 }) {
+        if (this.model.directory.length > 0 || this.pickerMode.length > 0) { this.breadcrumbBar() }
+        if (this.pickerMode.length === 0) {
+          Row() {
+            Blank()
+            Button() { SymbolGlyph($r('sys.symbol.slider_horizontal_2')).fontSize(20).fontColor([$r('sys.color.icon_secondary')]) }
+              .width(48).height(40).backgroundColor($r('app.color.workbench_subtle')).margin({ right: 8 })
+              .accessibilityText($r('app.string.file_sort')).onClick(this.onSort)
+            Button() { SymbolGlyph(this.grid ? $r('sys.symbol.list_bullet') : $r('sys.symbol.square_grid_2x2'))
+              .fontSize(20).fontColor([$r('sys.color.icon_secondary')]) }
+              .width(48).height(40).backgroundColor($r('app.color.workbench_subtle'))
+              .accessibilityText(this.grid ? $r('app.string.view_list') : $r('app.string.view_grid'))
+              .onClick((): void => { this.grid = !this.grid; })
+          }.width('100%').constraintSize({ minHeight: 48 })
+        }
+      }.width('100%').padding({ left: 16, right: 16, top: this.topInset })
+    Stack({ alignContent: Alignment.Bottom }) {
       Refresh({ refreshing: $$this.refreshing }) {
       List({ space: 0, scroller: this.scroller }) {
-        ListItem() {
-          Column({ space: 8 }) {
-            if (this.refreshedCount !== undefined) {
-              Text(this.refreshedCount.toString() + ' 项').fontSize(12).fontColor($r('sys.color.font_secondary'))
-                .width('100%').height(32).textAlign(TextAlign.Center)
-            }
-            this.breadcrumbBar()
-            this.destinationBar()
-            this.pickerBar()
-            this.selectionBar()
-            WorkbenchNotice({ text: this.errorText, warning: true })
-            if (this.errorText.length === 0) { WorkbenchNotice({ text: this.model.actionNotice }) }
-          }.width('100%').padding({ top: 4, bottom: 8 })
-            .alignItems(HorizontalAlign.Start)
-        }
+        ListItemGroup({ header: this.listHeader }) {
         if (!this.model.busy && this.visibleEntries().length === 0 && this.model.errorText.length === 0 && this.errorText.length === 0) {
           ListItem() {
             this.emptyState($r('sys.symbol.folder'), this.pickerMode.length > 0 ? '没有可浏览的文件夹' : '此位置为空',
@@ -214,23 +254,30 @@ export struct FileStationPage {
                     if (selected !== this.selectedPaths.includes(entry.path)) { this.onToggleSelection(entry); }
                   })
               }
-              WorkbenchEntryRow({ title: entry.name, subtitle: entry.isDirectory ? '文件夹' : workbenchBytes(entry.bytes),
+              WorkbenchEntryRow({ title: entry.name, grid: this.grid && this.pickerMode.length === 0,
+                subtitle: (entry.isDirectory ? '文件夹' : workbenchBytes(entry.bytes)) +
+                  (entry.modifiedAt === undefined ? '' : ' · ' + workbenchRelativeDate(entry.modifiedAt / 1000)),
                 icon: entry.isDirectory ? $r('sys.symbol.folder') : $r('sys.symbol.doc'),
                 iconColor: entry.isDirectory ? $r('sys.color.icon_emphasize') : $r('sys.color.font_secondary'),
                 available: !this.model.busy, menuAvailable: !this.model.busy,
                 contentInset: this.selecting ? 12 : 16, showDivider: index < this.visibleEntries().length - 1,
                 menu: this.pickerMode.length === 0 && !this.selecting ? this.entryMenu(entry) : [],
+                onLongPress: (): void => {
+                  if (this.pickerMode.length === 0 && !this.selecting) { interactionFeedback(); this.onBeginSelection(entry); }
+                },
                 onOpen: (): void => {
                   if (this.selecting) { this.onToggleSelection(entry); }
                   else if (entry.isDirectory) { this.model.openDirectory(entry); }
+                  else if (this.wide && this.pickerMode.length === 0) {
+                    this.inspected = entry;
+                    this.detailStack.replacePathByName('detail', undefined);
+                    if (/\.(?:jpe?g|png|gif|webp|bmp|heic|heif|tiff?|dng|avif|avis)$/i.test(entry.name)) { this.model.fileOriginal.openFile(entry); }
+                  }
                   else if (/\.(?:jpe?g|png|gif|webp|bmp|heic|heif|tiff?|dng|avif|avis)$/i.test(entry.name)) { this.onOpenImage(entry); }
                   else { this.onOpenForm('detail', entry); }
                 } }).layoutWeight(1)
             }.width('100%').backgroundColor($r('app.color.workbench_surface'))
-          }.borderRadius({ topLeft: index === 0 ? WorkbenchMetrics.cardRadius : 0,
-            topRight: index === 0 ? WorkbenchMetrics.cardRadius : 0,
-            bottomLeft: index === this.visibleEntries().length - 1 ? WorkbenchMetrics.cardRadius : 0,
-            bottomRight: index === this.visibleEntries().length - 1 ? WorkbenchMetrics.cardRadius : 0 }).clip(true)
+          }.borderRadius(this.grid ? WorkbenchMetrics.cardRadius : 0).clip(true)
         }, (entry: NasFileEntry): string => this.model.address + ':' + this.model.account + ':' + entry.path)
         if (this.model.listLoading === 'more') {
           ListItem() {
@@ -239,8 +286,16 @@ export struct FileStationPage {
             }.width('100%').height(50).justifyContent(FlexAlign.Center)
           }
         }
-      }.width('100%').height('100%').scrollBar(BarState.Auto).contentEndOffset(this.bottomInset)
-        .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin })
+        if (!this.model.filesMore && this.errorText.length === 0 && this.visibleEntries().length > 0) {
+          ListItem() {
+            Text($r('app.string.file_total_count', this.pickerMode.length > 0 ? this.visibleEntries().length : this.model.total))
+              .fontSize(12).fontColor($r('sys.color.font_secondary')).width('100%').height(40).textAlign(TextAlign.Center)
+          }
+        }
+        }
+      }.width('100%').height('100%').scrollBar(BarState.Auto).contentEndOffset(this.bottomInset + (this.selecting ? 128 : 0))
+        .lanes(this.grid && this.pickerMode.length === 0 && this.visibleEntries().length > 0 ? 2 : 1)
+        .padding({ left: this.grid ? WorkbenchMetrics.pageMargin : 0, right: this.grid ? WorkbenchMetrics.pageMargin : 0 })
         .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
         .onWillScroll((offset: number, _state: ScrollState, source: ScrollSource): void => {
           if (offset > 0 && (source === ScrollSource.DRAG || source === ScrollSource.FLING)) {
@@ -250,7 +305,7 @@ export struct FileStationPage {
         .onReachEnd((): void => {
           if (this.model.directoryErrorText.length === 0 && !this.pickerBusy) { this.model.nextPage(); }
         })
-      }.width('100%').height('100%').padding({ top: this.topInset })
+      }.width('100%').height('100%')
         .pullToRefresh(this.active && !this.model.busy && !this.pickerBusy)
         .onRefreshing((): void => { this.refreshFiles(); })
       if (this.model.listLoading === 'content' && !this.refreshing) {
@@ -259,7 +314,43 @@ export struct FileStationPage {
         }.width('100%').height('100%').padding({ top: this.topInset, bottom: this.bottomInset })
           .justifyContent(FlexAlign.Center).hitTestBehavior(HitTestMode.None)
       }
+      if (this.selecting) {
+        Column() { this.selectionBar() }.padding(8).margin({ left: 16, right: 16, bottom: this.bottomInset })
+          .borderRadius(24).backgroundColor($r('app.color.workbench_surface_elevated'))
+          .shadow({ radius: 16, color: '#1F000000', offsetY: 4 })
+      }
+    }.width('100%').layoutWeight(1)
     }.width('100%').height('100%')
-      .backgroundColor($r('app.color.workbench_background'))
+      .backgroundColor(this.grid ? $r('app.color.workbench_background') : $r('app.color.workbench_surface'))
+  }
+
+  @Builder
+  fileDetail(_name: string) {
+    NavDestination() {
+      Column({ space: 12 }) {
+        if (this.inspected !== undefined) {
+          Text(this.inspected.name).fontSize(20).fontWeight(FontWeight.Medium).width('100%')
+          if (/\.(?:jpe?g|png|gif|webp|bmp|heic|heif|tiff?|dng|avif|avis)$/i.test(this.inspected.name)) {
+            ImagePreview({ source: this.model.fileOriginal.pixels ?? '', name: this.inspected.name,
+              busy: this.model.fileOriginal.busy, errorText: this.model.fileOriginal.errorText,
+              canDownload: false, onViewport: (width: number, height: number): void => { this.model.fileOriginal.setViewport(width, height); },
+              onRefine: (scale: number): void => { this.model.fileOriginal.refine(scale); } }).layoutWeight(1)
+          } else {
+            WorkbenchInfoRow({ label: $r('app.string.file_info_size'), value: workbenchBytes(this.inspected.bytes) })
+            WorkbenchInfoRow({ label: $r('app.string.file_info_location'), value: this.inspected.path })
+          }
+          Button($r('app.string.notice_details')).height(48).onClick((): void => { this.onOpenForm('detail', this.inspected); })
+        } else {
+          Text($r('app.string.file_detail_hint')).fontColor($r('sys.color.font_secondary'))
+        }
+      }.width('100%').height('100%').padding({ top: this.topInset, left: 24, right: 24, bottom: this.bottomInset })
+    }.hideTitleBar(true)
+  }
+
+  build() {
+    if (this.wide && this.pickerMode.length === 0) {
+      Navigation(this.detailStack) { this.fileList() }.mode(NavigationMode.Split).navBarWidth('40%')
+        .hideTitleBar(true).hideToolBar(true).navDestination(this.fileDetail).width('100%').height('100%')
+    } else { this.fileList() }
   }
 }

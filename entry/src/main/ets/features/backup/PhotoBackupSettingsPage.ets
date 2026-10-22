@@ -83,9 +83,13 @@ export struct PhotoBackupSettingsPage {
           Text(this.backup.status.length > 0 ? this.backup.status :
             this.backup.settings.enabled ? '自动备份已开启' : '自动备份未开启')
             .fontSize(14).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
-          Text(this.backup.settings.enabled ? '在满足下方网络与电源条件时自动同步手机照片至 NAS' :
-            '关闭状态下仍可预先配置下方备份模式、目标位置与目录风格')
+          Text(this.backup.settings.enabled ? $r('app.string.backup_pending', this.backup.pendingCount) :
+            $r('app.string.backup_enable_hint'))
             .fontSize(12).fontColor($r('sys.color.font_secondary')).width('100%')
+          if (this.backup.lastSuccessAt > 0) {
+            Text($r('app.string.backup_last_success', new Date(this.backup.lastSuccessAt).toLocaleString()))
+              .fontSize(12).fontColor($r('sys.color.font_secondary'))
+          }
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
       }.width('100%').padding({ left: 16, right: 16, top: 10, bottom: 12 })
     }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).clip(true).backgroundColor($r('app.color.workbench_surface'))
@@ -95,6 +99,7 @@ export struct PhotoBackupSettingsPage {
     Column({ space: WorkbenchMetrics.sectionGap }) {
       this.statusDashboardCard()
       WorkbenchNotice({ text: this.backup.errorText, warning: true })
+      Column({ space: WorkbenchMetrics.sectionGap }) {
       this.heading($r('app.string.photos_backup_mode'))
       Column() {
         this.mode('continue', $r('app.string.photos_backup_continue'))
@@ -112,6 +117,10 @@ export struct PhotoBackupSettingsPage {
         this.choice({ label: $r('app.string.photos_backup_custom'), selected: this.backup.settings.custom,
           showChevron: true, action: (): void => { this.onChooseDirectory(); },
           detail: this.backup.settings.directory.length > 0 ? this.backup.settings.directory : '点击选择 NAS 相册文件夹' })
+        if (this.backup.settings.custom && this.backup.settings.directory.length > 0) {
+          Button($r('app.string.backup_change_directory')).height(48).buttonStyle(ButtonStyleMode.TEXTUAL)
+            .onClick((): void => { this.onChooseDirectory(); })
+        }
       }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).clip(true).backgroundColor($r('app.color.workbench_surface'))
       this.heading($r('app.string.photos_backup_layout'))
       Column() {
@@ -137,6 +146,7 @@ export struct PhotoBackupSettingsPage {
             this.backup.settings.photosOnly, this.backup.settings.wifiOnly, enabled);
         } })
       }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).clip(true).backgroundColor($r('app.color.workbench_surface'))
+      }.width('100%').enabled(this.backup.settings.enabled).opacity(this.backup.settings.enabled ? 1 : 0.45)
     }.width('100%').alignItems(HorizontalAlign.Start)
   }
 }

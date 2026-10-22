@@ -21,6 +21,8 @@ export interface DriveTransferRecord {
   name: string;
   locationName: string;
   bytes?: number;
+  processed?: number;
+  bytesPerSecond?: number;
   state: DriveTransferState;
   errorText: string;
   background?: DriveBackgroundState;

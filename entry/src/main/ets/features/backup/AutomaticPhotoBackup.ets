@@ -24,6 +24,8 @@ export class AutomaticPhotoBackup {
   @Trace status: string = '';
   @Trace errorText: string = '';
   @Trace completedCount: number = 0;
+  @Trace lastSuccessAt: number = 0;
+  @Trace pendingCount: number = 0;
   readonly phoneModel: string = deviceInfo.productModel;
   private context: common.UIAbilityContext | undefined = undefined;
   private connector: NasConnector | undefined = undefined;
@@ -55,9 +57,11 @@ export class AutomaticPhotoBackup {
     this.context = context; this.connector = connector; this.queue = queue;
     this.scope = scope; this.path = path; this.settings = snapshot.settings;
     this.completed = new Set(snapshot.completed); this.completedCount = this.completed.size; this.ready = true;
+    this.lastSuccessAt = snapshot.lastSuccessAt ?? 0;
     queue.backupCompleted = async (key: string): Promise<void> => {
       this.ensureCurrent(ticket);
-      this.completed.add(key); this.completedCount = this.completed.size;
+      if (!this.completed.has(key)) { this.completed.add(key); this.lastSuccessAt = Date.now(); }
+      this.completedCount = this.completed.size;
       await this.save();
       setTimeout((): void => { if (ticket === this.generation) { this.scan(false); } }, 0);
     };
@@ -78,6 +82,7 @@ export class AutomaticPhotoBackup {
     this.helper = undefined; this.context = undefined; this.connector = undefined; this.queue = undefined;
     this.ready = false; this.settings = new PhotoBackupSettings(); this.status = ''; this.errorText = '';
     this.completed = new Set(); this.completedCount = 0; this.scanning = false; this.busy = false;
+    this.lastSuccessAt = 0; this.pendingCount = 0;
     this.scanRevision = 0; this.checkedRevision = -1;
   }
 
@@ -137,6 +142,7 @@ export class AutomaticPhotoBackup {
   private async runScan(ticket: number): Promise<void> {
     const revision = this.scanRevision;
     const queue = this.queue!;
+    this.pendingCount = queue.items.filter((item): boolean => item.backupKey !== undefined && item.state !== 'completed').length;
     const allowed = this.settings.enabled && await this.conditions();
     this.ensureCurrent(ticket);
     await queue.setBackupAllowed(allowed);
@@ -261,7 +267,7 @@ export class AutomaticPhotoBackup {
 
   private save(): Promise<void> {
     const path = this.path;
-    const snapshot: PhotoBackupSnapshot = { version: 1, scope: this.scope, settings: this.settings, completed: Array.from(this.completed) };
+    const snapshot: PhotoBackupSnapshot = { version: 1, scope: this.scope, settings: this.settings, completed: Array.from(this.completed), lastSuccessAt: this.lastSuccessAt };
     const text = JSON.stringify(snapshot);
     decodePhotoBackup(text, this.scope);
     const next = this.saveTail.then((): Promise<void> => writePrivateSnapshot(path, new util.TextEncoder().encodeInto(text)));

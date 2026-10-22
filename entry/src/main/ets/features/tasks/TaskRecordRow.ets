@@ -1,6 +1,7 @@
 import { TaskRecordView, taskEnded } from '../../core/domain/TaskPresentation';
 import { workbenchBytes } from '../workbench/WorkbenchPresentation';
 import { WorkbenchIconTile } from '../workbench/WorkbenchUi';
+import { transferRemainingSeconds } from '../../core/domain/TransferRates';
 
 @ComponentV2
 export struct TaskRecordRow {
@@ -9,10 +10,12 @@ export struct TaskRecordRow {
   @Param canCancel: boolean = false;
   @Param canPause: boolean = false;
   @Param canResume: boolean = false;
+  @Param canRetry: boolean = false;
   @Param actionsEnabled: boolean = true;
   @Event onDetail: () => void = (): void => {};
   @Event onCancel: () => void = (): void => {};
   @Event onPause: () => void = (): void => {};
+  @Event onRetry: () => void = (): void => {};
 
   /** 结束状态以业务回执为准，进度达到百分之百仍可能处于核验中。 */
   @Computed
@@ -52,16 +55,27 @@ export struct TaskRecordRow {
                   $r('app.color.workbench_danger') : $r('sys.color.font_secondary')).maxLines(1)
               }
             }.width('100%')
+            if (this.record.state === 'running' && this.record.bytesPerSecond !== undefined) {
+              Text(workbenchBytes(this.record.bytesPerSecond) + '/s' +
+                (transferRemainingSeconds(this.record.bytes, this.record.processed, this.record.bytesPerSecond) === undefined ? '' :
+                  ' · ' + Math.ceil(transferRemainingSeconds(this.record.bytes, this.record.processed, this.record.bytesPerSecond)! / 60).toString() + ' 分钟'))
+                .fontSize(12).fontColor($r('sys.color.font_emphasize'))
+            }
+            if (this.record.state === 'failed' && this.record.errorText.length > 0) {
+              Text(this.record.errorText).fontSize(12).fontColor($r('app.color.workbench_danger')).maxLines(2)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+            }
           }.layoutWeight(1).alignItems(HorizontalAlign.Start)
         }.width('100%')
       }.type(ButtonType.Normal).backgroundColor(Color.Transparent).layoutWeight(1).padding(0).onClick(this.onDetail)
         .accessibilityText(this.record.name + '，' + this.record.stateText)
+      if (this.canRetry) { this.action($r('sys.symbol.arrow_clockwise'), $r('app.string.task_retry'), this.onRetry) }
       if (this.canCancel) { this.action($r('sys.symbol.xmark_circle'), $r('app.string.task_cancel'), this.onCancel) }
       if (this.canPause || this.canResume) {
         this.action(this.canResume ? $r('sys.symbol.play_circle') : $r('sys.symbol.pause_circle'),
           this.canResume ? $r('app.string.task_resume') : $r('app.string.task_pause'), this.onPause)
       }
-      if (!this.canCancel && !this.canPause && !this.canResume) {
+      if (!this.canRetry && !this.canCancel && !this.canPause && !this.canResume) {
         this.action($r('sys.symbol.ellipsis_circle'), $r('app.string.task_details'), this.onDetail)
       }
     }.width('100%').constraintSize({ minHeight: this.hasProgress ? 96 : 72 }).padding({ left: 12, right: 8, top: 10, bottom: 10 })

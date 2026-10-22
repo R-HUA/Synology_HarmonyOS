@@ -26,7 +26,8 @@ export struct DriveActionPage {
               Text($r('app.string.drive_create_folder')).fontSize(16).fontWeight(FontWeight.Medium)
                 .fontColor($r('sys.color.font_primary')).width('100%')
             } else {
-              Text(driveActionText(this.model.draft.action) + '“' + this.model.draft.entry.name + '”')
+              Text(this.model.draft.entries !== undefined ? $r('app.string.drive_batch_action', driveActionText(this.model.draft.action), this.model.draft.entries.length) :
+                driveActionText(this.model.draft.action) + '“' + this.model.draft.entry.name + '”')
                 .fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
             }
             if (this.model.draft.action === 'rename' || this.model.draft.action === 'create') {

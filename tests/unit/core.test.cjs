@@ -42,6 +42,31 @@ async function loggedIn() {
   return context;
 }
 
+test('torrent creation uses the Download Station session and a stale upload cannot expire its replacement', async () => {
+  const transport = new FakeTransport();
+  const capabilities = { ...fixture.data, 'SYNO.DownloadStation.Task': { path: 'entry.cgi', minVersion: 1, maxVersion: 3 } };
+  transport.replies.push(ok(capabilities), ok({ sid: 'files' }), ok({ sid: 'downloads' }));
+  const connector = new NasConnector(transport);
+  await connector.discover('https://nas.example.test:5001');
+  await connector.login('reader', 'password', '');
+  const { NasTransferCancellation } = require('../../work/core-build/network/NasTransferTransport.js');
+  let request, rejectUpload;
+  transport.transfers = { async upload(value) { request = value; return ok({}); } };
+  await connector.uploadDownloadTorrent({ path: '/private/sample.torrent', bytes: 8 }, 'sample.torrent', '/downloads', new NasTransferCancellation());
+  assert.equal(request.session.sid, 'downloads');
+  assert.equal(request.address, 'https://nas.example.test:5001/webapi/entry.cgi');
+  assert.deepEqual(request.fields.map(field => [field.name, field.content]), [
+    ['api', 'SYNO.DownloadStation.Task'], ['version', '3'], ['method', 'create'], ['destination', '/downloads']]);
+  transport.transfers.upload = () => new Promise((resolve, reject) => { rejectUpload = reject; });
+  const pending = connector.uploadDownloadTorrent({ path: '/private/sample.torrent', bytes: 8 }, 'sample.torrent', '/downloads', new NasTransferCancellation());
+  transport.replies.push(ok({ sid: 'new-downloads' }));
+  await connector.authenticateDownloadStation('reader', 'password', '');
+  rejectUpload(new NasFailure(K.SessionExpired, 'expired'));
+  await assert.rejects(pending, isKind(K.Cancelled));
+  assert.ok(connector.sessionSnapshot().some(session => session.sid === 'new-downloads'));
+  assert.ok(connector.sessionSnapshot().some(session => session.sid === 'files'));
+});
+
 test('Photos connector reads independent personal and shared pages without invented totals', async () => {
   const { connector, transport } = await loggedIn();
   const item = { id: 1, filename: 'sample.jpg', filesize: 7, type: 'photo' };
@@ -52,7 +77,7 @@ test('Photos connector reads independent personal and shared pages without inven
   assert.equal(transport.calls.at(-1).body.get('limit'), '20');
   assert.equal((await connector.photos(PhotosSpace.Shared)).items[0].space, PhotosSpace.Shared);
   assert.equal(transport.calls.at(-1).body.get('api'), 'SYNO.FotoTeam.Browse.Item');
-  assert.equal(transport.calls.at(-1).body.get('version'), '1');
+  assert.equal(transport.calls.at(-1).body.get('version'), '7');
   assert.equal(transport.calls.at(-1).body.has('_sid'), false);
 });
 
@@ -64,6 +89,18 @@ test('Photos rejection checks File Station before declaring the saved login expi
   transport.replies.push(fail(119), fail(119));
   await assert.rejects(connector.photos(PhotosSpace.Personal), isKind(K.SessionExpired));
   assert.equal(connector.sessionSnapshot().length, 0);
+});
+
+test('Photos list requests and decodes video duration and favorite metadata', async () => {
+  const { connector, transport } = await loggedIn();
+  transport.replies.push(ok({ list: [{ id: 1, filename: 'movie.mp4', filesize: 100, type: 'video',
+    additional: { video_meta: { duration: 84000 }, favorite: true } }] }));
+  const page = await connector.photos(PhotosSpace.Personal, 20);
+  const call = transport.calls.at(-1).body;
+  assert.equal(call.get('version'), '7');
+  assert.equal(page.items[0].durationMs, 84000);
+  assert.equal(page.items[0].favorite, true);
+  assert.ok(JSON.parse(call.get('additional')).includes('video_meta'));
 });
 
 test('received albums use personal sharing APIs and keep access tokens in authenticated POST fields', async () => {
@@ -213,7 +250,7 @@ test('JSON requestFormat quotes string parameters and preserves Unicode/comma/ba
   assert.deepEqual(call.authorization, { sid: 'test-sid', synoToken: 'test-token' });
   assert.equal(call.body.get('_sid'), null);
   assert.equal(call.body.get('SynoToken'), null);
-  assert.deepEqual(JSON.parse(call.body.get('additional')), ['size']);
+  assert.deepEqual(JSON.parse(call.body.get('additional')), ['size', 'time']);
 });
 
 test('expired session clears local authorization and does not retry automatically', async () => {

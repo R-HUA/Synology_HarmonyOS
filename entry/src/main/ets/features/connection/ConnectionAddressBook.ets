@@ -11,6 +11,7 @@ export interface NasAddressProbeResult {
   passed: boolean;
   observedAt: number;
   message: string;
+  elapsedMs: number;
 }
 
 @ObservedV2
@@ -31,6 +32,7 @@ export class ConnectionAddressBook {
   private generation: number = 0;
   private probeGeneration: number = 0;
   private probeConnector: NasConnector | undefined = undefined;
+  private editingOrigin: string = '';
 
   async load(context: common.UIAbilityContext): Promise<boolean> {
     if (this.busy) { return false; }
@@ -68,6 +70,7 @@ export class ConnectionAddressBook {
     this.cancelProbe();
     this.draftOrigin = origin;
     this.draftName = name;
+    this.editingOrigin = '';
     this.draftKind = kind;
     this.draftInsecureTls = insecureTls;
     this.probeResult = undefined;
@@ -77,6 +80,7 @@ export class ConnectionAddressBook {
   edit(address: NasConnectionAddress): void {
     if (this.busy) { return; }
     this.beginDraft(address.origin, address.name, address.kind, address.insecureTls === true);
+    this.editingOrigin = address.origin;
   }
 
   async probe(origin: string = this.draftOrigin, insecureTls: boolean = this.draftInsecureTls): Promise<void> {
@@ -87,18 +91,19 @@ export class ConnectionAddressBook {
     const connector = new NasConnector(new RcpNasTransport(insecureTls));
     this.probeConnector = connector;
     let normalized = origin;
+    const startedAt = Date.now();
     try {
       normalized = normalizeNasOrigin(origin);
       await connector.discover(normalized);
       if (ticket !== this.probeGeneration) { return; }
       const skipped = insecureTls && nasOriginScheme(normalized) === 'https';
-      this.probeResult = { origin: normalized, passed: true, observedAt: Date.now(),
+      this.probeResult = { origin: normalized, passed: true, observedAt: Date.now(), elapsedMs: Date.now() - startedAt,
         message: (nasOriginScheme(normalized) === 'https' ? 'HTTPS' : 'HTTP') +
           ' 与基础接口可用；未发送登录凭据，也未核验设备身份。' + (skipped ? '本次已跳过证书校验。' : '') };
     } catch (error) {
       if (ticket === this.probeGeneration) {
         const failure = error instanceof NasFailure ? error : undefined;
-        this.probeResult = { origin: normalized, passed: false, observedAt: Date.now(),
+        this.probeResult = { origin: normalized, passed: false, observedAt: Date.now(), elapsedMs: Date.now() - startedAt,
           message: failure?.kind === NasErrorKind.Unsupported ? '此地址未提供应用所需的基础接口。' :
             this.failureText(error as Error, '测试连接失败，请检查地址与网络。') };
       }
@@ -128,7 +133,7 @@ export class ConnectionAddressBook {
       const address: NasConnectionAddress = { origin: origin, name: previous?.name ?? nasOriginHost(origin).slice(0, 40),
         kind: previous?.kind ?? 'lan', insecureTls: insecureTls,
         riskConfirmedAt: nasOriginScheme(origin) === 'http' || insecureTls ? Date.now() : undefined,
-        device: previous?.device };
+        device: previous?.device, lastLoginAt: Date.now() };
       const addresses = [address, ...this.addresses.filter((item: NasConnectionAddress): boolean => item.origin !== origin)];
       await this.store.save(addresses);
       if (ticket === this.generation) { this.addresses = addresses; }
@@ -179,7 +184,7 @@ export class ConnectionAddressBook {
       }
       if (ticket !== this.generation) { return false; }
       const address: NasConnectionAddress = { origin: normalized, name: this.draftName, kind: this.draftKind,
-        insecureTls: insecureTls, riskConfirmedAt: risky ? Date.now() : undefined, device: device };
+        insecureTls: insecureTls, riskConfirmedAt: risky ? Date.now() : undefined, device: device, lastLoginAt: existing?.lastLoginAt };
       const saved = await this.commit(address, ticket);
       if (saved) {
         this.notice = verified ? '地址与当前账号的设备身份已登记，后续登录会重新核验。' :
@@ -232,7 +237,7 @@ export class ConnectionAddressBook {
       }
       const saved = await this.commit({ origin: normalized, name: name, kind: kind, insecureTls: insecureTls,
         riskConfirmedAt: risky ? Date.now() : undefined,
-        device: previous?.device }, ticket);
+        device: previous?.device, lastLoginAt: previous?.lastLoginAt }, ticket, this.editingOrigin);
       if (saved) {
         this.notice = insecureTls && nasOriginScheme(normalized) === 'https' ?
           '连接地址已保存，并允许跳过证书校验；登录时不会自动切换地址或复制登录信息。' :
@@ -261,9 +266,9 @@ export class ConnectionAddressBook {
     } finally { if (ticket === this.generation) { this.busy = false; } }
   }
 
-  private async commit(input: NasConnectionAddress, ticket: number): Promise<boolean> {
+  private async commit(input: NasConnectionAddress, ticket: number, previousOrigin: string = ''): Promise<boolean> {
     const address = validateConnectionAddress(input);
-    const addresses = this.addresses.filter((candidate: NasConnectionAddress): boolean => candidate.origin !== address.origin);
+    const addresses = this.addresses.filter((candidate: NasConnectionAddress): boolean => candidate.origin !== address.origin && candidate.origin !== previousOrigin);
     addresses.push(address);
     await this.store.save(addresses);
     if (ticket !== this.generation) { return false; }

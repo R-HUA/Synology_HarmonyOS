@@ -17,8 +17,8 @@ const item = (id, year, month) => ({ id, space: 0, filename: '照片.jpg', bytes
   ...(year === undefined ? {} : { takenAt: new Date(year, month - 1, 15, 12).getTime() / 1000 }) });
 
 test('photo columns adapt to narrow, unfolded and wide content containers', () => {
-  assert.equal(photoGridColumns(240), 2);
-  assert.equal(photoGridColumns(360), 3);
+  assert.equal(photoGridColumns(240), 3);
+  assert.equal(photoGridColumns(360), 4);
   assert.equal(photoGridColumns(500), 4);
   assert.equal(photoGridColumns(700), 6);
   assert.equal(photoGridColumns(1440), 6);
@@ -27,7 +27,7 @@ test('photo columns adapt to narrow, unfolded and wide content containers', () =
 test('pagination append keeps dates and does not merge different months or unknown timestamps', () => {
   const rows = plain(photoTimelineRows([item(1, 2026, 10), item(2, 2026, 10), item(3, 2026, 10),
     item(4, 2026, 10), item(5, 2026, 9), item(6)], 3));
-  assert.deepEqual(rows.map(row => row.title), ['2026年10月', '', '2026年9月', '拍摄时间未提供']);
+  assert.deepEqual(rows.map(row => row.title), ['2026年10月15日', '', '2026年9月15日', '拍摄时间未提供']);
   assert.deepEqual(rows.map(row => row.items.map(photo => photo.id)), [[1, 2, 3], [4], [5], [6]]);
   assert.equal(new Set(rows.map(row => row.key)).size, rows.length);
 });

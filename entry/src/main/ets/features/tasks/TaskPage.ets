@@ -24,6 +24,7 @@ export struct TaskPage {
   @Param rootScrollers: Scroller[] = [];
   @Param topInset: number = 0;
   @Param bottomInset: number = 16;
+  @Param wide: boolean = false;
   @Event onAllTasks: () => void = (): void => {};
   @Event onRemoteDownloads: () => void = (): void => {};
   @Event onPhotoBackup: () => void = (): void => {};
@@ -136,11 +137,13 @@ export struct TaskPage {
       ['preparing', 'creating', 'running', 'waiting', 'paused'].includes(item.state);
   }
   private canPause(record: TaskRecordView): boolean {
+    if (record.model === 'transfer') { return this.transfer(record).canPause === true; }
     if (record.model !== 'driveTransfer') { return false; }
     const item = this.driveTransfer(record);
     return item.direction === 'upload' && item.state === 'running' && item.uploadSession !== undefined;
   }
   private canResume(record: TaskRecordView): boolean {
+    if (record.model === 'transfer') { return this.transfer(record).canResume === true; }
     if (record.model !== 'driveTransfer') { return false; }
     const item = this.driveTransfer(record);
     return item.direction === 'upload' && item.state === 'paused' && (item.uploadSession !== undefined || item.background?.startAttempted === false);
@@ -151,8 +154,9 @@ export struct TaskPage {
       !this.model.driveTransfers.busy || this.model.driveTransfers.activeId === record.id : !this.model.driveActions.busy;
   }
   private async runQueue(work: () => Promise<void>): Promise<void> {
+    this.feedback = '';
     try { await work(); }
-    catch (error) { this.toast(error instanceof NasFailure ? error.message : this.text($r('app.string.task_operation_failed'))); }
+    catch (error) { this.feedback = error instanceof NasFailure ? error.message : this.text($r('app.string.task_operation_failed')); }
   }
   private cancel(record: TaskRecordView): void {
     this.getUIContext().showAlertDialog({ title: $r('app.string.task_cancel'), message: record.name,
@@ -163,8 +167,26 @@ export struct TaskPage {
       } } });
   }
   private pause(record: TaskRecordView): void {
-    if (this.canPause(record)) { this.model.driveTransfers.pause(record.id); }
+    if (record.model === 'transfer' && (this.canPause(record) || this.canResume(record))) {
+      this.runQueue(async (): Promise<void> => { await this.model.queue.setPaused(record.id, this.canPause(record)); });
+    } else if (this.canPause(record)) { this.model.driveTransfers.pause(record.id); }
+    else if (this.canResume(record)) { this.model.driveTransfers.resume(record.id); }
     else { this.selectedKey = record.key; this.detailVisible = true; }
+  }
+
+  private async controlGroup(group: TaskGroup, paused: boolean): Promise<void> {
+    this.feedback = '';
+    for (const record of this.records.filter((item: TaskRecordView): boolean => item.group === group && (paused ? this.canPause(item) : this.canResume(item)))) {
+      if (record.model === 'transfer') {
+        try { await this.model.queue.setPaused(record.id, paused); }
+        catch (error) { this.feedback = (error as Error).message; return; }
+      }
+      else if (paused) { await this.model.driveTransfers.pause(record.id); }
+      else { await this.model.driveTransfers.resume(record.id); }
+      if (record.model === 'driveTransfer' && this.model.driveTransfers.errorText.length > 0) {
+        this.feedback = this.model.driveTransfers.errorText; return;
+      }
+    }
   }
   private prepareClear(records: TaskRecordView[], selectedFilter: TaskFilter = this.state.filter): void {
     const scope = this.state.scope === 'files' ? $r('app.string.task_file_title') : this.state.scope === 'photos' ?
@@ -240,6 +262,14 @@ export struct TaskPage {
               item.group === group && taskEnded(item.state) && item.canRemove && taskMatchesFilter(item, filter)), filter); })
         }
       }.width('100%')
+      if (filter !== 'finished' && this.records.some((item: TaskRecordView): boolean => item.group === group && (this.canPause(item) || this.canResume(item)))) {
+        Row({ space: 8 }) {
+          Button($r('app.string.task_pause_all')).buttonStyle(ButtonStyleMode.TEXTUAL).height(48)
+            .enabled(!this.model.queue.busy).onClick((): void => { this.controlGroup(group, true); })
+          Button($r('app.string.task_resume_all')).buttonStyle(ButtonStyleMode.TEXTUAL).height(48)
+            .enabled(!this.model.queue.busy).onClick((): void => { this.controlGroup(group, false); })
+        }.width('100%')
+      }
       if (!this.groupReady(group) && this.groupError(group).length === 0) {
         WorkbenchNotice({ text: this.text($r('app.string.task_records_loading')) })
       }
@@ -252,6 +282,8 @@ export struct TaskPage {
       TaskRecordRow({ record: entry.record!, focused: this.state.focusKey === entry.key,
         canCancel: this.canCancel(entry.record!), canPause: this.canPause(entry.record!), canResume: this.canResume(entry.record!),
         actionsEnabled: this.actionsAvailable(entry.record!),
+        canRetry: entry.record!.model === 'transfer' && this.transfer(entry.record!).canRetry,
+        onRetry: (): void => { this.runQueue(async (): Promise<void> => { await this.model.queue.retry(entry.record!.id); }); },
         onDetail: (): void => { this.selectedKey = entry.key; this.detailVisible = true; },
         onCancel: (): void => { this.cancel(entry.record!); }, onPause: (): void => { this.pause(entry.record!); } })
       if (this.state.scope === 'root' && !entry.groupEnd) {
@@ -265,7 +297,8 @@ export struct TaskPage {
       WorkbenchActionRow({
         label: this.text($r('app.string.task_remote_download')),
         description: this.model.extensions.downloadsLoaded ?
-          '共 ' + this.model.extensions.downloadTotal.toString() + ' 项远程下载任务' :
+          this.text($r('app.string.home_loaded_downloads', this.model.extensions.downloads.filter((task): boolean =>
+            !['finished', 'error', 'paused'].includes(task.status)).length)) :
           '查看或创建 NAS Download Station 离线下载任务',
         icon: $r('sys.symbol.arrow_down_circle'),
         onAction: this.onRemoteDownloads
@@ -285,7 +318,33 @@ export struct TaskPage {
       .backgroundColor($r('app.color.workbench_surface'))
   }
   @Builder
+  wideTaskColumn(group: TaskGroup, filter: TaskFilter) {
+    List() {
+      ListItem() { this.groupHeader(group, filter) }
+      if (this.groupError(group).length > 0) {
+        ListItem() { WorkbenchNotice({ text: this.groupError(group), warning: true }) }
+      } else if (this.groupReady(group) && this.groupRecords(group, filter).length === 0) {
+        ListItem() {
+          WorkbenchEmptyState({ icon: $r('sys.symbol.clock'), title: this.text($r('app.string.task_empty')),
+            description: this.text(filter === 'active' ? $r('app.string.task_empty_active') : $r('app.string.task_empty_finished')) })
+        }
+      }
+      ForEach(this.groupRecords(group, filter), (record: TaskRecordView): void => {
+        ListItem() { this.taskRow({ key: record.key, group, record }) }
+      }, (record: TaskRecordView): string => record.key)
+    }.layoutWeight(1).height('100%').contentEndOffset(this.bottomInset)
+      .backgroundColor($r('app.color.workbench_surface')).borderRadius(16).clip(true)
+  }
+  @Builder
   rootList(category: TaskCategory, index: number) {
+    if (this.wide && category !== 'other') {
+      Refresh({ refreshing: $$this.refreshing }) {
+      Row({ space: 16 }) {
+        this.wideTaskColumn(category, 'active')
+        this.wideTaskColumn(category, 'finished')
+      }.width('100%').height('100%').padding({ left: 24, right: 24, top: 12 })
+      }.width('100%').height('100%').onRefreshing((): void => { this.refreshRoot(); })
+    } else {
     Refresh({ refreshing: $$this.refreshing }) {
       List({ scroller: this.rootScrollers[index] }) {
         if (category === 'other') {
@@ -322,6 +381,7 @@ export struct TaskPage {
         .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin })
     }.width('100%').height('100%').backgroundColor($r('app.color.workbench_background'))
       .onRefreshing((): void => { this.refreshRoot(); })
+    }
   }
   @Builder
   rootPage() {

@@ -7,12 +7,20 @@ export struct DriveOriginalPage {
   @Param information: PreviewInformation[] = [];
   @Param canDelete: boolean = false;
   @Param canShare: boolean = false;
+  @Param fullscreen: boolean = false;
+  @Param controlsVisible: boolean = true;
+  @Param navigationInset: number = 0;
+  @Event onToggleControls: () => void = (): void => {};
+  @Event onDismiss: () => void = (): void => {};
   @Event onDownload: () => void = (): void => {};
   @Event onDelete: () => void = (): void => {};
   @Event onShare: () => void = (): void => {};
 
   build() {
     ImagePreview({ source: this.model.pixels ?? '', name: this.model.entry?.name ?? '', busy: this.model.busy,
+      transitionId: this.fullscreen ? 'drive-' + (this.model.entry?.fileId ?? '') : '', fullscreen: this.fullscreen,
+      controlsVisible: this.controlsVisible, navigationInset: this.navigationInset,
+      onToggleControls: this.onToggleControls, onDismiss: this.onDismiss,
       original: this.model.originalLoaded, errorText: this.model.errorText, information: this.information,
       video: /\.(?:mp4|mov|mkv|avi|m4v)$/i.test(this.model.entry?.name ?? ''),
       canDownload: this.model.entry !== undefined && this.model.entry.capabilities.canDownload,

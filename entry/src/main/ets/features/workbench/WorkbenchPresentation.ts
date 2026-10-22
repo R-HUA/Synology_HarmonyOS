@@ -40,7 +40,7 @@ export interface PhotoTimelineRow {
 
 /** 根据实际内容宽度安排照片网格；日期缺失时保留独立分组。 */
 export function photoGridColumns(width: number): number {
-  return Math.max(2, Math.min(6, Math.floor(Math.max(216, width - 32) / 108)));
+  return width < 300 ? 3 : width < 600 ? 4 : 6;
 }
 
 export function photoTakenDate(item: NasPhotoItem): string {
@@ -54,25 +54,20 @@ export function photoTimelineRows(items: NasPhotoItem[], columns: number,
   if (items.length === 0) { return previous; }
   // 追加只重组最后一行；前面的行保留对象身份，避免虚拟列表重新绑定。
   const result = previous.slice();
-  let previousMonth: string = result.length === 0 ? '' : photoMonth(result[result.length - 1].items[0]);
+  let previousDay: string = result.length === 0 ? '' : photoTakenDate(result[result.length - 1].items[0]);
   if (result.length > 0) {
     const tail = result[result.length - 1];
     result[result.length - 1] = { key: tail.key, title: tail.title, items: tail.items.slice() };
   }
   for (const item of items) {
-    const month = photoMonth(item);
+    const day = photoTakenDate(item);
     const last = result.length === 0 ? undefined : result[result.length - 1];
-    if (month !== previousMonth || last === undefined || last.items.length >= columns) {
-      result.push({ key: item.space.toString() + ':' + item.id.toString(), title: month !== previousMonth ? month : '', items: [item] });
+    if (day !== previousDay || last === undefined || last.items.length >= columns) {
+      result.push({ key: item.space.toString() + ':' + item.id.toString(), title: day !== previousDay ? day : '', items: [item] });
     } else { last.items.push(item); }
-    previousMonth = month;
+    previousDay = day;
   }
   return result;
-}
-
-function photoMonth(item: NasPhotoItem): string {
-  const date = item.takenAt === undefined ? undefined : new Date(item.takenAt * 1000);
-  return date === undefined ? '拍摄时间未提供' : date.getFullYear().toString() + '年' + (date.getMonth() + 1).toString() + '月';
 }
 
 export function photoMediaLabel(item: NasPhotoItem): string {

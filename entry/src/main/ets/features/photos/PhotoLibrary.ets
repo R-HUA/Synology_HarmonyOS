@@ -157,6 +157,16 @@ export class PhotoLibrary {
     await this.readPage(true);
   }
 
+  /** 清理预览与缩略图引用后才释放文件，下一次可见时重新请求。 */
+  clearCache(): void {
+    this.closeDetail();
+    this.clearDemand();
+    this.media.setAccess(this.selectedAccess);
+    this.thumbnails.clear();
+    this.thumbnailErrorText = this.media.cleanupErrorText;
+    this.dataGeneration++;
+  }
+
   /** 相册和照片页各自保留浏览进度，授权只在当前账号内存中保存。 */
   async activateTab(key: string, space: PhotosSpace, section: PhotoLibrarySection): Promise<void> {
     if (key === this.activeTab && space === this.space && (this.loaded || this.busy)) { return; }
@@ -199,6 +209,13 @@ export class PhotoLibrary {
     this.appendError = '';
     this.dataGeneration++;
     await this.readPage(true);
+  }
+
+  /** 写入成功后丢弃各页签旧列表，下次进入重新读取服务器结果。 */
+  uploadsChanged(): void {
+    this.tabContexts.clear();
+    if (!this.busy && this.detail === undefined && !this.selecting) { this.refresh(); }
+    else { this.loaded = false; }
   }
 
   async loadMore(): Promise<void> {
@@ -294,8 +311,10 @@ export class PhotoLibrary {
     this.detail = { id: item.id, filename: item.filename, bytes: item.bytes, space: item.space, mediaType: item.mediaType,
       takenAt: item.takenAt, width: item.width, height: item.height, orientation: item.orientation, thumbnail: item.thumbnail,
       sourceSpace: item.sourceSpace, folderId: item.folderId, description: item.description, exif: item.exif, favorite,
-      location: item.location, address: item.address, tags: item.tags };
+      location: item.location, address: item.address, tags: item.tags, durationMs: item.durationMs };
     this.itemByKey.get(this.itemKey(item))!.favorite = favorite;
+    this.items = this.items.slice();
+    this.dataGeneration++;
   }
 
   closeDetail(): void {
@@ -412,6 +431,14 @@ export class PhotoLibrary {
     if (!this.selecting || this.selectionBusy) { return; }
     const key = this.itemKey(item);
     this.selectedKeys = this.selectedKeys.includes(key) ? this.selectedKeys.filter((value: string): boolean => value !== key) : [...this.selectedKeys, key];
+  }
+
+  selectThrough(first: NasPhotoItem, last: NasPhotoItem): void {
+    if (!this.selecting || this.selectionBusy) { return; }
+    const start = this.items.indexOf(first), end = this.items.indexOf(last);
+    if (start < 0 || end < 0) { return; }
+    this.selectedKeys = Array.from(new Set(this.selectedKeys.concat(this.items.slice(Math.min(start, end), Math.max(start, end) + 1)
+      .map((item: NasPhotoItem): string => this.itemKey(item)))));
   }
   async downloadSelection(): Promise<void> {
     if (this.selectionBusy || this.selectedKeys.length === 0) { return; }
