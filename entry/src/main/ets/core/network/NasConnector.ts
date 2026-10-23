@@ -109,7 +109,7 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     { feature: 'cloudSyncFolders', api: 'SYNO.CloudSync', verifiedVersions: [1] },
     { feature: 'cloudSyncHistory', api: 'SYNO.CloudSync', verifiedVersions: [1] },
     { feature: 'cloudSyncQuota', api: 'SYNO.CloudSync', verifiedVersions: [1] },
-    { feature: 'systemLogRecords', api: 'SYNO.Core.SyslogClient.Log', verifiedVersions: [] },
+    { feature: 'systemLogRecords', api: 'SYNO.Core.SyslogClient.Log', verifiedVersions: [1] },
     { feature: 'noteList', api: 'SYNO.NoteStation.Note', verifiedVersions: [] }
   ]);
   constructor(private transport: NasTransport, private sessionName: 'FileStation' | 'NasControl' = 'FileStation') {
@@ -518,6 +518,19 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     const feature = operation === 'connections' ? 'cloudSyncConnections' : operation === 'folders' ? 'cloudSyncFolders' :
       operation === 'history' ? 'cloudSyncHistory' : 'cloudSyncQuota';
     return this.readSuite(feature, api.name, method, fields, decode);
+  }
+
+  /** 只从日志记录接口分页，不将计数或归档配置作为事件来源。 */
+  async readSystemLogs<T>(offset: number, until: number, decode: (data: Object) => T): Promise<T> {
+    this.requireSession();
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset >= 500 || !Number.isSafeInteger(until) || until <= 0) {
+      throw new NasFailure(NasErrorKind.InvalidInput, '日志读取范围无效。');
+    }
+    selectNasApi(this.capabilities, 'SYNO.Core.SyslogClient.Log', [1]);
+    return this.readSuite('systemLogRecords', 'SYNO.Core.SyslogClient.Log', 'list', [
+      { name: 'offset', content: offset.toString() }, { name: 'limit', content: '100' },
+      { name: 'dateto', content: until.toString() }
+    ], decode);
   }
 
   /** 套件拒绝授权仅局限于本次读取；主登录失效必须由主业务受保护读取确认。 */

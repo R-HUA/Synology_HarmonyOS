@@ -108,7 +108,7 @@ test('connector marks root browsing available only after decoding and does not g
 
 test('optional module discovery stays independent of package permissions and sends no speculative reads', async () => {
   const modules = [
-    ['systemLogRecords', 'SYNO.Core.SyslogClient.Log'], ['noteList', 'SYNO.NoteStation.Note'],
+    ['noteList', 'SYNO.NoteStation.Note'],
   ];
   for (const discovered of [true, false]) {
     const calls = [];

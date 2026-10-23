@@ -29,7 +29,7 @@ export struct MoreFeaturesPage {
         Column({ space: WorkbenchMetrics.sectionGap }) {
           this.feature($r('app.string.more_feature_containers'), $r('sys.symbol.square_grid_2x2'), 'SYNO.Docker.Container', 'containers')
           this.feature($r('app.string.more_feature_cloud_sync'), $r('sys.symbol.folder'), 'SYNO.CloudSync', 'cloud-sync')
-          this.feature($r('app.string.more_feature_system_logs'), $r('sys.symbol.list_bullet'), 'SYNO.Core.SyslogClient.Log')
+          this.feature($r('app.string.more_feature_system_logs'), $r('sys.symbol.list_bullet'), 'SYNO.Core.SyslogClient.Log', 'system-logs')
           this.feature($r('app.string.more_feature_notes'), $r('sys.symbol.doc_text'), 'SYNO.NoteStation.Note')
           Button($r('app.string.package_open_management')).buttonStyle(ButtonStyleMode.NORMAL)
             .width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).onClick(this.onManagement)
