@@ -505,14 +505,14 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     offset: number, until: number, decode: (data: Object) => T): Promise<T> {
     this.requireSession();
     if (!['connections', 'folders', 'history', 'quota'].includes(operation) ||
-      operation !== 'connections' && (connectionId.length === 0 || /[\u0000-\u001f]/.test(connectionId)) ||
+      operation !== 'connections' && !/^(?:0|[1-9]\d*)$/.test(connectionId) ||
       !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(until) || until < 0) {
       throw new NasFailure(NasErrorKind.InvalidInput, '云同步读取参数无效。');
     }
     const api = selectNasApi(this.capabilities, 'SYNO.CloudSync', [1]);
     const scalar = (value: string): string => api.jsonParameters ? JSON.stringify(value) : value;
     const fields: NasFormField[] = operation === 'connections' ? [{ name: 'is_tray', content: 'false' },
-      { name: 'group_by', content: scalar('group_by_user') }] : [{ name: 'connection_id', content: scalar(connectionId) }];
+      { name: 'group_by', content: scalar('group_by_user') }] : [{ name: 'connection_id', content: connectionId }];
     if (operation === 'history') {
       fields.push({ name: 'offset', content: offset.toString() }, { name: 'limit', content: '100' },
         { name: 'keyword', content: scalar('') }, { name: 'date_from', content: '0' }, { name: 'date_to', content: until.toString() },

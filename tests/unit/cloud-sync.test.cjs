@@ -57,7 +57,8 @@ test('cloud connector only calls the four read methods with fixed version and co
   replies.push(ok({ items: [] })); await connector.readCloudSync('history', connection.id, 100, 200, x => x);
   const fields = new URLSearchParams(calls.at(-1)[1]);
   assert.equal(fields.get('method'), 'get_log'); assert.equal(fields.get('version'), '1'); assert.equal(fields.get('limit'), '100');
-  assert.equal(JSON.parse(fields.get('connection_id')), connection.id); assert.equal(fields.get('date_to'), '200');
+  assert.equal(fields.get('connection_id'), connection.id); assert.equal(fields.get('date_to'), '200');
+  await assert.rejects(connector.readCloudSync('history', 'invalid-id', 0, 200, x => x));
   await assert.rejects(connector.readCloudSync('pause', connection.id, 0, 0, x => x));
   assert.equal(calls.length, 3);
   assert.doesNotMatch(calls.map(x => x[1]).join(' '), /get_conn_auth_info|pause|resume|relink|create|delete/);
