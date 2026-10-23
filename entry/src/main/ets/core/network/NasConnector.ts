@@ -105,7 +105,10 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     { feature: 'containerDetail', api: 'SYNO.Docker.Container', verifiedVersions: [1] },
     { feature: 'containerResources', api: 'SYNO.Docker.Container.Resource', verifiedVersions: [1] },
     { feature: 'containerLogs', api: 'SYNO.Docker.Container.Log', verifiedVersions: [1] },
-    { feature: 'cloudSyncConnections', api: 'SYNO.CloudSync', verifiedVersions: [] },
+    { feature: 'cloudSyncConnections', api: 'SYNO.CloudSync', verifiedVersions: [1] },
+    { feature: 'cloudSyncFolders', api: 'SYNO.CloudSync', verifiedVersions: [1] },
+    { feature: 'cloudSyncHistory', api: 'SYNO.CloudSync', verifiedVersions: [1] },
+    { feature: 'cloudSyncQuota', api: 'SYNO.CloudSync', verifiedVersions: [1] },
     { feature: 'systemLogRecords', api: 'SYNO.Core.SyslogClient.Log', verifiedVersions: [] },
     { feature: 'noteList', api: 'SYNO.NoteStation.Note', verifiedVersions: [] }
   ]);
@@ -490,6 +493,31 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     const feature = operation === 'list' ? 'containerList' : operation === 'detail' ? 'containerDetail' :
       operation === 'resources' ? 'containerResources' : 'containerLogs';
     return this.readSuite(feature, api, operation === 'list' ? 'list' : 'get', fields, decode);
+  }
+
+  /** 云端认证信息与控制方法不进入只读入口。 */
+  async readCloudSync<T>(operation: 'connections' | 'folders' | 'history' | 'quota', connectionId: string,
+    offset: number, until: number, decode: (data: Object) => T): Promise<T> {
+    this.requireSession();
+    if (!['connections', 'folders', 'history', 'quota'].includes(operation) ||
+      operation !== 'connections' && (connectionId.length === 0 || /[\u0000-\u001f]/.test(connectionId)) ||
+      !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(until) || until < 0) {
+      throw new NasFailure(NasErrorKind.InvalidInput, '云同步读取参数无效。');
+    }
+    const api = selectNasApi(this.capabilities, 'SYNO.CloudSync', [1]);
+    const scalar = (value: string): string => api.jsonParameters ? JSON.stringify(value) : value;
+    const fields: NasFormField[] = operation === 'connections' ? [{ name: 'is_tray', content: 'false' },
+      { name: 'group_by', content: scalar('group_by_user') }] : [{ name: 'connection_id', content: scalar(connectionId) }];
+    if (operation === 'history') {
+      fields.push({ name: 'offset', content: offset.toString() }, { name: 'limit', content: '100' },
+        { name: 'keyword', content: scalar('') }, { name: 'date_from', content: '0' }, { name: 'date_to', content: until.toString() },
+        { name: 'log_level', content: '-1' }, { name: 'action', content: '-1' });
+    }
+    const method = operation === 'connections' ? 'list_conn' : operation === 'folders' ? 'list_sess' :
+      operation === 'history' ? 'get_log' : 'get_property';
+    const feature = operation === 'connections' ? 'cloudSyncConnections' : operation === 'folders' ? 'cloudSyncFolders' :
+      operation === 'history' ? 'cloudSyncHistory' : 'cloudSyncQuota';
+    return this.readSuite(feature, api.name, method, fields, decode);
   }
 
   /** 套件拒绝授权仅局限于本次读取；主登录失效必须由主业务受保护读取确认。 */

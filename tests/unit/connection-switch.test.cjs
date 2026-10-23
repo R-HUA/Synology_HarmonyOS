@@ -313,6 +313,7 @@ async function fixture(options = {}) {
     '../extensions/NasExtensionsModel': { NasExtensionsModel: class { recordsReady = true; busy = false; pending = []; async attach() {} reset() {} } },
     '../packages/PackageCatalogModel': { PackageCatalogModel: class { attach() {} reset() {} } },
     '../containers/ContainerModel': { ContainerModel: class { attach() {} reset() {} } },
+    '../cloudsync/CloudSyncModel': { CloudSyncModel: class { attach() {} reset() {} } },
     '../drive/DriveBrowserModel': { DriveBrowserModel: class { attach() {} detach() {} reset() {} } },
     '../drive/DriveThumbnailStore': { DriveThumbnailStore: class { attach() {} detach() {} } },
     '../drive/DriveOriginalModel': { DriveOriginalModel: class { attach() {} detach() {} async close() {} } },

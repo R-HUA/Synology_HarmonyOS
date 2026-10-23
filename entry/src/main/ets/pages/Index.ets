@@ -39,6 +39,7 @@ import { PackageCatalogPage, PackageDetailPage } from '../features/packages/Pack
 import { InstalledPackage, PackageNativeTarget } from '../features/packages/PackageProtocol';
 import { MoreFeaturesPage } from '../features/workbench/MoreFeaturesPage';
 import { ContainerPage } from '../features/containers/ContainerPage';
+import { CloudSyncPage } from '../features/cloudsync/CloudSyncPage';
 import { NasTelemetrySummary, NasTelemetryStorageCard, NasTelemetryDashboard } from '../features/telemetry/TelemetryDashboard';
 import { photoTakenDate, workbenchBytes,
   workbenchCanUseDestination, workbenchBottomInset,
@@ -135,6 +136,7 @@ struct Index {
   private packageDetailScroller: Scroller = new Scroller();
   private moreFeaturesScroller: Scroller = new Scroller();
   private containersScroller: Scroller = new Scroller();
+  private cloudSyncScroller: Scroller = new Scroller();
   private telemetryScroller: Scroller = new Scroller();
   private addressBookScroller: Scroller = new Scroller();
   private systemControlScroller: Scroller = new Scroller();
@@ -485,6 +487,7 @@ struct Index {
 
   private updatePackageVisibility(): void {
     this.model.containers.setVisible(this.pageActive && this.foreground && this.model.authenticated && this.packageDestination === 'containers');
+    this.model.cloudSync.setVisible(this.pageActive && this.foreground && this.model.authenticated && this.packageDestination === 'cloud-sync');
     if (!this.pageActive || !this.foreground || !this.model.authenticated) {
       this.model.packages.hideList(); this.model.packages.hideDetail(); return;
     }
@@ -499,13 +502,13 @@ struct Index {
 
   private openPackageNative(target: PackageNativeTarget): void {
     if (!this.model.authenticated || this.navigationBusy()) { return; }
-    const available = target === 'containers' ? this.model.supports('SYNO.Docker.Container') : target === 'files' ? this.model.supports('SYNO.FileStation.List') : target === 'downloads' ?
+    const available = target === 'cloud-sync' ? this.model.supports('SYNO.CloudSync') : target === 'containers' ? this.model.supports('SYNO.Docker.Container') : target === 'files' ? this.model.supports('SYNO.FileStation.List') : target === 'downloads' ?
       this.model.supports('SYNO.DownloadStation.Task') : target === 'photos' ? this.supportsPhotos() :
       driveTabs((view: DriveView): boolean => this.model.drive.supportsView(view), this.drivePinned).length > 0;
     if (!available) { this.showTitleMenuError(this.previewText($r('app.string.package_native_unavailable'))); return; }
     this.model.packages.hideList(); this.model.packages.hideDetail();
     this.packageDestination = ''; this.navStack.clear();
-    if (target === 'containers') { this.navStack.pushPathByName('containers', undefined); }
+    if (target === 'containers' || target === 'cloud-sync') { this.navStack.pushPathByName(target, undefined); }
     else if (target === 'files') { this.switchTab(1); }
     else if (target === 'downloads') { this.openNasDownloads(); }
     else if (target === 'drive') { this.driveTabId = 'mydrive'; this.driveMoreView = ''; this.enterModule('drive'); }
@@ -521,7 +524,7 @@ struct Index {
     try { await this.abilityContext.openLink(origin); }
     catch {
       if (this.pageActive && this.foreground && this.packageDestination === destination &&
-        ['package-detail', 'more-features', 'containers'].includes(destination) && generation === this.model.sessionGeneration) {
+        ['package-detail', 'more-features', 'containers', 'cloud-sync'].includes(destination) && generation === this.model.sessionGeneration) {
         this.showTitleMenuError(this.previewText($r('app.string.package_browser_failed')));
       }
     }
@@ -2274,7 +2277,7 @@ struct Index {
       HdsNavDestination() {
         MoreFeaturesPage({ apis: this.model.capabilities, scroller: this.moreFeaturesScroller, bottomInset: this.navigationInset + 16,
           onManagement: (): void => { this.openPackageManagement(); },
-          onOpen: (destination: string): void => { if (destination === 'containers') { this.navStack.pushPathByName(destination, undefined); } } })
+          onOpen: (destination: string): void => { if (['containers', 'cloud-sync'].includes(destination)) { this.navStack.pushPathByName(destination, undefined); } } })
       }
         .backgroundColor($r('app.color.workbench_background'))
         .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL },
@@ -2294,6 +2297,18 @@ struct Index {
         .onBackPressed((): boolean => this.model.containers.back())
         .onShown((): void => { this.packageDestination = 'containers'; this.updatePackageVisibility(); this.updateTelemetryMode(); })
         .onHidden((): void => { this.model.containers.setVisible(false); if (this.packageDestination === 'containers') { this.packageDestination = ''; } this.updateTelemetryMode(); })
+    } else if (name === 'cloud-sync') {
+      HdsNavDestination() {
+        CloudSyncPage({ model: this.model.cloudSync, scroller: this.cloudSyncScroller, bottomInset: this.navigationInset + 16,
+          onManagement: (): void => { this.openPackageManagement(); } })
+      }
+        .backgroundColor($r('app.color.workbench_background'))
+        .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL },
+          title: { mainTitle: $r('app.string.more_feature_cloud_sync') } } })
+        .bindToScrollable([this.cloudSyncScroller])
+        .onBackPressed((): boolean => this.model.cloudSync.back())
+        .onShown((): void => { this.packageDestination = 'cloud-sync'; this.updatePackageVisibility(); this.updateTelemetryMode(); })
+        .onHidden((): void => { this.model.cloudSync.setVisible(false); if (this.packageDestination === 'cloud-sync') { this.packageDestination = ''; } this.updateTelemetryMode(); })
     } else if (name === 'packages') {
       HdsNavDestination() {
         PackageCatalogPage({ model: this.model.packages, scroller: this.packagesScroller, bottomInset: this.navigationInset + 16,
