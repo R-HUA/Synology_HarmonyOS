@@ -29,6 +29,7 @@ import type { CapabilitySnapshot } from '../capabilities/CapabilityRegistry';
 import { SessionRegistry } from './SessionRegistry';
 import type { BusinessSessionName, BusinessSessionRecord } from './SessionRegistry';
 import type { NasHttpReply, NasTransport } from './DsmRpcClient';
+import { decodeReadOnlyResponse } from '../domain/ReadOnlyProtocol';
 import type { DriveKernelPort } from './DriveAdapter';
 import type { DriveTransferKernelPort } from './DriveTransferAdapter';
 import { decodeDriveUpload, decodeDriveSliceProbe, driveSliceHeaders, DRIVE_TRANSFER_VERSION, driveUploadFields, driveDownloadFields,
@@ -60,7 +61,8 @@ export const NAS_DISCOVERY_QUERY = 'SYNO.API.Auth,SYNO.FileStation.List,SYNO.Fil
   'SYNO.SynologyDrive.Files,SYNO.SynologyDrive.TeamFolders,SYNO.SynologyDrive.Trash,SYNO.SynologyDrive.Tasks,' +
   'SYNO.SynologyDrive.Sharing,SYNO.SynologyDrive.Share,SYNO.SynologyDrive.Settings,SYNO.SynologyDrive.Notifications,' +
   'SYNO.Core.System,SYNO.Core.System.Utilization,SYNO.Storage.CGI.Storage,' +
-  'SYNO.Docker.Container,SYNO.CloudSync,SYNO.Core.SyslogClient.Log,SYNO.NoteStation.Note';
+  'SYNO.Docker.Container,SYNO.Docker.Container.Resource,SYNO.Docker.Container.Log,' +
+  'SYNO.CloudSync,SYNO.Core.SyslogClient.Log,SYNO.NoteStation.Note';
 
 interface DriveTransferScope {
   ticket: number;
@@ -99,7 +101,10 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     { feature: 'driveTrash', api: DRIVE_TRASH_API, verifiedVersions: [DRIVE_TRASH_VERSION] },
     { feature: 'driveNotifications', api: 'SYNO.SynologyDrive.Notifications', verifiedVersions: [1] },
     { feature: 'packageCatalog', api: 'SYNO.Core.Package', verifiedVersions: [1] },
-    { feature: 'containerList', api: 'SYNO.Docker.Container', verifiedVersions: [] },
+    { feature: 'containerList', api: 'SYNO.Docker.Container', verifiedVersions: [1] },
+    { feature: 'containerDetail', api: 'SYNO.Docker.Container', verifiedVersions: [1] },
+    { feature: 'containerResources', api: 'SYNO.Docker.Container.Resource', verifiedVersions: [1] },
+    { feature: 'containerLogs', api: 'SYNO.Docker.Container.Log', verifiedVersions: [1] },
     { feature: 'cloudSyncConnections', api: 'SYNO.CloudSync', verifiedVersions: [] },
     { feature: 'systemLogRecords', api: 'SYNO.Core.SyslogClient.Log', verifiedVersions: [] },
     { feature: 'noteList', api: 'SYNO.NoteStation.Note', verifiedVersions: [] }
@@ -459,6 +464,54 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     const encoded = fields.map((field: NasFormField): NasFormField => ({ name: field.name,
       content: field.name === 'id' && api.jsonParameters ? JSON.stringify(field.content) : field.content }));
     return this.call(api.name, 1, method, encoded);
+  }
+
+  /** 读取入口自行构造参数，不接受容器控制方法或调用方追加的请求字段。 */
+  async readContainers<T>(operation: 'list' | 'detail' | 'resources' | 'logs', name: string,
+    decode: (data: Object) => T): Promise<T> {
+    this.requireSession();
+    if (!['list', 'detail', 'resources', 'logs'].includes(operation)) {
+      throw new NasFailure(NasErrorKind.InvalidInput, '不支持此容器读取操作。');
+    }
+    if ((operation === 'detail' || operation === 'logs') && (name.length === 0 || /[\u0000-\u001f]/.test(name))) {
+      throw new NasFailure(NasErrorKind.InvalidInput, '容器名称无效。');
+    }
+    const api = operation === 'resources' ? 'SYNO.Docker.Container.Resource' : operation === 'logs' ?
+      'SYNO.Docker.Container.Log' : 'SYNO.Docker.Container';
+    const descriptor = selectNasApi(this.capabilities, api, [1]);
+    const scalar = (text: string): string => descriptor.jsonParameters ? JSON.stringify(text) : text;
+    const fields: NasFormField[] = operation === 'list' ? [{ name: 'offset', content: '0' }, { name: 'limit', content: '-1' },
+      { name: 'type', content: scalar('all') }] : operation === 'resources' ? [] : [{ name: 'name', content: scalar(name) }];
+    if (operation === 'logs') {
+      fields.push({ name: 'offset', content: '0' }, { name: 'limit', content: '500' }, { name: 'from', content: scalar('') },
+        { name: 'to', content: scalar('') }, { name: 'level', content: scalar('') }, { name: 'keyword', content: scalar('') },
+        { name: 'sort_by', content: scalar('time') }, { name: 'sort_dir', content: scalar('DESC') });
+    }
+    const feature = operation === 'list' ? 'containerList' : operation === 'detail' ? 'containerDetail' :
+      operation === 'resources' ? 'containerResources' : 'containerLogs';
+    return this.readSuite(feature, api, operation === 'list' ? 'list' : 'get', fields, decode);
+  }
+
+  /** 套件拒绝授权仅局限于本次读取；主登录失效必须由主业务受保护读取确认。 */
+  private async readSuite<T>(feature: string, api: string, method: string, fields: NasFormField[],
+    decode: (data: Object) => T): Promise<T> {
+    return this.featureRegistry.read(feature, async (): Promise<T> => {
+      const ticket = this.generation;
+      let data: Object;
+      try { data = await this.callWith(api, 1, method, fields, decodeReadOnlyResponse, false); }
+      catch (error) {
+        if (!(error instanceof NasFailure) || error.kind !== NasErrorKind.SessionExpired) { throw error; }
+        let verified = false;
+        try { await this.list('', 0); verified = true; }
+        catch (proof) {
+          if (!(proof instanceof NasFailure) || proof.kind === NasErrorKind.SessionExpired || proof.kind === NasErrorKind.Cancelled) { throw proof; }
+        }
+        this.ensureCurrent(ticket);
+        throw new NasFailure(NasErrorKind.Permission, verified ? '当前功能未接受登录授权，请在浏览器中核对权限。' :
+          '当前功能拒绝登录授权，主登录状态暂无法确认，请稍后重试或在浏览器中核对。', error.code);
+      }
+      return decode(data);
+    });
   }
 
   private async packageVersion(id: string): Promise<string> {

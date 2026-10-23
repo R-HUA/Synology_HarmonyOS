@@ -1,7 +1,7 @@
 import { nasRecord, NasErrorKind, NasFailure } from '../../core/domain/DsmProtocol';
 
 export type PackageState = 'running' | 'stopped' | 'unknown';
-export type PackageNativeTarget = 'files' | 'drive' | 'photos' | 'downloads';
+export type PackageNativeTarget = 'files' | 'drive' | 'photos' | 'downloads' | 'containers';
 
 /** 仅保留目录展示所需信息，附加配置不进入页面状态。 */
 export interface InstalledPackage {
@@ -19,6 +19,7 @@ export function packageNativeTarget(id: string): PackageNativeTarget | undefined
     case 'SynologyDrive': return 'drive';
     case 'SynologyPhotos': return 'photos';
     case 'DownloadStation': return 'downloads';
+    case 'Docker': case 'ContainerManager': return 'containers';
     default: return undefined;
   }
 }

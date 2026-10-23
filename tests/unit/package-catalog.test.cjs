@@ -224,6 +224,7 @@ function navigationFixture(available = true) {
   Object.assign(page, {
     pageActive: true, foreground: true, packageDestination: 'package-detail', drivePinned: [],
     model: { authenticated: true, sessionGeneration: 1, supports: () => available, drive: { supportsView: () => available },
+      containers: { setVisible() {} },
       packages: { hideList: () => events.push('hideList'), hideDetail: () => events.push('hideDetail'),
         showList: () => events.push('showList'), showDetail: () => events.push('showDetail'),
         managementOrigin: () => 'https://nas.example.test:5001' } },
