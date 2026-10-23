@@ -59,7 +59,8 @@ export const NAS_DISCOVERY_QUERY = 'SYNO.API.Auth,SYNO.FileStation.List,SYNO.Fil
   // Drive 是独立套件，必须单独问；SYNO.API.Info 只回答被问到的名字。
   'SYNO.SynologyDrive.Files,SYNO.SynologyDrive.TeamFolders,SYNO.SynologyDrive.Trash,SYNO.SynologyDrive.Tasks,' +
   'SYNO.SynologyDrive.Sharing,SYNO.SynologyDrive.Share,SYNO.SynologyDrive.Settings,SYNO.SynologyDrive.Notifications,' +
-  'SYNO.Core.System,SYNO.Core.System.Utilization,SYNO.Storage.CGI.Storage';
+  'SYNO.Core.System,SYNO.Core.System.Utilization,SYNO.Storage.CGI.Storage,' +
+  'SYNO.Docker.Container,SYNO.CloudSync,SYNO.Core.SyslogClient.Log,SYNO.NoteStation.Note';
 
 interface DriveTransferScope {
   ticket: number;
@@ -97,7 +98,11 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     { feature: 'driveTeamFolders', api: DRIVE_TEAM_FOLDERS_API, verifiedVersions: [DRIVE_TEAM_FOLDERS_VERSION] },
     { feature: 'driveTrash', api: DRIVE_TRASH_API, verifiedVersions: [DRIVE_TRASH_VERSION] },
     { feature: 'driveNotifications', api: 'SYNO.SynologyDrive.Notifications', verifiedVersions: [1] },
-    { feature: 'packageCatalog', api: 'SYNO.Core.Package', verifiedVersions: [1] }
+    { feature: 'packageCatalog', api: 'SYNO.Core.Package', verifiedVersions: [1] },
+    { feature: 'containerList', api: 'SYNO.Docker.Container', verifiedVersions: [] },
+    { feature: 'cloudSyncConnections', api: 'SYNO.CloudSync', verifiedVersions: [] },
+    { feature: 'systemLogRecords', api: 'SYNO.Core.SyslogClient.Log', verifiedVersions: [] },
+    { feature: 'noteList', api: 'SYNO.NoteStation.Note', verifiedVersions: [] }
   ]);
   constructor(private transport: NasTransport, private sessionName: 'FileStation' | 'NasControl' = 'FileStation') {
     this.rpc = new DsmRpcClient(transport);

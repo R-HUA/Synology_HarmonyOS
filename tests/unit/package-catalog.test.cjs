@@ -259,6 +259,29 @@ test('management opens only the normalized origin and a stale browser failure ca
   await f.page.openPackageManagement(); assert.deepEqual(f.events, ['error']);
 });
 
+test('more features can open management when native modules are unavailable and ignores hidden browser failures', async () => {
+  const f = navigationFixture(false);
+  f.page.packageDestination = 'more-features';
+  f.page.updatePackageVisibility();
+  assert.deepEqual(f.events, []);
+  await f.page.openPackageManagement();
+  assert.deepEqual(f.links, ['https://nas.example.test:5001']);
+  for (const hidden of ['destination', 'foreground', 'account']) {
+    const remote = deferred();
+    f.page.packageDestination = 'more-features'; f.page.foreground = true;
+    f.page.abilityContext.openLink = () => remote.promise;
+    const operation = f.page.openPackageManagement();
+    if (hidden === 'destination') f.page.packageDestination = 'package-detail';
+    else if (hidden === 'foreground') f.page.foreground = false;
+    else f.page.model.sessionGeneration++;
+    remote.reject(new Error('failed')); await operation;
+    assert.deepEqual(f.events, []);
+  }
+  f.page.model.authenticated = false;
+  await f.page.openPackageManagement();
+  assert.equal(f.links.length, 1);
+});
+
 test('backgrounding invalidates both catalog requests and foreground resumes only the current page', () => {
   const f = navigationFixture(); f.page.foreground = false; f.page.updatePackageVisibility();
   assert.deepEqual(f.events, ['hideList', 'hideDetail']);

@@ -299,6 +299,14 @@
     { "name": "home_backup_disabled", "value": "自动备份未开启" },
     { "name": "home_transfer_count", "value": "%d 项传输中" },
     { "name": "home_browse_files", "value": "浏览与管理文件" },
-    { "name": "home_loaded_downloads", "value": "已加载 %d 项活跃下载" }
+    { "name": "home_loaded_downloads", "value": "已加载 %d 项活跃下载" },
+    { "name": "more_features", "value": "更多功能" },
+    { "name": "more_features_hint", "value": "容器、云同步、日志与笔记" },
+    { "name": "more_feature_containers", "value": "容器" },
+    { "name": "more_feature_cloud_sync", "value": "云同步" },
+    { "name": "more_feature_system_logs", "value": "系统日志" },
+    { "name": "more_feature_notes", "value": "笔记" },
+    { "name": "more_feature_unverified", "value": "尚未验证" },
+    { "name": "more_feature_unavailable", "value": "暂不可用" }
   ]
 }

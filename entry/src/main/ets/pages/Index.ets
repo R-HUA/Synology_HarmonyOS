@@ -37,6 +37,7 @@ import { ShareLinksPage } from '../features/fileSharing/ShareLinksPage';
 import { DownloadStationPage } from '../features/downloadStation/DownloadStationPage';
 import { PackageCatalogPage, PackageDetailPage } from '../features/packages/PackageCatalogPage';
 import { InstalledPackage, PackageNativeTarget } from '../features/packages/PackageProtocol';
+import { MoreFeaturesPage } from '../features/workbench/MoreFeaturesPage';
 import { NasTelemetrySummary, NasTelemetryStorageCard, NasTelemetryDashboard } from '../features/telemetry/TelemetryDashboard';
 import { photoTakenDate, workbenchBytes,
   workbenchCanUseDestination, workbenchBottomInset,
@@ -131,6 +132,7 @@ struct Index {
   private downloadsScroller: Scroller = new Scroller();
   private packagesScroller: Scroller = new Scroller();
   private packageDetailScroller: Scroller = new Scroller();
+  private moreFeaturesScroller: Scroller = new Scroller();
   private telemetryScroller: Scroller = new Scroller();
   private addressBookScroller: Scroller = new Scroller();
   private systemControlScroller: Scroller = new Scroller();
@@ -515,7 +517,7 @@ struct Index {
     try { await this.abilityContext.openLink(origin); }
     catch {
       if (this.pageActive && this.foreground && this.packageDestination === destination &&
-        destination === 'package-detail' && generation === this.model.sessionGeneration) {
+        (destination === 'package-detail' || destination === 'more-features') && generation === this.model.sessionGeneration) {
         this.showTitleMenuError(this.previewText($r('app.string.package_browser_failed')));
       }
     }
@@ -1416,6 +1418,8 @@ struct Index {
           }
           this.shortcut($r('sys.symbol.square_grid_2x2'), $r('app.string.package_catalog'),
             $r('app.string.package_catalog_hint'), (): void => { this.navStack.pushPathByName('packages', undefined); })
+          this.shortcut($r('sys.symbol.ellipsis_circle'), $r('app.string.more_features'),
+            $r('app.string.more_features_hint'), (): void => { this.navStack.pushPathByName('more-features', undefined); })
         }.width('100%').padding(4).borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
     }.width('100%')
   }
@@ -2262,6 +2266,17 @@ struct Index {
         .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: 'Drive 文件操作' } } })
         .bindToScrollable([this.driveActionScroller])
         .onHidden((): void => { this.model.driveActions.clearDraft(); })
+    } else if (name === 'more-features') {
+      HdsNavDestination() {
+        MoreFeaturesPage({ apis: this.model.capabilities, scroller: this.moreFeaturesScroller, bottomInset: this.navigationInset + 16,
+          onManagement: (): void => { this.openPackageManagement(); } })
+      }
+        .backgroundColor($r('app.color.workbench_background'))
+        .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL },
+          title: { mainTitle: $r('app.string.more_features') } } })
+        .bindToScrollable([this.moreFeaturesScroller])
+        .onShown((): void => { this.packageDestination = 'more-features'; this.updateTelemetryMode(); })
+        .onHidden((): void => { if (this.packageDestination === 'more-features') { this.packageDestination = ''; } this.updateTelemetryMode(); })
     } else if (name === 'packages') {
       HdsNavDestination() {
         PackageCatalogPage({ model: this.model.packages, scroller: this.packagesScroller, bottomInset: this.navigationInset + 16,

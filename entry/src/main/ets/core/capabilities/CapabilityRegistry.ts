@@ -35,13 +35,18 @@ export class CapabilityRegistry {
       const snapshot: CapabilitySnapshot = { feature: definition.feature, state: 'unverified', apiVersion: 0,
         packageVersion: '', checkedAt: checkedAt, reason: 'apiNotDiscovered' };
       if (apis.some((api: NasApiDescriptor): boolean => api.name === definition.api)) {
-        try {
-          snapshot.apiVersion = selectVerifiedApi(apis, definition.api, definition.verifiedVersions).version;
-          snapshot.reason = 'readNotVerified';
-        } catch (error) {
-          if (!(error instanceof NasFailure) || error.kind !== NasErrorKind.Unsupported) { throw error; }
-          snapshot.state = 'unsupportedVersion';
-          snapshot.reason = 'noVerifiedVersion';
+        if (definition.verifiedVersions.length === 0) {
+          // 缺少已验证合同不能归因为服务器版本不兼容。
+          snapshot.reason = 'noVerifiedContract';
+        } else {
+          try {
+            snapshot.apiVersion = selectVerifiedApi(apis, definition.api, definition.verifiedVersions).version;
+            snapshot.reason = 'readNotVerified';
+          } catch (error) {
+            if (!(error instanceof NasFailure) || error.kind !== NasErrorKind.Unsupported) { throw error; }
+            snapshot.state = 'unsupportedVersion';
+            snapshot.reason = 'noVerifiedVersion';
+          }
         }
       }
       this.entries.set(definition.feature, snapshot);

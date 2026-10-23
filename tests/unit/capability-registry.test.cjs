@@ -23,6 +23,25 @@ test('API discovery is not proof of installation or permission and only selects 
   assert.equal(snapshot(registry).state, 'unverified');
 });
 
+test('discovered APIs without verified contracts remain unverified across ranges and resets', async () => {
+  const registry = new CapabilityRegistry([{ ...definition, verifiedVersions: [] }]);
+  for (const range of [{ minVersion: 1, maxVersion: 20 }, { minVersion: 100, maxVersion: 200 }]) {
+    registry.discover([{ ...api, ...range }], 30);
+    assert.equal(snapshot(registry).state, 'unverified');
+    assert.equal(snapshot(registry).apiVersion, 0);
+    assert.equal(snapshot(registry).reason, 'noVerifiedContract');
+    await registry.read('files', async () => 'unrelated success');
+    assert.equal(snapshot(registry).state, 'unverified');
+    registry.invalidate('files');
+    assert.equal(snapshot(registry).reason, 'noVerifiedContract');
+  }
+  registry.discover([]);
+  assert.equal(snapshot(registry).state, 'unverified');
+  assert.equal(snapshot(registry).reason, 'apiNotDiscovered');
+  registry.clear();
+  assert.deepEqual(registry.snapshots(), []);
+});
+
 test('validated reads distinguish permissions, network and response shape, and can recover', async () => {
   const registry = new CapabilityRegistry([definition]);
   registry.discover([api]);
@@ -85,4 +104,41 @@ test('connector marks root browsing available only after decoding and does not g
   await assert.rejects(connector.list(''));
   assert.equal(files().state, 'unverified');
   connector.close();
+});
+
+test('optional module discovery stays independent of package permissions and sends no speculative reads', async () => {
+  const modules = [
+    ['containerList', 'SYNO.Docker.Container'], ['cloudSyncConnections', 'SYNO.CloudSync'],
+    ['systemLogRecords', 'SYNO.Core.SyslogClient.Log'], ['noteList', 'SYNO.NoteStation.Note'],
+  ];
+  for (const discovered of [true, false]) {
+    const calls = [];
+    const descriptors = {
+      'SYNO.API.Auth': { path: 'auth.cgi', minVersion: 1, maxVersion: 7 },
+      'SYNO.Core.Package': { path: 'packages.cgi', minVersion: 1, maxVersion: 1 },
+    };
+    if (discovered) for (const [, name] of modules) descriptors[name] = { path: 'entry.cgi', minVersion: 10, maxVersion: 99 };
+    const replies = [
+      { status: 200, text: JSON.stringify({ success: true, data: descriptors }) },
+      { status: 200, text: '{"success":false,"error":{"code":105}}' },
+    ];
+    const connector = new NasConnector({ post(...args) { calls.push(args); return Promise.resolve(replies.shift()); }, close() {} });
+    await connector.discover('https://nas.example');
+    const queried = new URLSearchParams(calls[0][1]).get('query').split(',');
+    for (const [, name] of modules) assert.ok(queried.includes(name));
+    connector.restoreSession([{ name: 'FileStation', sid: 'synthetic-sid', synoToken: '' }]);
+    assert.equal(calls.length, 1);
+    await assert.rejects(connector.readPackageCatalog(() => connector.packageRequest('list', [])), error => error.kind === K.Permission);
+    assert.equal(connector.sessionSnapshot().length, 1);
+    for (const [feature] of modules) {
+      const state = connector.capabilitySnapshots().find(value => value.feature === feature);
+      assert.equal(state.state, 'unverified');
+      assert.equal(state.apiVersion, 0);
+      assert.equal(state.reason, discovered ? 'noVerifiedContract' : 'apiNotDiscovered');
+    }
+    assert.equal(calls.length, 2);
+    assert.equal(new URLSearchParams(calls[1][1]).get('api'), 'SYNO.Core.Package');
+    connector.close();
+    assert.throws(() => connector.capabilitySnapshots(), error => error.kind === K.Cancelled);
+  }
 });
