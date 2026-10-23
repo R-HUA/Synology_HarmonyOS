@@ -41,6 +41,7 @@ import { MoreFeaturesPage } from '../features/workbench/MoreFeaturesPage';
 import { ContainerPage } from '../features/containers/ContainerPage';
 import { CloudSyncPage } from '../features/cloudsync/CloudSyncPage';
 import { SystemLogPage } from '../features/systemlogs/SystemLogPage';
+import { NoteStationPage } from '../features/notes/NoteStationPage';
 import { NasTelemetrySummary, NasTelemetryStorageCard, NasTelemetryDashboard } from '../features/telemetry/TelemetryDashboard';
 import { photoTakenDate, workbenchBytes,
   workbenchCanUseDestination, workbenchBottomInset,
@@ -139,6 +140,7 @@ struct Index {
   private containersScroller: Scroller = new Scroller();
   private cloudSyncScroller: Scroller = new Scroller();
   private systemLogsScroller: Scroller = new Scroller();
+  private notesScroller: Scroller = new Scroller();
   private telemetryScroller: Scroller = new Scroller();
   private addressBookScroller: Scroller = new Scroller();
   private systemControlScroller: Scroller = new Scroller();
@@ -491,6 +493,7 @@ struct Index {
     this.model.containers.setVisible(this.pageActive && this.foreground && this.model.authenticated && this.packageDestination === 'containers');
     this.model.cloudSync.setVisible(this.pageActive && this.foreground && this.model.authenticated && this.packageDestination === 'cloud-sync');
     this.model.systemLogs.setVisible(this.pageActive && this.foreground && this.model.authenticated && this.packageDestination === 'system-logs');
+    this.model.notes.setVisible(this.pageActive && this.foreground && this.model.authenticated && this.packageDestination === 'notes');
     if (!this.pageActive || !this.foreground || !this.model.authenticated) {
       this.model.packages.hideList(); this.model.packages.hideDetail(); return;
     }
@@ -505,13 +508,13 @@ struct Index {
 
   private openPackageNative(target: PackageNativeTarget): void {
     if (!this.model.authenticated || this.navigationBusy()) { return; }
-    const available = target === 'system-logs' ? this.model.supports('SYNO.Core.SyslogClient.Log') : target === 'cloud-sync' ? this.model.supports('SYNO.CloudSync') : target === 'containers' ? this.model.supports('SYNO.Docker.Container') : target === 'files' ? this.model.supports('SYNO.FileStation.List') : target === 'downloads' ?
+    const available = target === 'notes' ? this.model.supports('SYNO.NoteStation.Note') : target === 'system-logs' ? this.model.supports('SYNO.Core.SyslogClient.Log') : target === 'cloud-sync' ? this.model.supports('SYNO.CloudSync') : target === 'containers' ? this.model.supports('SYNO.Docker.Container') : target === 'files' ? this.model.supports('SYNO.FileStation.List') : target === 'downloads' ?
       this.model.supports('SYNO.DownloadStation.Task') : target === 'photos' ? this.supportsPhotos() :
       driveTabs((view: DriveView): boolean => this.model.drive.supportsView(view), this.drivePinned).length > 0;
     if (!available) { this.showTitleMenuError(this.previewText($r('app.string.package_native_unavailable'))); return; }
     this.model.packages.hideList(); this.model.packages.hideDetail();
     this.packageDestination = ''; this.navStack.clear();
-    if (target === 'containers' || target === 'cloud-sync' || target === 'system-logs') { this.navStack.pushPathByName(target, undefined); }
+    if (target === 'containers' || target === 'cloud-sync' || target === 'system-logs' || target === 'notes') { this.navStack.pushPathByName(target, undefined); }
     else if (target === 'files') { this.switchTab(1); }
     else if (target === 'downloads') { this.openNasDownloads(); }
     else if (target === 'drive') { this.driveTabId = 'mydrive'; this.driveMoreView = ''; this.enterModule('drive'); }
@@ -527,7 +530,7 @@ struct Index {
     try { await this.abilityContext.openLink(origin); }
     catch {
       if (this.pageActive && this.foreground && this.packageDestination === destination &&
-        ['package-detail', 'more-features', 'containers', 'cloud-sync', 'system-logs'].includes(destination) && generation === this.model.sessionGeneration) {
+        ['package-detail', 'more-features', 'containers', 'cloud-sync', 'system-logs', 'notes'].includes(destination) && generation === this.model.sessionGeneration) {
         this.showTitleMenuError(this.previewText($r('app.string.package_browser_failed')));
       }
     }
@@ -2280,7 +2283,7 @@ struct Index {
       HdsNavDestination() {
         MoreFeaturesPage({ apis: this.model.capabilities, scroller: this.moreFeaturesScroller, bottomInset: this.navigationInset + 16,
           onManagement: (): void => { this.openPackageManagement(); },
-          onOpen: (destination: string): void => { if (['containers', 'cloud-sync', 'system-logs'].includes(destination)) { this.navStack.pushPathByName(destination, undefined); } } })
+          onOpen: (destination: string): void => { if (['containers', 'cloud-sync', 'system-logs', 'notes'].includes(destination)) { this.navStack.pushPathByName(destination, undefined); } } })
       }
         .backgroundColor($r('app.color.workbench_background'))
         .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL },
@@ -2324,6 +2327,18 @@ struct Index {
         .onBackPressed((): boolean => this.model.systemLogs.back())
         .onShown((): void => { this.packageDestination = 'system-logs'; this.updatePackageVisibility(); this.updateTelemetryMode(); })
         .onHidden((): void => { this.model.systemLogs.setVisible(false); if (this.packageDestination === 'system-logs') { this.packageDestination = ''; } this.updateTelemetryMode(); })
+    } else if (name === 'notes') {
+      HdsNavDestination() {
+        NoteStationPage({ model: this.model.notes, scroller: this.notesScroller, bottomInset: this.navigationInset + 16,
+          onManagement: (): void => { this.openPackageManagement(); } })
+      }
+        .backgroundColor($r('app.color.workbench_background'))
+        .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL },
+          title: { mainTitle: $r('app.string.more_feature_notes') } } })
+        .bindToScrollable([this.notesScroller])
+        .onBackPressed((): boolean => this.model.notes.back())
+        .onShown((): void => { this.packageDestination = 'notes'; this.updatePackageVisibility(); this.updateTelemetryMode(); })
+        .onHidden((): void => { this.model.notes.setVisible(false); if (this.packageDestination === 'notes') { this.packageDestination = ''; } this.updateTelemetryMode(); })
     } else if (name === 'packages') {
       HdsNavDestination() {
         PackageCatalogPage({ model: this.model.packages, scroller: this.packagesScroller, bottomInset: this.navigationInset + 16,

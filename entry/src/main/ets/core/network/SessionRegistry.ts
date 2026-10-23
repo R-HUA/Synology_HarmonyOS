@@ -2,12 +2,12 @@ import { decodeNasSession, nasRecord, nasString, NasErrorKind, NasFailure } from
 import type { NasLoginSession } from '../domain/DsmProtocol';
 
 /** DSM 登录会话按业务名称隔离授权；新增业务须在此登记，不开放任意会话名。 */
-export type BusinessSessionName = 'FileStation' | 'DownloadStation' | 'NasControl';
+export type BusinessSessionName = 'FileStation' | 'DownloadStation' | 'NasControl' | 'NoteStation';
 
 /** 持久化用的业务会话记录；不含密码、OTP 或来源地址。 */
 export interface BusinessSessionRecord { name: string; sid: string; synoToken: string; }
 
-const KNOWN_SESSIONS: BusinessSessionName[] = ['FileStation', 'DownloadStation', 'NasControl'];
+const KNOWN_SESSIONS: BusinessSessionName[] = ['FileStation', 'DownloadStation', 'NasControl', 'NoteStation'];
 
 function invalidRecord(): NasFailure {
   return new NasFailure(NasErrorKind.Protocol, '保存的业务会话格式不符合预期。');

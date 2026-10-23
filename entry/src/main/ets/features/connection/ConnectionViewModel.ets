@@ -23,6 +23,7 @@ import { PackageCatalogModel } from '../packages/PackageCatalogModel';
 import { ContainerModel } from '../containers/ContainerModel';
 import { CloudSyncModel } from '../cloudsync/CloudSyncModel';
 import { SystemLogModel } from '../systemlogs/SystemLogModel';
+import { NoteModel } from '../notes/NoteModel';
 import { DriveBrowserModel } from '../drive/DriveBrowserModel';
 import { DriveTransferModel } from '../drive/DriveTransferModel';
 import { DriveThumbnailStore } from '../drive/DriveThumbnailStore';
@@ -80,6 +81,7 @@ export class ConnectionViewModel {
   readonly containers: ContainerModel = new ContainerModel();
   readonly cloudSync: CloudSyncModel = new CloudSyncModel();
   readonly systemLogs: SystemLogModel = new SystemLogModel();
+  readonly notes: NoteModel = new NoteModel();
   /** Drive 只读浏览；与 File Station 状态完全独立，来源切换由界面决定。 */
   readonly drive: DriveBrowserModel = new DriveBrowserModel();
   readonly driveTransfers: DriveTransferModel = new DriveTransferModel();
@@ -913,6 +915,9 @@ export class ConnectionViewModel {
     this.systemLogs.attach(connector, async (error: NasFailure): Promise<void> => {
       if (extensionTicket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'systemLogs'); }
     });
+    this.notes.attach(connector, this.account.trim(), this.context, async (error: NasFailure): Promise<void> => {
+      if (extensionTicket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'notes'); }
+    });
     // Drive 复用 File Station 会话（实测 cookie-header-only），但状态独立：
     // 只有在套件通告可用时才允许切到 Drive 来源。
     const driveTicket = this.generation;
@@ -1183,6 +1188,7 @@ export class ConnectionViewModel {
     this.containers.reset();
     this.cloudSync.reset();
     this.systemLogs.reset();
+    this.notes.reset();
     this.systemControl.deactivate();
     this.deviceCheckText = '尚未登记设备身份';
     this.deviceModel = '';

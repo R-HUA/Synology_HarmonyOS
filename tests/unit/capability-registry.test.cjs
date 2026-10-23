@@ -131,9 +131,9 @@ test('optional module discovery stays independent of package permissions and sen
     assert.equal(connector.sessionSnapshot().length, 1);
     for (const [feature] of modules) {
       const state = connector.capabilitySnapshots().find(value => value.feature === feature);
-      assert.equal(state.state, 'unverified');
+      assert.equal(state.state, discovered ? 'unsupportedVersion' : 'unverified');
       assert.equal(state.apiVersion, 0);
-      assert.equal(state.reason, discovered ? 'noVerifiedContract' : 'apiNotDiscovered');
+      assert.equal(state.reason, discovered ? 'noVerifiedVersion' : 'apiNotDiscovered');
     }
     assert.equal(calls.length, 2);
     assert.equal(new URLSearchParams(calls[1][1]).get('api'), 'SYNO.Core.Package');

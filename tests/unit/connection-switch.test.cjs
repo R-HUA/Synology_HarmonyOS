@@ -315,6 +315,7 @@ async function fixture(options = {}) {
     '../containers/ContainerModel': { ContainerModel: class { attach() {} reset() {} } },
     '../cloudsync/CloudSyncModel': { CloudSyncModel: class { attach() {} reset() {} } },
     '../systemlogs/SystemLogModel': { SystemLogModel: class { attach() {} reset() {} } },
+    '../notes/NoteModel': { NoteModel: class { attach() {} reset() {} } },
     '../drive/DriveBrowserModel': { DriveBrowserModel: class { attach() {} detach() {} reset() {} } },
     '../drive/DriveThumbnailStore': { DriveThumbnailStore: class { attach() {} detach() {} } },
     '../drive/DriveOriginalModel': { DriveOriginalModel: class { attach() {} detach() {} async close() {} } },

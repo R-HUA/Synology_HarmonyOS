@@ -62,7 +62,7 @@ export const NAS_DISCOVERY_QUERY = 'SYNO.API.Auth,SYNO.FileStation.List,SYNO.Fil
   'SYNO.SynologyDrive.Sharing,SYNO.SynologyDrive.Share,SYNO.SynologyDrive.Settings,SYNO.SynologyDrive.Notifications,' +
   'SYNO.Core.System,SYNO.Core.System.Utilization,SYNO.Storage.CGI.Storage,' +
   'SYNO.Docker.Container,SYNO.Docker.Container.Resource,SYNO.Docker.Container.Log,' +
-  'SYNO.CloudSync,SYNO.Core.SyslogClient.Log,SYNO.NoteStation.Note';
+  'SYNO.CloudSync,SYNO.Core.SyslogClient.Log,SYNO.NoteStation.Note,SYNO.NoteStation.Notebook,SYNO.NoteStation.Tag';
 
 interface DriveTransferScope {
   ticket: number;
@@ -82,6 +82,7 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
   private loggingOut: boolean = false;
   private authenticating: boolean = false;
   private downloadAuthenticating: boolean = false;
+  private noteAuthenticating: boolean = false;
   private rpc: DsmRpcClient;
   private featureRegistry: CapabilityRegistry = new CapabilityRegistry([
     { feature: 'fileBrowse', api: 'SYNO.FileStation.List', verifiedVersions: [2] },
@@ -110,7 +111,11 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     { feature: 'cloudSyncHistory', api: 'SYNO.CloudSync', verifiedVersions: [1] },
     { feature: 'cloudSyncQuota', api: 'SYNO.CloudSync', verifiedVersions: [1] },
     { feature: 'systemLogRecords', api: 'SYNO.Core.SyslogClient.Log', verifiedVersions: [1] },
-    { feature: 'noteList', api: 'SYNO.NoteStation.Note', verifiedVersions: [] }
+    { feature: 'noteList', api: 'SYNO.NoteStation.Note', verifiedVersions: [3] },
+    { feature: 'noteDetail', api: 'SYNO.NoteStation.Note', verifiedVersions: [3] },
+    { feature: 'noteAttachments', api: 'SYNO.NoteStation.Note', verifiedVersions: [3] },
+    { feature: 'noteNotebooks', api: 'SYNO.NoteStation.Notebook', verifiedVersions: [2] },
+    { feature: 'noteTags', api: 'SYNO.NoteStation.Tag', verifiedVersions: [2] }
   ]);
   constructor(private transport: NasTransport, private sessionName: 'FileStation' | 'NasControl' = 'FileStation') {
     this.rpc = new DsmRpcClient(transport);
@@ -533,26 +538,115 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     ], decode);
   }
 
+  /** 笔记会话只在用户进入笔记并提交凭据时建立，不扩展主登录流程。 */
+  async authenticateNotes(account: string, password: string, otp: string): Promise<void> {
+    this.requireSession('FileStation');
+    if (this.noteAuthenticating || account.trim().length === 0 || password.length === 0 || otp.length > 0 && !/^[0-9]{6}$/.test(otp)) {
+      throw new NasFailure(NasErrorKind.InvalidInput, '请输入密码和有效的六位动态码，且不要重复提交认证。');
+    }
+    selectNasApi(this.capabilities, 'SYNO.NoteStation.Note', [3]);
+    const ticket = this.generation, revision = this.sessions.revision('FileStation'); this.noteAuthenticating = true;
+    try {
+      const authorization = decodeNasSession(await this.call('SYNO.API.Auth', 6, 'login', this.loginFields('NoteStation', account, password, otp), false));
+      this.ensureSessionCurrent(ticket, 'FileStation', revision); this.sessions.register('NoteStation', authorization);
+    } catch (error) {
+      this.ensureSessionCurrent(ticket, 'FileStation', revision);
+      if (error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) {
+        throw new NasFailure(NasErrorKind.Permission, '笔记认证未通过，请重新验证。', error.code);
+      }
+      throw error;
+    } finally { this.noteAuthenticating = false; }
+  }
+
+  /** 笔记列表、正文和分类使用固定的独立会话与方法集合。 */
+  async readNotes<T>(operation: 'notebooks' | 'tags' | 'list' | 'detail', objectId: string, offset: number,
+    decode: (data: Object) => T): Promise<T> {
+    this.requireSession();
+    if (!['notebooks', 'tags', 'list', 'detail'].includes(operation) || !Number.isSafeInteger(offset) || offset < 0 ||
+      operation === 'detail' && (objectId.length === 0 || /[\u0000-\u001f]/.test(objectId))) {
+      throw new NasFailure(NasErrorKind.InvalidInput, '笔记读取参数无效。');
+    }
+    if (!this.sessions.has('NoteStation')) { throw new NasFailure(NasErrorKind.Permission, '请验证笔记访问权限。'); }
+    const api = operation === 'notebooks' ? 'SYNO.NoteStation.Notebook' : operation === 'tags' ? 'SYNO.NoteStation.Tag' : 'SYNO.NoteStation.Note';
+    const version = operation === 'notebooks' || operation === 'tags' ? 2 : 3;
+    const descriptor = selectNasApi(this.capabilities, api, [version]);
+    const fields: NasFormField[] = operation === 'detail' ? [{ name: 'object_id', content: descriptor.jsonParameters ? JSON.stringify(objectId) : objectId }] :
+      [{ name: 'offset', content: offset.toString() }, { name: 'limit', content: '100' }];
+    const feature = operation === 'notebooks' ? 'noteNotebooks' : operation === 'tags' ? 'noteTags' : operation === 'detail' ? 'noteDetail' : 'noteList';
+    return this.readSuite(feature, api, operation === 'detail' ? 'get' : 'list', fields, decode, version);
+  }
+
+  /** 附件以笔记、版本、文件三元身份下载，不能映射成 File Station 路径。 */
+  async downloadNoteAttachment(noteId: string, version: string, fileId: string, target: NasDownloadTarget,
+    cancellation: NasTransferCancellation): Promise<NasDownloadResult> {
+    this.requireSession(); validateNasDownloadTarget(target);
+    if ([noteId, version, fileId].some((value: string): boolean => value.length === 0 || /[\u0000-\u001f]/.test(value))) {
+      throw new NasFailure(NasErrorKind.InvalidInput, '笔记附件身份无效。');
+    }
+    const session = this.sessions.get('NoteStation');
+    if (session === undefined) { throw new NasFailure(NasErrorKind.Permission, '请验证笔记访问权限。'); }
+    const revision = this.sessions.revision('NoteStation'), ticket = this.generation;
+    const api = selectNasApi(this.capabilities, 'SYNO.NoteStation.Note', [3]), transport = this.transport.transfers;
+    if (transport === undefined) { throw new NasFailure(NasErrorKind.Unsupported, '当前连接不支持附件下载。'); }
+    const scalar = (value: string): string => api.jsonParameters ? JSON.stringify(value) : value;
+    const request: NasTransferRequest = { address: this.origin + '/webapi/' + api.path, method: 'POST', session,
+      fields: [{ name: 'api', content: api.name }, { name: 'version', content: '3' }, { name: 'method', content: 'download' },
+        { name: 'object_id', content: scalar(noteId) }, { name: 'ver', content: JSON.stringify(version) },
+        { name: 'file_id', content: scalar(fileId) }, { name: 'format', content: scalar('raw') }, { name: 'mode', content: scalar('download') }] };
+    return this.featureRegistry.read('noteAttachments', async (): Promise<NasDownloadResult> => {
+      let receipt: NasDownloadReceipt | undefined = undefined; this.driveTransfers.add(cancellation);
+      const check = (): void => { this.ensureSessionCurrent(ticket, 'NoteStation', revision); cancellation.check(); };
+      try {
+        check(); receipt = await transport.download(request, target, { cancellation }, (reply: NasBinaryReply): void => {
+          check();
+          if (reply.status < 200 || reply.status >= 300) { throw new NasFailure(NasErrorKind.Http, '附件下载失败。', reply.status); }
+          if (/^\s*\{\s*"(?:success|error)"\s*:/.test(reply.prefixText)) {
+            decodeReadOnlyResponse(api.name, reply.status, reply.prefixText);
+            throw new NasFailure(NasErrorKind.Protocol, '服务器未返回附件。');
+          }
+          if (!Number.isSafeInteger(reply.bytes) || reply.bytes < 0 || reply.bytes > target.maximumBytes ||
+            reply.contentLength.length > 0 && (!/^\d+$/.test(reply.contentLength) || Number(reply.contentLength) !== reply.bytes) ||
+            target.expectedBytes !== undefined && reply.bytes !== target.expectedBytes) {
+            throw new NasFailure(NasErrorKind.Protocol, '附件内容长度不匹配。');
+          }
+          if (!/^attachment(?:;|$)/i.test(reply.contentDisposition.trim()) && /text\/html/i.test(reply.contentType) && /^\s*(?:<!doctype html|<html)/i.test(reply.prefixText)) {
+            throw new NasFailure(NasErrorKind.Protocol, '服务器返回了登录页面，请重新验证笔记访问权限。');
+          }
+        }); check(); return { path: receipt.path, bytes: receipt.bytes };
+      } catch (error) {
+        if (receipt !== undefined) { receipt.discard(); }
+        check();
+        if (error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) { await this.suiteSessionFailure(error, ticket, api.name); }
+        throw error;
+      } finally { this.driveTransfers.delete(cancellation); }
+    });
+  }
+
   /** 套件拒绝授权仅局限于本次读取；主登录失效必须由主业务受保护读取确认。 */
   private async readSuite<T>(feature: string, api: string, method: string, fields: NasFormField[],
-    decode: (data: Object) => T): Promise<T> {
+    decode: (data: Object) => T, version: number = 1): Promise<T> {
     return this.featureRegistry.read(feature, async (): Promise<T> => {
       const ticket = this.generation;
       let data: Object;
-      try { data = await this.callWith(api, 1, method, fields, decodeReadOnlyResponse, false); }
+      try { data = await this.callWith(api, version, method, fields, decodeReadOnlyResponse, false); }
       catch (error) {
         if (!(error instanceof NasFailure) || error.kind !== NasErrorKind.SessionExpired) { throw error; }
-        let verified = false;
-        try { await this.list('', 0); verified = true; }
-        catch (proof) {
-          if (!(proof instanceof NasFailure) || proof.kind === NasErrorKind.SessionExpired || proof.kind === NasErrorKind.Cancelled) { throw proof; }
-        }
-        this.ensureCurrent(ticket);
-        throw new NasFailure(NasErrorKind.Permission, verified ? '当前功能未接受登录授权，请在浏览器中核对权限。' :
-          '当前功能拒绝登录授权，主登录状态暂无法确认，请稍后重试或在浏览器中核对。', error.code);
+        return this.suiteSessionFailure(error, ticket, api);
       }
       return decode(data);
     });
+  }
+
+  private async suiteSessionFailure(error: NasFailure, ticket: number, api: string): Promise<never> {
+    if (api.startsWith('SYNO.NoteStation.')) { this.sessions.invalidate('NoteStation'); }
+    let verified = false;
+    try { await this.list('', 0); verified = true; }
+    catch (proof) {
+      if (!(proof instanceof NasFailure) || proof.kind === NasErrorKind.SessionExpired || proof.kind === NasErrorKind.Cancelled) { throw proof; }
+    }
+    this.ensureCurrent(ticket);
+    throw new NasFailure(NasErrorKind.Permission, verified ? '当前功能未接受登录授权，请重新验证或在浏览器中核对权限。' :
+      '当前功能拒绝登录授权，主登录状态暂无法确认，请稍后重试或在浏览器中核对。', error.code);
   }
 
   private async packageVersion(id: string): Promise<string> {
@@ -1012,7 +1106,7 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     invalidateExpired: boolean = true): Promise<Record<string, Object>> {
     this.ensureOpen();
     const ticket = this.generation;
-    const sessionName: BusinessSessionName = name.startsWith('SYNO.SynologyDrive.') ? 'FileStation' : this.sessionName;
+    const sessionName: BusinessSessionName = name.startsWith('SYNO.NoteStation.') ? 'NoteStation' : name.startsWith('SYNO.SynologyDrive.') ? 'FileStation' : this.sessionName;
     const revision = this.sessions.revision(sessionName);
     const api = selectNasApi(this.capabilities, name, [version]);
     // 认证参数交由传输层发送 Cookie 和 CSRF 请求头，不进入 URL 或业务表单。

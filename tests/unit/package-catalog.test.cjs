@@ -227,6 +227,7 @@ function navigationFixture(available = true) {
       containers: { setVisible() {} },
       cloudSync: { setVisible() {} },
       systemLogs: { setVisible() {} },
+      notes: { setVisible() {} },
       packages: { hideList: () => events.push('hideList'), hideDetail: () => events.push('hideDetail'),
         showList: () => events.push('showList'), showDetail: () => events.push('showDetail'),
         managementOrigin: () => 'https://nas.example.test:5001' } },
