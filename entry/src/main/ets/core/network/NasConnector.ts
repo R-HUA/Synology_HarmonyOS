@@ -96,7 +96,8 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     { feature: 'driveAncestors', api: DRIVE_FILES_API, verifiedVersions: [DRIVE_ANCESTORS_VERSION] },
     { feature: 'driveTeamFolders', api: DRIVE_TEAM_FOLDERS_API, verifiedVersions: [DRIVE_TEAM_FOLDERS_VERSION] },
     { feature: 'driveTrash', api: DRIVE_TRASH_API, verifiedVersions: [DRIVE_TRASH_VERSION] },
-    { feature: 'driveNotifications', api: 'SYNO.SynologyDrive.Notifications', verifiedVersions: [1] }
+    { feature: 'driveNotifications', api: 'SYNO.SynologyDrive.Notifications', verifiedVersions: [1] },
+    { feature: 'packageCatalog', api: 'SYNO.Core.Package', verifiedVersions: [1] }
   ]);
   constructor(private transport: NasTransport, private sessionName: 'FileStation' | 'NasControl' = 'FileStation') {
     this.rpc = new DsmRpcClient(transport);
@@ -437,6 +438,22 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
   private assertCapabilityUnavailable(error: Object): void {
     if (error instanceof NasFailure && [NasErrorKind.Permission, NasErrorKind.Unsupported].includes(error.kind)) { return; }
     throw error;
+  }
+
+  /** 列表结构验证成功才登记目录可用，单项读取不改变目录状态。 */
+  async readPackageCatalog<T>(readAndValidate: () => Promise<T>): Promise<T> {
+    this.requireSession();
+    return this.featureRegistry.read('packageCatalog', readAndValidate);
+  }
+
+  /** 固定读取版本，不能经此入口发送套件管理命令。 */
+  async packageRequest(method: 'list' | 'get', fields: NasFormField[]): Promise<Object> {
+    this.requireSession();
+    if (method !== 'list' && method !== 'get') { throw new NasFailure(NasErrorKind.InvalidInput, '不支持此套件读取操作。'); }
+    const api = selectNasApi(this.capabilities, 'SYNO.Core.Package', [1]);
+    const encoded = fields.map((field: NasFormField): NasFormField => ({ name: field.name,
+      content: field.name === 'id' && api.jsonParameters ? JSON.stringify(field.content) : field.content }));
+    return this.call(api.name, 1, method, encoded);
   }
 
   private async packageVersion(id: string): Promise<string> {

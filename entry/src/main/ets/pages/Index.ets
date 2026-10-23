@@ -35,6 +35,8 @@ import { NasConnectionAddress } from '../core/domain/ConnectionRoutes';
 import { NasSystemControlPage } from '../features/control/SystemControlPage';
 import { ShareLinksPage } from '../features/fileSharing/ShareLinksPage';
 import { DownloadStationPage } from '../features/downloadStation/DownloadStationPage';
+import { PackageCatalogPage, PackageDetailPage } from '../features/packages/PackageCatalogPage';
+import { InstalledPackage, PackageNativeTarget } from '../features/packages/PackageProtocol';
 import { NasTelemetrySummary, NasTelemetryStorageCard, NasTelemetryDashboard } from '../features/telemetry/TelemetryDashboard';
 import { photoTakenDate, workbenchBytes,
   workbenchCanUseDestination, workbenchBottomInset,
@@ -120,12 +122,15 @@ struct Index {
   @Local private addressBookOpened: boolean = false;
   @Local private systemControlOpened: boolean = false;
   @Local private extensionsOpened: boolean = false;
+  @Local private packageDestination: string = '';
   @Local private downloadsVisible: boolean = false;
   @Local private downloadsRefreshRevision: number = 0;
   /** 半模态内容滚动控制器：既供嵌套滚动使用，也绑定给 HDS 半模态标题栏。 */
   private sheetScroller: Scroller = new Scroller();
   private sharesScroller: Scroller = new Scroller();
   private downloadsScroller: Scroller = new Scroller();
+  private packagesScroller: Scroller = new Scroller();
+  private packageDetailScroller: Scroller = new Scroller();
   private telemetryScroller: Scroller = new Scroller();
   private addressBookScroller: Scroller = new Scroller();
   private systemControlScroller: Scroller = new Scroller();
@@ -143,6 +148,7 @@ struct Index {
     this.model.driveActions.setForeground(foreground);
     this.model.driveOriginal.setForeground(foreground);
     this.model.fileOriginal.setForeground(foreground);
+    this.updatePackageVisibility();
     this.model.driveSharing.setForeground(foreground);
     if (!foreground) { this.model.addressBook.cancelProbe(); this.model.systemControl.deactivate(); }
     else if (this.systemControlOpened) { this.model.openSystemControl(); }
@@ -313,6 +319,7 @@ struct Index {
       this.backup.reset();
       this.pickerMode = '';
       this.extensionsOpened = false; this.downloadsVisible = false;
+      this.packageDestination = '';
       this.rootTasks = new TaskPageState('root'); this.fileTasks = new TaskPageState('files');
       this.photoTasks = new TaskPageState('photos'); this.driveTasks = new TaskPageState('drive');
       this.taskDestination = ''; this.downloadSnackBar?.dismiss();
@@ -437,7 +444,7 @@ struct Index {
     this.model.driveActions.setPolling(this.pageActive && this.foreground && this.model.authenticated &&
       !this.taskOverlayVisible && !this.sheetVisible && (this.taskDestination === 'drive' ||
         this.module === 'root' && this.activeTab === ROOT_TASK_TAB && this.rootTasks.categoryIndex === 2 && this.navStack.size() === 0));
-    this.model.telemetry.setMode(!this.pageActive || !this.foreground || !this.model.authenticated || this.addressBookOpened || this.systemControlOpened || this.extensionsOpened ? 'hidden' :
+    this.model.telemetry.setMode(!this.pageActive || !this.foreground || !this.model.authenticated || this.addressBookOpened || this.systemControlOpened || this.extensionsOpened || this.packageDestination.length > 0 ? 'hidden' :
       this.telemetryOpened ? 'detail' : this.module === 'root' && this.activeTab === 0 ? 'home' : 'hidden');
   }
 
@@ -470,6 +477,48 @@ struct Index {
     }
     this.navStack.pushPathByName('nas-downloads', undefined);
     this.updateTelemetryMode();
+  }
+
+  private updatePackageVisibility(): void {
+    if (!this.pageActive || !this.foreground || !this.model.authenticated) {
+      this.model.packages.hideList(); this.model.packages.hideDetail(); return;
+    }
+    if (this.packageDestination === 'packages') { this.model.packages.showList(); }
+    else if (this.packageDestination === 'package-detail') { this.model.packages.showDetail(); }
+  }
+
+  private openPackageDetail(item: InstalledPackage): void {
+    this.model.packages.select(item);
+    this.navStack.pushPathByName('package-detail', undefined);
+  }
+
+  private openPackageNative(target: PackageNativeTarget): void {
+    if (!this.model.authenticated || this.navigationBusy()) { return; }
+    const available = target === 'files' ? this.model.supports('SYNO.FileStation.List') : target === 'downloads' ?
+      this.model.supports('SYNO.DownloadStation.Task') : target === 'photos' ? this.supportsPhotos() :
+      driveTabs((view: DriveView): boolean => this.model.drive.supportsView(view), this.drivePinned).length > 0;
+    if (!available) { this.showTitleMenuError(this.previewText($r('app.string.package_native_unavailable'))); return; }
+    this.model.packages.hideList(); this.model.packages.hideDetail();
+    this.packageDestination = ''; this.navStack.clear();
+    if (target === 'files') { this.switchTab(1); }
+    else if (target === 'downloads') { this.openNasDownloads(); }
+    else if (target === 'drive') { this.driveTabId = 'mydrive'; this.driveMoreView = ''; this.enterModule('drive'); }
+    else { this.photoTabId = 'photos'; this.photoMoreShared = false; this.enterModule('photos'); }
+    this.updateTelemetryMode();
+  }
+
+  private async openPackageManagement(): Promise<void> {
+    const origin = this.model.packages.managementOrigin();
+    const generation = this.model.sessionGeneration;
+    const destination = this.packageDestination;
+    if (this.abilityContext === undefined || origin.length === 0 || !this.model.authenticated) { return; }
+    try { await this.abilityContext.openLink(origin); }
+    catch {
+      if (this.pageActive && this.foreground && this.packageDestination === destination &&
+        destination === 'package-detail' && generation === this.model.sessionGeneration) {
+        this.showTitleMenuError(this.previewText($r('app.string.package_browser_failed')));
+      }
+    }
   }
 
   private remoteDownloadMenus(): HdsNavigationMenuItemOptions[] {
@@ -1365,6 +1414,8 @@ struct Index {
                 ['downloading', 'waiting', 'finishing', 'hash_checking', 'seeding'].includes(item.status)).length),
               (): void => { this.openNasDownloads(); })
           }
+          this.shortcut($r('sys.symbol.square_grid_2x2'), $r('app.string.package_catalog'),
+            $r('app.string.package_catalog_hint'), (): void => { this.navStack.pushPathByName('packages', undefined); })
         }.width('100%').padding(4).borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
     }.width('100%')
   }
@@ -2211,6 +2262,29 @@ struct Index {
         .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: 'Drive 文件操作' } } })
         .bindToScrollable([this.driveActionScroller])
         .onHidden((): void => { this.model.driveActions.clearDraft(); })
+    } else if (name === 'packages') {
+      HdsNavDestination() {
+        PackageCatalogPage({ model: this.model.packages, scroller: this.packagesScroller, bottomInset: this.navigationInset + 16,
+          onDetail: (item: InstalledPackage): void => { this.openPackageDetail(item); } })
+      }
+        .backgroundColor($r('app.color.workbench_background'))
+        .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL },
+          title: { mainTitle: $r('app.string.package_catalog') } } })
+        .bindToScrollable([this.packagesScroller])
+        .onShown((): void => { this.packageDestination = 'packages'; this.updatePackageVisibility(); this.updateTelemetryMode(); })
+        .onHidden((): void => { this.model.packages.hideList(); if (this.packageDestination === 'packages') { this.packageDestination = ''; } this.updateTelemetryMode(); })
+    } else if (name === 'package-detail') {
+      HdsNavDestination() {
+        PackageDetailPage({ model: this.model.packages, scroller: this.packageDetailScroller, bottomInset: this.navigationInset + 16,
+          onNative: (target: PackageNativeTarget): void => { this.openPackageNative(target); },
+          onManagement: (): void => { this.openPackageManagement(); } })
+      }
+        .backgroundColor($r('app.color.workbench_background'))
+        .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL },
+          title: { mainTitle: $r('app.string.package_detail') } } })
+        .bindToScrollable([this.packageDetailScroller])
+        .onShown((): void => { this.packageDestination = 'package-detail'; this.updatePackageVisibility(); this.updateTelemetryMode(); })
+        .onHidden((): void => { this.model.packages.hideDetail(); if (this.packageDestination === 'package-detail') { this.packageDestination = ''; } this.updateTelemetryMode(); })
     } else if (name === 'share-links') {
       HdsNavDestination() { ShareLinksPage({ model: this.model.extensions, scroller: this.sharesScroller }) }
         .backgroundColor($r('app.color.workbench_background'))

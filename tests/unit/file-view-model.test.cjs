@@ -99,6 +99,7 @@ async function fixture(options = {}) {
     './ConnectionAddressBook': { ConnectionAddressBook: class { ready = true; dispose() {} } },
     '../control/SystemControlModel': { SystemControlModel: class { deactivate() {} async open(_context, _connector, _origin, _tls, validate) { this.validate = validate; } } },
     '../extensions/NasExtensionsModel': { NasExtensionsModel: class { recordsReady = true; pending = []; busy = false; async attach() {} reset() {} } },
+    '../packages/PackageCatalogModel': { PackageCatalogModel: class { attach() {} reset() {} } },
     '../drive/DriveBrowserModel': { DriveBrowserModel: class { attach() {} detach() {} reset() {} } },
     '../drive/DriveTransferModel': { DriveTransferModel: class {
       ready = true; busy = false; items = [];
