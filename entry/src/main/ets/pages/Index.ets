@@ -1,8 +1,9 @@
 import { common } from '@kit.AbilityKit';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { ComponentContent, curves, DrawableDescriptor, LengthMetrics, SymbolGlyphModifier, uiMaterial, window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileUri } from '@kit.CoreFileKit';
-import { HdsNavigation, HdsSideBar, HdsNavigationTitleMode, HdsNavDestination, HdsTabs, HdsTabsController, hdsMaterial, IconStyleMode, TextStyleMode, ScrollEffectType, HdsNavigationMenuItemOptions, HdsSnackBar, SnackBarOperationType } from '@kit.UIDesignKit';
+import { HdsNavigation, HdsSideBar, HdsNavigationTitleMode, HdsNavDestination, HdsTabs, HdsTabsController, hdsMaterial, SystemMaterialParams, IconStyleMode, TextStyleMode, ScrollEffectType, HdsNavigationMenuItemOptions, HdsSnackBar, SnackBarOperationType } from '@kit.UIDesignKit';
 import { NasFailure, NasFileEntry } from '../core/domain/DsmProtocol';
 import { DriveEntry, DriveView, driveViewLabel } from '../core/domain/DriveProtocol';
 import { DriveUploadReview, DriveTransferModePicker } from '../features/drive/DriveTransferUi';
@@ -223,9 +224,21 @@ struct Index {
   private pickerScroller: Scroller = new Scroller();
   private taskCategoryScrollers: Scroller[] = [new Scroller(), new Scroller(), new Scroller(), new Scroller()];
   private tabsController: HdsTabsController = new HdsTabsController();
+  /** 不支持沉浸材质时交由导航组件呈现默认背景。 */
+  private navigationMaterial: SystemMaterialParams | undefined = undefined;
 
   aboutToAppear(): void {
     this.pageActive = true;
+    if (deviceInfo.apiAvailable('26.0.0')) {
+      if (hdsMaterial.getSystemMaterialTypes().includes(hdsMaterial.MaterialType.IMMERSIVE)) {
+        this.navigationMaterial = { materialType: hdsMaterial.MaterialType.IMMERSIVE,
+          materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE };
+      } else {
+        this.navigationMaterial = undefined;
+      }
+    } else {
+      this.navigationMaterial = undefined;
+    }
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
     this.abilityContext = context;
     this.preferences.load(context);
@@ -601,7 +614,13 @@ struct Index {
 
   private bottomInset(): number {
     if (this.module === 'photos' && this.model.photoLibrary.selecting) { return 16; }
-    return this.windowWidth >= 600 ? this.navigationInset + 16 : workbenchBottomInset(this.navigationInset);
+    return this.windowWidth >= 600 ? this.navigationInset + 16 : workbenchBottomInset(this.floatingBarBottomMargin());
+  }
+
+  /** 页签位置与滚动末尾占位共用底距，避免无导航指示条时互相脱节。 */
+  private floatingBarBottomMargin(): number {
+    return this.navigationInset > 0 ? this.navigationInset :
+      this.getUIContext().getHostContext()!.resourceManager.getNumber($r('sys.float.padding_level8').id);
   }
 
   /** 内容区延伸到标题栏之下，首项需要让出状态栏与单行标题栏的高度。 */
@@ -1352,18 +1371,16 @@ struct Index {
   }
 
   @Builder
-  shortcut(icon: Resource, label: Resource, detail: ResourceStr, action: () => void) {
+  shortcut(icon: Resource, label: Resource, action: () => void) {
     Button() {
       Column({ space: 8 }) {
         WorkbenchIconTile({ icon: icon, iconSize: 26, tileSize: 48, tileRadius: 12,
           iconColor: $r('sys.color.icon_emphasize'), tileColor: $r('app.color.workbench_accent_surface') })
         Text(label).fontSize(14).fontColor($r('sys.color.font_primary')).textAlign(TextAlign.Center)
           .width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(detail).fontSize(12).fontColor($r('sys.color.font_secondary')).textAlign(TextAlign.Center)
-          .width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       }.width('100%').padding({ top: 12, bottom: 12, left: 4, right: 4 })
-    }.width(this.model.supports('SYNO.DownloadStation.Task') ? '33.33%' : '50%')
-      .type(ButtonType.Normal).backgroundColor(Color.Transparent).enabled(!this.navigationBusy())
+    }.width('20%').constraintSize({ minWidth: '64fp' }).flexGrow(1).flexShrink(0)
+      .type(ButtonType.Normal).padding(0).backgroundColor(Color.Transparent).enabled(!this.navigationBusy())
       .onClick(action).accessibilityText(label)
   }
 
@@ -1410,30 +1427,24 @@ struct Index {
         this.deviceHeader()
         Flex({ wrap: FlexWrap.Wrap }) {
           if (driveTabs((view: DriveView): boolean => this.model.drive.supportsView(view), this.drivePinned).length > 0) {
-            this.shortcut($r('sys.symbol.folder'), $r('app.string.home_drive'),
-              this.model.driveTransfers.items.some((item): boolean => !taskEnded(item.state)) ?
-                $r('app.string.home_transfer_count', this.model.driveTransfers.items.filter((item): boolean => !taskEnded(item.state)).length) :
-                $r('app.string.home_browse_files'), (): void => {
+            this.shortcut($r('sys.symbol.folder'), $r('app.string.home_drive'), (): void => {
               this.driveTabId = 'mydrive'; this.driveMoreView = ''; this.enterModule('drive');
             })
           }
           if (this.supportsPhotos()) {
-            this.shortcut($r('sys.symbol.picture'), $r('app.string.home_photos'),
-              this.model.photoBackup.settings.enabled ? $r('app.string.home_backup_enabled') : $r('app.string.home_backup_disabled'), (): void => {
+            this.shortcut($r('sys.symbol.picture'), $r('app.string.home_photos'), (): void => {
               this.photoTabId = 'photos'; this.photoMoreShared = false; this.enterModule('photos');
             })
           }
           if (this.model.supports('SYNO.DownloadStation.Task')) {
             this.shortcut($r('sys.symbol.arrow_down_circle'), $r('app.string.home_downloads'),
-              $r('app.string.home_loaded_downloads', this.model.extensions.downloads.filter((item): boolean =>
-                ['downloading', 'waiting', 'finishing', 'hash_checking', 'seeding'].includes(item.status)).length),
               (): void => { this.openNasDownloads(); })
           }
           this.shortcut($r('sys.symbol.square_grid_2x2'), $r('app.string.package_catalog'),
-            $r('app.string.package_catalog_hint'), (): void => { this.navStack.pushPathByName('packages', undefined); })
+            (): void => { this.navStack.pushPathByName('packages', undefined); })
           this.shortcut($r('sys.symbol.ellipsis_circle'), $r('app.string.more_features'),
-            $r('app.string.more_features_hint'), (): void => { this.navStack.pushPathByName('more-features', undefined); })
-        }.width('100%').padding(4).borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
+            (): void => { this.navStack.pushPathByName('more-features', undefined); })
+        }.width('100%')
     }.width('100%')
   }
 
@@ -1470,56 +1481,80 @@ struct Index {
 
 
   @Builder
+  settingsDeviceHeading() {
+    WorkbenchSectionTitle({ title: this.previewText($r('app.string.settings_device_group')) })
+  }
+
+  @Builder
+  settingsAppHeading() {
+    WorkbenchSectionTitle({ title: this.previewText($r('app.string.app_settings_title')) })
+  }
+
+  @Builder
   settingsView() {
-    Scroll(this.settingsScroller) {
-      Column({ space: WorkbenchMetrics.sectionGap }) {
-        Column({ space: 12 }) {
-          WorkbenchSectionTitle({ title: '设备管理' })
-          Column() {
+    List({ scroller: this.settingsScroller, space: WorkbenchMetrics.sectionGap }) {
+        ListItem() { this.settingsDeviceHeading() }
+        ListItemGroup({ style: ListItemGroupStyle.CARD }) {
+          ListItem() {
             WorkbenchActionRow({ icon: $r('sys.symbol.externaldrive'), label: '设备信息', description: this.model.account,
               available: !this.model.busy, onAction: (): void => { this.showDeviceInfo(); } })
-            Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
+          }
+          ListItem() {
             WorkbenchActionRow({ icon: $r('sys.symbol.arrow_counterclockwise_clock'), label: '历史登录', description: this.model.address,
               available: !this.model.busy, onAction: (): void => { this.openConnectionAddresses(); } })
-            if (this.model.supports('SYNO.Core.System')) {
-              Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
+          }
+          if (this.model.supports('SYNO.Core.System')) {
+            ListItem() {
               WorkbenchActionRow({ icon: $r('sys.symbol.power'), label: '系统控制',
                 available: !this.model.busy, onAction: (): void => { this.navStack.pushPath({ name: 'system-control' }); } })
             }
-          }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
-        }.width('100%')
-
-        Column({ space: 12 }) {
-          WorkbenchSectionTitle({ title: this.previewText($r('app.string.app_settings_title')) })
-        Column() {
-          WorkbenchActionRow({ icon: $r('sys.symbol.rectangle_split_3x1'), label: '模块底栏',
-            description: '选择 Drive 与照片的常用功能', onAction: (): void => { this.navStack.pushPathByName('module-tabs', 'root'); } })
-          Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
-          WorkbenchActionRow({ icon: $r('sys.symbol.moon'), label: this.previewText($r('app.string.appearance_title')),
-            value: this.appearanceLabel(this.preferences.appearance), available: !this.preferences.busy,
-            onAction: (): void => { this.appearanceMenuVisible = true; } })
-            .bindMenu(this.appearanceMenuVisible, this.appearanceMenu(), {
-              onDisappear: (): void => { this.appearanceMenuVisible = false; } })
-          Divider().color($r('app.color.workbench_divider')).margin({ left: 68, right: 16 })
-          WorkbenchActionRow({ icon: $r('sys.symbol.trash'), label: this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.cache_title').id),
-            description: workbenchBytes(this.preferences.cacheBytes), available: !this.preferences.busy,
-            onAction: (): void => {
-              this.getUIContext().showAlertDialog({ title: $r('app.string.cache_clear'), message: $r('app.string.cache_confirm'),
-                primaryButton: { value: $r('app.string.action_cancel'), action: (): void => {} },
-                secondaryButton: { value: $r('app.string.action_confirm'), action: (): void => { this.clearMediaCache(); } } });
-            } })
-        }.width('100%').borderRadius(16).backgroundColor($r('app.color.workbench_surface'))
-        }.width('100%')
-        WorkbenchNotice({ text: this.preferences.errorText, warning: true })
-        WorkbenchNotice({ text: this.transferLiveView.errorText, warning: true })
-        Column() {
-          WorkbenchActionRow({ icon: $r('sys.symbol.arrow_right_and_square'), label: '登出 NAS', destructive: true, showChevron: false,
-            available: !this.model.busy, onAction: (): void => { this.confirmLogout(); } })
-        }.width('100%').margin({ top: 12 }).borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
-        this.notices()
-      }.width('100%').constraintSize({ maxWidth: 840 })
-        .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin, top: this.contentTopInset() + 8, bottom: this.bottomInset() + 28 })
-    }.width('100%').height('100%').scrollBar(BarState.Auto).align(Alignment.Top)
+          }
+        }.divider({ strokeWidth: 1, color: $r('app.color.workbench_divider'), startMargin: 68, endMargin: 16 })
+          .width('100%').margin({ left: 0, right: 0 })
+        ListItem() { this.settingsAppHeading() }
+        ListItemGroup({ style: ListItemGroupStyle.CARD }) {
+          ListItem() {
+            WorkbenchActionRow({ icon: $r('sys.symbol.rectangle_split_3x1'), label: '模块底栏',
+              description: this.previewText($r('app.string.settings_module_tabs_hint')),
+              onAction: (): void => { this.navStack.pushPathByName('module-tabs', 'root'); } })
+          }
+          ListItem() {
+            WorkbenchActionRow({ icon: $r('sys.symbol.moon'), label: this.previewText($r('app.string.appearance_title')),
+              value: this.appearanceLabel(this.preferences.appearance), available: !this.preferences.busy,
+              onAction: (): void => { this.appearanceMenuVisible = true; } })
+              .bindMenu(this.appearanceMenuVisible, this.appearanceMenu(), {
+                onDisappear: (): void => { this.appearanceMenuVisible = false; } })
+          }
+          ListItem() {
+            WorkbenchActionRow({ icon: $r('sys.symbol.trash'), label: this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.cache_title').id),
+              description: workbenchBytes(this.preferences.cacheBytes), available: !this.preferences.busy,
+              onAction: (): void => {
+                this.getUIContext().showAlertDialog({ title: $r('app.string.cache_clear'), message: $r('app.string.cache_confirm'),
+                  primaryButton: { value: $r('app.string.action_cancel'), action: (): void => {} },
+                  secondaryButton: { value: $r('app.string.action_confirm'), action: (): void => { this.clearMediaCache(); } } });
+              } })
+          }
+        }.divider({ strokeWidth: 1, color: $r('app.color.workbench_divider'), startMargin: 68, endMargin: 16 })
+          .width('100%').margin({ left: 0, right: 0 })
+        if (this.preferences.errorText.length > 0) {
+          ListItem() { WorkbenchNotice({ text: this.preferences.errorText, warning: true }) }
+        }
+        if (this.transferLiveView.errorText.length > 0) {
+          ListItem() { WorkbenchNotice({ text: this.transferLiveView.errorText, warning: true }) }
+        }
+        ListItemGroup({ style: ListItemGroupStyle.CARD }) {
+          ListItem() {
+            WorkbenchActionRow({ icon: $r('sys.symbol.arrow_right_and_square'), label: '登出 NAS', destructive: true, showChevron: false,
+              available: !this.model.busy, onAction: (): void => { this.confirmLogout(); } })
+          }
+        }.width('100%').margin({ left: 0, right: 0 })
+          .borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
+        if (this.visibleError().length > 0 || this.model.actionNotice.length > 0) {
+          ListItem() { Column() { this.notices() }.width('100%') }
+        }
+    }.width('100%').constraintSize({ maxWidth: 840 }).height('100%').scrollBar(BarState.Auto)
+      .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin })
+      .contentStartOffset(this.contentTopInset() + 8).contentEndOffset(this.bottomInset())
   }
 
   private appearanceLabel(mode: number): string {
@@ -2281,13 +2316,14 @@ struct Index {
         .onHidden((): void => { this.model.driveActions.clearDraft(); })
     } else if (name === 'more-features') {
       HdsNavDestination() {
-        MoreFeaturesPage({ apis: this.model.capabilities, scroller: this.moreFeaturesScroller, bottomInset: this.navigationInset + 16,
+        MoreFeaturesPage({ scroller: this.moreFeaturesScroller, bottomInset: this.navigationInset + 16,
           onManagement: (): void => { this.openPackageManagement(); },
           onOpen: (destination: string): void => { if (['containers', 'cloud-sync', 'system-logs', 'notes'].includes(destination)) { this.navStack.pushPathByName(destination, undefined); } } })
       }
         .backgroundColor($r('app.color.workbench_background'))
         .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL },
-          title: { mainTitle: $r('app.string.more_features') } } })
+          title: { mainTitle: $r('app.string.more_features') } },
+          style: { systemMaterialEffect: this.navigationMaterial } })
         .bindToScrollable([this.moreFeaturesScroller])
         .onShown((): void => { this.packageDestination = 'more-features'; this.updateTelemetryMode(); })
         .onHidden((): void => { if (this.packageDestination === 'more-features') { this.packageDestination = ''; } this.updateTelemetryMode(); })
@@ -2779,8 +2815,8 @@ struct Index {
                 }, (tab: ModuleTab): string => this.module + ':' + tab.id)
               }.width('100%').layoutWeight(1).barPosition(BarPosition.End).scrollable(false)
                 .barOverlap(true).vertical(false)
-                .barFloatingStyle({ barBottomMargin: this.navigationInset, systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE,
-                  materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE }, thermoCtrl: true })
+                .barFloatingStyle({ barBottomMargin: this.floatingBarBottomMargin(),
+                  systemMaterialEffect: this.navigationMaterial, thermoCtrl: true })
                 .onContentWillChange((current: number, target: number): boolean => target === this.activeTab || !this.navigationBusy())
                 .onTabBarClick((index: number): void => {
                   if (index === this.activeTab) { this.activeScrollers()[0].scrollTo({ xOffset: 0, yOffset: 0 }); }
@@ -2800,10 +2836,8 @@ struct Index {
             backIcon: this.module === 'root' ? undefined : { icon: this.navigationBackSymbol(),
               action: (): void => { this.onBackPress(); }, type: IconStyleMode.SMALL },
             menu: { value: this.pageMenu(), maxCount: 2 } },
-          style: { scrollEffectOpts: { enableScrollEffect: false, scrollEffectType: ScrollEffectType.GRADIENT_BLUR },
-            systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE },
-            originalStyle: { backgroundStyle: { blurRadius: 12, maskExtraHeight: 16 },
-              contentStyle: { titleStyle: { mainTitleColor: $r('sys.color.font_primary') } } } } })
+          style: { scrollEffectOpts: { enableScrollEffect: true, scrollEffectType: ScrollEffectType.GRADIENT_BLUR },
+            systemMaterialEffect: this.navigationMaterial } })
     }.width('100%').height('100%').backgroundColor($r('app.color.workbench_background'))
       .onAreaChange((oldArea: Area, newArea: Area): void => {
         this.windowWidth = Number(newArea.width);

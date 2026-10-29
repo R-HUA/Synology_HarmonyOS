@@ -31,6 +31,8 @@
     { "name": "package_native_unavailable", "value": "当前账号或服务器未提供可用的访问接口。" },
     { "name": "package_browser_failed", "value": "无法打开浏览器，请重试。" },
     { "name": "app_settings_title", "value": "应用设置" },
+    { "name": "settings_device_group", "value": "设备管理" },
+    { "name": "settings_module_tabs_hint", "value": "选择云盘与照片的常用功能" },
     { "name": "tabs_enabled_count", "value": "已启用 %d / 5" },
     { "name": "photos_space_unavailable", "value": "当前空间不可用" },
     { "name": "photos_space_unsupported", "value": "当前账号未提供可用的照片或相册服务。" },

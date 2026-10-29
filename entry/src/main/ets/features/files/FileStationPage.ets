@@ -67,7 +67,7 @@ export struct FileStationPage {
   @Builder
   breadcrumbBar() {
     Scroll(this.breadcrumbScroller) {
-      Row({ space: 8 }) {
+      Row({ space: 4 }) {
         ForEach(workbenchBreadcrumbs(this.model.directory), (crumb: WorkbenchBreadcrumb): void => {
           Button(crumb.title).type(ButtonType.Normal).constraintSize({ minHeight: 40 }).fontSize(14)
             .padding({ left: 0, right: 0, top: 8, bottom: 8 }).backgroundColor(Color.Transparent)
@@ -75,12 +75,13 @@ export struct FileStationPage {
             .enabled(!this.model.busy && crumb.path !== this.model.directory)
             .onClick((): void => { this.onNavigateBreadcrumb(crumb.path); })
           if (crumb.path !== this.model.directory) {
-            SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(10).fontColor([$r('sys.color.font_tertiary')])
+            SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(12).fontColor([$r('sys.color.font_tertiary')])
               .accessibilityLevel('no')
           }
         }, (crumb: WorkbenchBreadcrumb): string => crumb.path)
-      }
-    }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%').height(40).align(Alignment.Start)
+      }.justifyContent(FlexAlign.Start)
+    }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).layoutWeight(1)
+      .constraintSize({ minHeight: WorkbenchMetrics.touchSize }).align(Alignment.Start)
   }
 
   @Builder
@@ -204,6 +205,20 @@ export struct FileStationPage {
   @Builder
   listHeader() {
     Column({ space: 8 }) {
+      Row() {
+        this.breadcrumbBar()
+        if (this.pickerMode.length === 0) {
+          Divider().vertical(true).height(20).color($r('app.color.workbench_divider')).margin({ left: 8, right: 8 })
+          Button() { SymbolGlyph($r('sys.symbol.slider_horizontal_2')).fontSize(20).fontColor([$r('sys.color.icon_secondary')]) }
+            .width(48).height(48).type(ButtonType.Normal).buttonStyle(ButtonStyleMode.TEXTUAL).padding(0)
+            .accessibilityText($r('app.string.file_sort')).onClick(this.onSort)
+          Button() { SymbolGlyph(this.grid ? $r('sys.symbol.list_bullet') : $r('sys.symbol.square_grid_2x2'))
+            .fontSize(20).fontColor([$r('sys.color.icon_secondary')]) }
+            .width(48).height(48).type(ButtonType.Normal).buttonStyle(ButtonStyleMode.TEXTUAL).padding(0)
+            .accessibilityText(this.grid ? $r('app.string.view_list') : $r('app.string.view_grid'))
+            .onClick((): void => { this.grid = !this.grid; })
+        }
+      }.width('100%').constraintSize({ minHeight: 48 }).padding({ left: 16, right: 16 })
       if (this.refreshedCount !== undefined) {
         Text(this.refreshedCount.toString() + ' 项').fontSize(12).fontColor($r('sys.color.font_secondary'))
           .width('100%').height(32).textAlign(TextAlign.Center)
@@ -218,22 +233,6 @@ export struct FileStationPage {
   @Builder
   fileList() {
     Column() {
-      Column({ space: 4 }) {
-        if (this.model.directory.length > 0 || this.pickerMode.length > 0) { this.breadcrumbBar() }
-        if (this.pickerMode.length === 0) {
-          Row() {
-            Blank()
-            Button() { SymbolGlyph($r('sys.symbol.slider_horizontal_2')).fontSize(20).fontColor([$r('sys.color.icon_secondary')]) }
-              .width(48).height(40).backgroundColor($r('app.color.workbench_subtle')).margin({ right: 8 })
-              .accessibilityText($r('app.string.file_sort')).onClick(this.onSort)
-            Button() { SymbolGlyph(this.grid ? $r('sys.symbol.list_bullet') : $r('sys.symbol.square_grid_2x2'))
-              .fontSize(20).fontColor([$r('sys.color.icon_secondary')]) }
-              .width(48).height(40).backgroundColor($r('app.color.workbench_subtle'))
-              .accessibilityText(this.grid ? $r('app.string.view_list') : $r('app.string.view_grid'))
-              .onClick((): void => { this.grid = !this.grid; })
-          }.width('100%').constraintSize({ minHeight: 48 })
-        }
-      }.width('100%').padding({ left: 16, right: 16, top: this.topInset })
     Stack({ alignContent: Alignment.Bottom }) {
       Refresh({ refreshing: $$this.refreshing }) {
       List({ space: 0, scroller: this.scroller }) {
@@ -293,7 +292,8 @@ export struct FileStationPage {
           }
         }
         }
-      }.width('100%').height('100%').scrollBar(BarState.Auto).contentEndOffset(this.bottomInset + (this.selecting ? 128 : 0))
+      }.width('100%').height('100%').scrollBar(BarState.Auto)
+        .contentStartOffset(this.topInset).contentEndOffset(this.bottomInset + (this.selecting ? 128 : 0))
         .lanes(this.grid && this.pickerMode.length === 0 && this.visibleEntries().length > 0 ? 2 : 1)
         .padding({ left: this.grid ? WorkbenchMetrics.pageMargin : 0, right: this.grid ? WorkbenchMetrics.pageMargin : 0 })
         .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })

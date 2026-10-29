@@ -276,7 +276,7 @@ export struct PhotoModulePage {
 
   @Builder
   libraryHeader() {
-    Column({ space: WorkbenchMetrics.sectionGap }) {
+    Column({ space: 8 }) {
       if (this.tabId === 'shared') {
         Flex({ wrap: FlexWrap.Wrap }) {
           if (this.supportsSpace(PhotosSpace.Personal) && this.model.supports('SYNO.Foto.Browse.Album')) {
@@ -285,13 +285,6 @@ export struct PhotoModulePage {
           }
           if (this.supportsSpace(PhotosSpace.Shared)) { this.photoSpaceButton(PhotosSpace.Shared, '共享空间') }
           if (this.supportsSpace(PhotosSpace.WithMe)) { this.photoSpaceButton(PhotosSpace.WithMe, '与我共享') }
-        }.width('100%')
-      } else if ((this.tabId === 'photos' || this.tabId === 'albums') &&
-        this.model.photoLibrary.selectedAlbum === undefined &&
-        this.supportsSpace(PhotosSpace.Personal) && this.supportsSpace(PhotosSpace.Shared)) {
-        Flex({ wrap: FlexWrap.Wrap }) {
-          this.photoSpaceButton(PhotosSpace.Personal, '个人空间')
-          this.photoSpaceButton(PhotosSpace.Shared, '共享空间')
         }.width('100%')
       }
       if (this.canShowLibrary()) {
@@ -313,8 +306,12 @@ export struct PhotoModulePage {
         } else if (this.expectedSpace === PhotosSpace.WithMe) {
           WorkbenchSectionTitle({ title: '与你共享的相册' })
         }
-        WorkbenchNotice({ text: this.model.photoLibrary.thumbnailErrorText })
-        WorkbenchNotice({ text: this.model.photoLibrary.selectionNotice })
+        if (this.model.photoLibrary.thumbnailErrorText.length > 0) {
+          WorkbenchNotice({ text: this.model.photoLibrary.thumbnailErrorText })
+        }
+        if (this.model.photoLibrary.selectionNotice.length > 0) {
+          WorkbenchNotice({ text: this.model.photoLibrary.selectionNotice })
+        }
         if (this.model.photoLibrary.busy) { this.loadingState() }
       }
     }.width('100%').alignItems(HorizontalAlign.Start)

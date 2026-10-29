@@ -149,7 +149,8 @@ export struct DriveModulePage {
         }, (item: DriveTrailItem): string =>
           this.model.drive.view + ':' + (item.fileId ?? 'root') + ':' + item.name)
       }.justifyContent(FlexAlign.Start)
-    }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%').height(40).align(Alignment.Start)
+    }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).layoutWeight(1)
+      .constraintSize({ minHeight: WorkbenchMetrics.touchSize }).align(Alignment.Start)
   }
 
   @Builder
@@ -171,6 +172,30 @@ export struct DriveModulePage {
   @Builder
   listHeader() {
     Column({ space: 4 }) {
+      Column() {
+        if (this.searchPage) { this.driveSearch() }
+        Row() {
+          if (this.selecting) {
+            Text($r('app.string.file_selected_count', this.selectedIds.length)).fontSize(16).layoutWeight(1)
+            Button($r('app.string.file_select_loaded')).height(48).buttonStyle(ButtonStyleMode.TEXTUAL)
+              .onClick((): void => { this.selectedIds = this.model.drive.entries.map((entry: DriveEntry): string => entry.fileId); })
+            Button($r('app.string.action_cancel')).height(48).buttonStyle(ButtonStyleMode.TEXTUAL)
+              .onClick((): void => { this.selecting = false; this.selectedIds = []; })
+          } else {
+          if (this.canRenderEntries() && this.model.drive.trail.length > 0) { this.driveBreadcrumb() }
+          else { Blank() }
+          Divider().vertical(true).height(20).color($r('app.color.workbench_divider')).margin({ left: 8, right: 8 })
+          Button() { SymbolGlyph($r('sys.symbol.slider_horizontal_2')).fontSize(20).fontColor([$r('sys.color.icon_secondary')]) }
+            .width(48).height(48).type(ButtonType.Normal).buttonStyle(ButtonStyleMode.TEXTUAL).padding(0)
+            .bindMenu(this.sortMenu()).accessibilityText($r('app.string.file_sort'))
+          Button() { SymbolGlyph(this.grid ? $r('sys.symbol.list_bullet') : $r('sys.symbol.square_grid_2x2'))
+            .fontSize(20).fontColor([$r('sys.color.icon_secondary')]) }
+            .width(48).height(48).type(ButtonType.Normal).buttonStyle(ButtonStyleMode.TEXTUAL).padding(0)
+            .accessibilityText(this.grid ? $r('app.string.view_list') : $r('app.string.view_grid'))
+            .onClick((): void => { this.grid = !this.grid; })
+          }
+        }.width('100%').constraintSize({ minHeight: 48 })
+      }.padding({ left: 16, right: 16 }).width('100%')
       if (this.refreshedCount !== undefined) {
         Text(this.refreshedCount.toString() + ' 项').fontSize(12).fontColor($r('sys.color.font_secondary'))
           .width('100%').height(32).textAlign(TextAlign.Center)
@@ -182,29 +207,6 @@ export struct DriveModulePage {
   @Builder
   driveFileList() {
     Column() {
-      Column() {
-        if (this.searchPage) { this.driveSearch() }
-        if (this.canRenderEntries() && this.model.drive.trail.length > 1) { this.driveBreadcrumb() }
-        Row() {
-          if (this.selecting) {
-            Text($r('app.string.file_selected_count', this.selectedIds.length)).fontSize(16).layoutWeight(1)
-            Button($r('app.string.file_select_loaded')).height(48).buttonStyle(ButtonStyleMode.TEXTUAL)
-              .onClick((): void => { this.selectedIds = this.model.drive.entries.map((entry: DriveEntry): string => entry.fileId); })
-            Button($r('app.string.action_cancel')).height(48).buttonStyle(ButtonStyleMode.TEXTUAL)
-              .onClick((): void => { this.selecting = false; this.selectedIds = []; })
-          } else {
-          Blank()
-          Button() { SymbolGlyph($r('sys.symbol.slider_horizontal_2')).fontSize(20).fontColor([$r('sys.color.icon_secondary')]) }
-            .width(48).height(40).backgroundColor($r('app.color.workbench_subtle')).margin({ right: 8 })
-            .bindMenu(this.sortMenu()).accessibilityText($r('app.string.file_sort'))
-          Button() { SymbolGlyph(this.grid ? $r('sys.symbol.list_bullet') : $r('sys.symbol.square_grid_2x2'))
-            .fontSize(20).fontColor([$r('sys.color.icon_secondary')]) }
-            .width(48).height(40).backgroundColor($r('app.color.workbench_subtle'))
-            .accessibilityText(this.grid ? $r('app.string.view_list') : $r('app.string.view_grid'))
-            .onClick((): void => { this.grid = !this.grid; })
-          }
-        }.width('100%').constraintSize({ minHeight: 48 })
-      }.padding({ left: 16, right: 16, top: this.topInset }).width('100%')
     Stack({ alignContent: Alignment.Bottom }) {
       Refresh({ refreshing: $$this.refreshing }) {
       List({ space: 0, scroller: this.scroller }) {
@@ -276,6 +278,7 @@ export struct DriveModulePage {
         }
         }
       }.width('100%').height('100%').scrollBar(BarState.Auto)
+        .contentStartOffset(this.topInset)
         .lanes(this.grid && this.model.drive.entries.length > 0 ? 2 : 1)
         .padding({ left: this.grid ? WorkbenchMetrics.pageMargin : 0, right: this.grid ? WorkbenchMetrics.pageMargin : 0 })
         .contentEndOffset(this.bottomInset + (this.selecting ? 128 : 0)).edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })

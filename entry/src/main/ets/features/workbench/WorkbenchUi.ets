@@ -221,6 +221,7 @@ export struct WorkbenchActionRow {
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
         if (this.value.length > 0) {
           Text(this.value).fontSize(14).fontColor($r('sys.color.font_secondary')).maxLines(1)
+            .constraintSize({ maxWidth: '40%' }).textOverflow({ overflow: TextOverflow.Ellipsis }).flexShrink(1)
         }
         if (this.showChevron) {
           SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(WorkbenchMetrics.rowArrowSize)

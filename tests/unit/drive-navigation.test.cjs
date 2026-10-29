@@ -313,11 +313,25 @@ test('one floating HdsTabs owns every module and file tools remain in the title 
   assert.match(filePage, /NavigationMode.Split/);
   assert.match(index, /barPosition\(BarPosition.End\).*scrollable\(false\)/);
   assert.match(index, /barOverlap\(true\).vertical\(false\)/);
-  assert.match(index, /barFloatingStyle\(\{ barBottomMargin: this.navigationInset/);
+  assert.match(index, /barFloatingStyle\(\{ barBottomMargin: this.floatingBarBottomMargin\(\)/);
   assert.match(index, /backIcon:[\s\S]*?icon: this.navigationBackSymbol\(\)[\s\S]*?this.onBackPress\(\)/);
   assert.doesNotMatch(index, /backIcon:.*label: '返回'/);
   assert.doesNotMatch(filePage, /fileSourceSwitch|filePageActions|sortLabel|Button\('上传'\)/);
   assert.match(filePage, /workbenchBreadcrumbs\(this.model.directory\)/);
+});
+
+test('floating bar uses the measured navigation area or the system spacing when it is absent', () => {
+  let resourceReads = 0;
+  const state = { navigationInset: 0, getUIContext: () => ({ getHostContext: () => ({
+    resourceManager: { getNumber() { resourceReads++; return 32; } }
+  }) }) };
+  const margin = method(index, 'floatingBarBottomMargin');
+  assert.equal(margin.call(state), 32);
+  for (const inset of [24, 28, 40]) {
+    state.navigationInset = inset;
+    assert.equal(margin.call(state), inset);
+  }
+  assert.equal(resourceReads, 1);
 });
 
 test('unreadable entries cannot enter through either UI or model', async () => {
