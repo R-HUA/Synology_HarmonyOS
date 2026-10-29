@@ -1,6 +1,7 @@
 import { NasFileEntry } from '../../core/domain/DsmProtocol';
 import { ConnectionViewModel } from '../connection/ConnectionViewModel';
-import { WorkbenchBreadcrumb, workbenchBreadcrumbs, workbenchBytes, workbenchRelativeDate } from '../workbench/WorkbenchPresentation';
+import { WorkbenchBreadcrumb, workbenchBreadcrumbs, workbenchBytes, workbenchRelativeDate,
+  workbenchFileGridColumns, workbenchFileGridMetadata } from '../workbench/WorkbenchPresentation';
 import { interactionFeedback } from '../../platform/InteractionFeedback';
 import { ImagePreview } from '../workbench/ImagePreview';
 import { WorkbenchMetrics, WorkbenchEmptyState, WorkbenchEntryRow, WorkbenchNotice, WorkbenchInfoRow } from '../workbench/WorkbenchUi';
@@ -9,7 +10,7 @@ import { WorkbenchMetrics, WorkbenchEmptyState, WorkbenchEntryRow, WorkbenchNoti
 @ComponentV2
 export struct FileStationPage {
   @Param model: ConnectionViewModel = new ConnectionViewModel();
-  @Param scroller: Scroller = new Scroller();
+  @Param scroller: ListScroller = new ListScroller();
   @Param topInset: number = 0;
   @Param bottomInset: number = 0;
   @Param active: boolean = true;
@@ -35,15 +36,18 @@ export struct FileStationPage {
   @Event onConfirm: () => void = (): void => {};
   @Event onCancel: () => void = (): void => {};
   @Event onToggleSelection: (entry: NasFileEntry) => void = (): void => {};
-  @Event onSelectAll: () => void = (): void => {};
-  @Event onCancelSelection: () => void = (): void => {};
-  @Event onSelectionAction: (kind: string) => void = (): void => {};
+  @Param menuForEntry: (entry: NasFileEntry) => MenuElement[] = (_entry: NasFileEntry): MenuElement[] => [];
   @Event onBeginSelection: (entry: NasFileEntry) => void = (): void => {};
   @Event onSort: () => void = (): void => {};
   @Local private grid: boolean = false;
+  @Local private listWidth: number = 360;
+  private firstVisibleItem: number = 0;
+  private resizeTimer: number = -1;
   private breadcrumbScroller: Scroller = new Scroller();
   @Local private refreshing: boolean = false;
   @Local private refreshedCount: number | undefined = undefined;
+
+  aboutToDisappear(): void { clearTimeout(this.resizeTimer); this.resizeTimer = -1; }
 
   @Monitor('model.directory')
   private revealBreadcrumb(): void { setTimeout((): void => { this.breadcrumbScroller.scrollEdge(Edge.End); }, 0); }
@@ -109,44 +113,6 @@ export struct FileStationPage {
   }
 
   @Builder
-  selectionBar() {
-    if (this.selecting) {
-      Column() {
-        Row() {
-          Text($r('app.string.file_selected_count', this.selectedPaths.length)).layoutWeight(1)
-            .fontSize(14).fontColor($r('sys.color.font_secondary'))
-          Button($r('app.string.file_select_loaded')).buttonStyle(ButtonStyleMode.TEXTUAL)
-            .constraintSize({ minHeight: WorkbenchMetrics.touchSize }).enabled(!this.model.busy).onClick(this.onSelectAll)
-          Button($r('app.string.action_cancel')).buttonStyle(ButtonStyleMode.TEXTUAL)
-            .constraintSize({ minHeight: WorkbenchMetrics.touchSize }).enabled(!this.model.busy).onClick(this.onCancelSelection)
-        }.width('100%')
-        Flex({ wrap: FlexWrap.Wrap }) {
-          if (this.model.supports('SYNO.FileStation.Download')) {
-            Button($r('app.string.preview_download')).height(48).buttonStyle(ButtonStyleMode.TEXTUAL)
-              .enabled(this.selectedPaths.length > 0 && this.model.entries.filter((entry: NasFileEntry): boolean => this.selectedPaths.includes(entry.path)).every((entry: NasFileEntry): boolean => !entry.isDirectory))
-              .onClick((): void => { this.onSelectionAction('download'); })
-          }
-          if (this.model.supports('SYNO.FileStation.Sharing')) {
-            Button($r('app.string.preview_share')).height(48).buttonStyle(ButtonStyleMode.TEXTUAL)
-              .enabled(this.selectedPaths.length > 0 && this.model.extensions.canWrite('fileSharing'))
-              .onClick((): void => { this.onSelectionAction('share'); })
-          }
-          if (this.model.supports('SYNO.FileStation.CopyMove')) {
-            Button($r('app.string.file_copy')).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
-              .enabled(!this.model.busy && this.selectedPaths.length > 0).onClick((): void => { this.onSelectionAction('copy'); })
-            Button($r('app.string.file_move')).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
-              .enabled(!this.model.busy && this.selectedPaths.length > 0).onClick((): void => { this.onSelectionAction('move'); })
-          }
-          if (this.model.supports('SYNO.FileStation.Delete')) {
-            Button($r('app.string.file_delete')).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
-              .enabled(!this.model.busy && this.selectedPaths.length > 0).onClick((): void => { this.onSelectionAction('delete'); })
-          }
-        }.width('100%')
-      }.width('100%')
-    }
-  }
-
-  @Builder
   pickerBar() {
     if (this.pickerMode.length > 0) {
       Column({ space: 4 }) {
@@ -174,27 +140,17 @@ export struct FileStationPage {
     return this.pickerMode.length > 0 ? this.model.entries.filter((entry: NasFileEntry): boolean => entry.isDirectory) : this.model.entries;
   }
 
-  private entryMenu(entry: NasFileEntry): MenuElement[] {
-    const menu: MenuElement[] = [{ value: '查看详情', action: (): void => { this.onOpenForm('detail', entry); } }];
-    if (this.model.supports('SYNO.FileStation.Sharing') && this.model.extensions.canWrite('fileSharing')) {
-      menu.push({ value: '创建分享链接', action: (): void => { this.onOpenForm('share', entry); } });
-    }
-    if (!entry.isDirectory && this.model.supports('SYNO.FileStation.Download') && this.model.queue.ready && !this.model.queue.busy) {
-      menu.push({ value: '下载到本机', action: (): void => { this.onOpenForm('download', entry); } });
-    }
-    if (this.model.directory.length > 0) {
-      if (this.model.supports('SYNO.FileStation.CopyMove')) {
-        menu.push({ value: '复制到…', action: (): void => { this.onOpenForm('copy', entry); } });
-        menu.push({ value: '移动到…', action: (): void => { this.onOpenForm('move', entry); } });
-      }
-      if (this.model.supports('SYNO.FileStation.Rename')) {
-        menu.push({ value: '重命名', action: (): void => { this.onOpenForm('rename', entry); } });
-      }
-      if (this.model.supports('SYNO.FileStation.Delete')) {
-        menu.push({ value: '删除', action: (): void => { this.onOpenForm('delete', entry); } });
-      }
-    }
-    return menu;
+  private resizeList(width: number): void {
+    const columns = workbenchFileGridColumns(this.listWidth);
+    const anchor = this.visibleEntries()[this.firstVisibleItem];
+    this.listWidth = width;
+    if (!this.grid || columns === workbenchFileGridColumns(width) || anchor === undefined || this.firstVisibleItem === 0) { return; }
+    clearTimeout(this.resizeTimer);
+    this.resizeTimer = setTimeout((): void => {
+      this.resizeTimer = -1;
+      const index = this.visibleEntries().findIndex((entry: NasFileEntry): boolean => entry.path === anchor.path);
+      if (this.active && this.grid && index >= 0) { this.scroller.scrollToItemInGroup(0, index, false, ScrollAlign.START); }
+    }, 0);
   }
 
   @Builder
@@ -207,7 +163,7 @@ export struct FileStationPage {
     Column({ space: 8 }) {
       Row() {
         this.breadcrumbBar()
-        if (this.pickerMode.length === 0) {
+        if (this.pickerMode.length === 0 && !this.selecting) {
           Divider().vertical(true).height(20).color($r('app.color.workbench_divider')).margin({ left: 8, right: 8 })
           Button() { SymbolGlyph($r('sys.symbol.slider_horizontal_2')).fontSize(20).fontColor([$r('sys.color.icon_secondary')]) }
             .width(48).height(48).type(ButtonType.Normal).buttonStyle(ButtonStyleMode.TEXTUAL).padding(0)
@@ -218,7 +174,8 @@ export struct FileStationPage {
             .accessibilityText(this.grid ? $r('app.string.view_list') : $r('app.string.view_grid'))
             .onClick((): void => { this.grid = !this.grid; })
         }
-      }.width('100%').constraintSize({ minHeight: 48 }).padding({ left: 16, right: 16 })
+      }.width('100%').constraintSize({ minHeight: 48 })
+        .padding({ left: this.grid ? 0 : 16, right: this.grid ? 0 : 16 })
       if (this.refreshedCount !== undefined) {
         Text(this.refreshedCount.toString() + ' 项').fontSize(12).fontColor($r('sys.color.font_secondary'))
           .width('100%').height(32).textAlign(TextAlign.Center)
@@ -236,7 +193,7 @@ export struct FileStationPage {
     Stack({ alignContent: Alignment.Bottom }) {
       Refresh({ refreshing: $$this.refreshing }) {
       List({ space: 0, scroller: this.scroller }) {
-        ListItemGroup({ header: this.listHeader }) {
+        ListItemGroup({ header: this.listHeader, space: this.grid && this.pickerMode.length === 0 ? 12 : 0 }) {
         if (!this.model.busy && this.visibleEntries().length === 0 && this.model.errorText.length === 0 && this.errorText.length === 0) {
           ListItem() {
             this.emptyState($r('sys.symbol.folder'), this.pickerMode.length > 0 ? '没有可浏览的文件夹' : '此位置为空',
@@ -245,22 +202,18 @@ export struct FileStationPage {
         }
         ForEach(this.visibleEntries(), (entry: NasFileEntry, index: number): void => {
           ListItem() {
-            Row() {
-              if (this.selecting) {
-                Checkbox().select(this.selectedPaths.includes(entry.path)).enabled(!this.model.busy)
-                  .margin({ left: 16, right: 0 }).width(24).height(24).accessibilityText(entry.name)
-                  .onChange((selected: boolean): void => {
-                    if (selected !== this.selectedPaths.includes(entry.path)) { this.onToggleSelection(entry); }
-                  })
-              }
               WorkbenchEntryRow({ title: entry.name, grid: this.grid && this.pickerMode.length === 0,
+                gridMetadata: workbenchFileGridMetadata(entry.isDirectory,
+                  entry.modifiedAt === undefined ? undefined : entry.modifiedAt / 1000, entry.bytes),
+                selecting: this.selecting, selected: this.selectedPaths.includes(entry.path), selectionAvailable: !this.model.busy,
+                onSelect: (): void => { this.onToggleSelection(entry); },
                 subtitle: (entry.isDirectory ? '文件夹' : workbenchBytes(entry.bytes)) +
                   (entry.modifiedAt === undefined ? '' : ' · ' + workbenchRelativeDate(entry.modifiedAt / 1000)),
                 icon: entry.isDirectory ? $r('sys.symbol.folder') : $r('sys.symbol.doc'),
                 iconColor: entry.isDirectory ? $r('sys.color.icon_emphasize') : $r('sys.color.font_secondary'),
                 available: !this.model.busy, menuAvailable: !this.model.busy,
                 contentInset: this.selecting ? 12 : 16, showDivider: index < this.visibleEntries().length - 1,
-                menu: this.pickerMode.length === 0 && !this.selecting ? this.entryMenu(entry) : [],
+                menu: this.pickerMode.length === 0 && !this.selecting ? this.menuForEntry(entry) : [],
                 onLongPress: (): void => {
                   if (this.pickerMode.length === 0 && !this.selecting) { interactionFeedback(); this.onBeginSelection(entry); }
                 },
@@ -274,9 +227,8 @@ export struct FileStationPage {
                   }
                   else if (/\.(?:jpe?g|png|gif|webp|bmp|heic|heif|tiff?|dng|avif|avis)$/i.test(entry.name)) { this.onOpenImage(entry); }
                   else { this.onOpenForm('detail', entry); }
-                } }).layoutWeight(1)
-            }.width('100%').backgroundColor($r('app.color.workbench_surface'))
-          }.borderRadius(this.grid ? WorkbenchMetrics.cardRadius : 0).clip(true)
+                } }).width('100%')
+          }
         }, (entry: NasFileEntry): string => this.model.address + ':' + this.model.account + ':' + entry.path)
         if (this.model.listLoading === 'more') {
           ListItem() {
@@ -293,9 +245,11 @@ export struct FileStationPage {
         }
         }
       }.width('100%').height('100%').scrollBar(BarState.Auto)
-        .contentStartOffset(this.topInset).contentEndOffset(this.bottomInset + (this.selecting ? 128 : 0))
-        .lanes(this.grid && this.pickerMode.length === 0 && this.visibleEntries().length > 0 ? 2 : 1)
+        .contentStartOffset(this.topInset).contentEndOffset(this.bottomInset)
+        .lanes(this.grid && this.pickerMode.length === 0 ? workbenchFileGridColumns(this.listWidth) : 1, this.grid ? 12 : 0)
         .padding({ left: this.grid ? WorkbenchMetrics.pageMargin : 0, right: this.grid ? WorkbenchMetrics.pageMargin : 0 })
+        .onAreaChange((_old: Area, area: Area): void => { this.resizeList(Number(area.width)); })
+        .onScrollVisibleContentChange((start: VisibleListContentInfo): void => { this.firstVisibleItem = start.itemIndexInGroup ?? 0; })
         .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
         .onWillScroll((offset: number, _state: ScrollState, source: ScrollSource): void => {
           if (offset > 0 && (source === ScrollSource.DRAG || source === ScrollSource.FLING)) {
@@ -314,14 +268,9 @@ export struct FileStationPage {
         }.width('100%').height('100%').padding({ top: this.topInset, bottom: this.bottomInset })
           .justifyContent(FlexAlign.Center).hitTestBehavior(HitTestMode.None)
       }
-      if (this.selecting) {
-        Column() { this.selectionBar() }.padding(8).margin({ left: 16, right: 16, bottom: this.bottomInset })
-          .borderRadius(24).backgroundColor($r('app.color.workbench_surface_elevated'))
-          .shadow({ radius: 16, color: '#1F000000', offsetY: 4 })
-      }
     }.width('100%').layoutWeight(1)
     }.width('100%').height('100%')
-      .backgroundColor(this.grid ? $r('app.color.workbench_background') : $r('app.color.workbench_surface'))
+      .backgroundColor($r('app.color.workbench_background'))
   }
 
   @Builder

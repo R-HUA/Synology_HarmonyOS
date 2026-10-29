@@ -40,7 +40,7 @@ test('log decoding retains duplicate and unordered events without inferring seve
 test('system log connector fixes read source, page size and upper time boundary', async () => {
   const calls = [], replies = [ok({ 'SYNO.API.Auth': { path: 'auth.cgi', minVersion: 1, maxVersion: 6 }, 'SYNO.Core.SyslogClient.Log': { path: 'entry.cgi', minVersion: 1, maxVersion: 9 } })];
   const connector = new NasConnector({ async post(...args) { calls.push(args); return replies.shift(); }, close() {} });
-  await connector.discover('https://nas.example'); connector.restoreSession([{ name: 'FileStation', sid: 'sid', synoToken: '' }]);
+  await connector.discover('https://nas.example'); connector.restoreSession({ sid: 'sid', synoToken: '' });
   replies.push(ok({ items: [row] })); await connector.readSystemLogs(100, 200, x => p.decodeSystemLogs(x, 100));
   const fields = new URLSearchParams(calls.at(-1)[1]);
   assert.equal(fields.get('api'), 'SYNO.Core.SyslogClient.Log'); assert.equal(fields.get('method'), 'list');

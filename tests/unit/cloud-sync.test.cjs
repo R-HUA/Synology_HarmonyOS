@@ -50,7 +50,7 @@ test('cloud history respects time boundary, duplicate events, page limits and re
 test('cloud connector only calls the four read methods with fixed version and connection-scoped history', async () => {
   const calls = [], replies = [ok({ 'SYNO.API.Auth': { path: 'auth.cgi', minVersion: 1, maxVersion: 6 }, 'SYNO.CloudSync': { path: 'entry.cgi', minVersion: 1, maxVersion: 9, requestFormat: 'JSON' } })];
   const connector = new NasConnector({ async post(...args) { calls.push(args); return replies.shift(); }, close() {} });
-  await connector.discover('https://nas.example'); connector.restoreSession([{ name: 'FileStation', sid: 'sid', synoToken: '' }]);
+  await connector.discover('https://nas.example'); connector.restoreSession({ sid: 'sid', synoToken: '' });
   replies.push(ok({ conn: [connection] })); await connector.readCloudSync('connections', '', 0, 0, p.decodeCloudConnections);
   assert.equal(connector.capabilitySnapshots().find(x => x.feature === 'cloudSyncConnections').state, 'available');
   assert.equal(connector.capabilitySnapshots().find(x => x.feature === 'cloudSyncHistory').state, 'unverified');

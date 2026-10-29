@@ -99,7 +99,7 @@ export struct DriveActionPage {
                 showDivider: index < this.folders.length - 1,
                 onOpen: (): void => { this.model.destinations.openFolder(entry); },
                 onAction: (): void => { this.model.selectDestination(entry); } })
-          }.borderRadius({ topLeft: index === 0 ? WorkbenchMetrics.cardRadius : 0,
+          }.backgroundColor($r('app.color.workbench_surface')).borderRadius({ topLeft: index === 0 ? WorkbenchMetrics.cardRadius : 0,
             topRight: index === 0 ? WorkbenchMetrics.cardRadius : 0,
             bottomLeft: index === this.folders.length - 1 ? WorkbenchMetrics.cardRadius : 0,
             bottomRight: index === this.folders.length - 1 ? WorkbenchMetrics.cardRadius : 0 }).clip(true)

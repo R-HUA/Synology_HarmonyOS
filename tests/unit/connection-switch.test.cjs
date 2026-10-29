@@ -49,9 +49,8 @@ const oldOrigin = 'https://lan.example.test:5001';
 const nextOrigin = 'https://remote.example.test';
 const identity = { model: 'Synthetic NAS', serial: 'synthetic-device-serial' };
 const savedSession = { origin: oldOrigin, account: 'alice', insecureTls: false,
-  sessions: [{ name: 'FileStation', sid: 'old-origin-only-sid', synoToken: 'old-origin-only-token' }] };
+  session: { sid: 'old-origin-only-sid', synoToken: 'old-origin-only-token' } };
 const newSession = { sid: 'new-login-sid', synoToken: 'new-login-token' };
-const newSessionRecord = { name: 'FileStation', sid: newSession.sid, synoToken: newSession.synoToken };
 const context = { filesDir: '/synthetic-private' };
 const plain = value => JSON.parse(JSON.stringify(value));
 const failure = kind => new NasFailure(kind, '合成测试失败', 105);
@@ -168,7 +167,7 @@ test('verified restored session updates history without another login or identit
 test('saved sessions require a successful protected read before authentication and task attachment', async () => {
   for (const kind of [K.SessionExpired, K.Network]) {
     const { model, state, count } = await fixture({ bound: false });
-    state.listError = failure(kind);
+    state.validationError = failure(kind);
     await model.restore(context);
     assert.equal(model.authenticated, false); assert.equal(count('queue.attach'), 0);
     assert.equal(model.savedSession, kind === K.Network);
@@ -234,7 +233,8 @@ async function fixture(options = {}) {
       return apis;
     }
     restoreSession(input) { this.event('restoreSession', [plain(input)]); this.session = plain(input); }
-    async login(...args) { this.event('login', args); if (state.loginError) { throw state.loginError; } this.session = [plain(newSessionRecord)]; }
+    async login(...args) { this.event('login', args); if (state.loginError) { throw state.loginError; } this.session = plain(newSession); }
+    async validateSession() { this.event('validateSession'); if (state.validationError) { throw state.validationError; } }
     async telemetrySystem(...args) {
       this.event('identity', args);
       if (state.identityGate) { await state.identityGate.promise; }
@@ -247,7 +247,7 @@ async function fixture(options = {}) {
       if (state.listError) { throw state.listError; }
       return { entries: [{ name: '旧目录', path: '/old-share', isDirectory: true }], offset: 0, total: 1 };
     }
-    sessionSnapshot() { this.event('snapshot'); return this.session === undefined ? [] : plain(this.session); }
+    sessionSnapshot() { this.event('snapshot'); return this.session === undefined ? undefined : plain(this.session); }
     async logout() {
       this.event('logout');
       try { if (state.logoutError) { throw state.logoutError; } } finally { this.close(); }
@@ -312,6 +312,7 @@ async function fixture(options = {}) {
     '../control/SystemControlModel': { SystemControlModel: class { deactivate() {} } },
     '../extensions/NasExtensionsModel': { NasExtensionsModel: class { recordsReady = true; busy = false; pending = []; async attach() {} reset() {} } },
     '../packages/PackageCatalogModel': { PackageCatalogModel: class { attach() {} reset() {} } },
+    '../packages/OfficialWebModel': { OfficialWebModel: class { attach() {} reset() {} close() {} } },
     '../containers/ContainerModel': { ContainerModel: class { attach() {} reset() {} } },
     '../cloudsync/CloudSyncModel': { CloudSyncModel: class { attach() {} reset() {} } },
     '../systemlogs/SystemLogModel': { SystemLogModel: class { attach() {} reset() {} } },
@@ -375,9 +376,9 @@ for (const operation of ['restore', 'login']) {
     assert.equal(count('session.save'), operation === 'login' ? 1 : 0);
     if (operation === 'login') {
       assert.ok(calls.findIndex(call => call.method === 'session.save') > calls.findIndex(call => call.method === 'queue.attach'));
-      assert.deepEqual(state.session, { origin: oldOrigin, account: 'alice', insecureTls: false, sessions: [newSessionRecord] });
+      assert.deepEqual(state.session, { origin: oldOrigin, account: 'alice', insecureTls: false, session: newSession });
     } else {
-      assert.deepEqual(calls.find(call => call.method === 'restoreSession').args, [savedSession.sessions]);
+      assert.deepEqual(calls.find(call => call.method === 'restoreSession').args, [savedSession.session]);
     }
   });
 
@@ -455,14 +456,15 @@ test('login without File Station still saves the session, attaches tasks and exp
   assert.match(model.directoryErrorText, /File Station/);
 });
 
-test('restore without a protected verification interface requires fresh login', async () => {
+test('restore validates the main session independently of File Station permission', async () => {
   const { model, count } = await fixture({ fileStation: false });
   await model.restore(context);
-  assert.equal(model.authenticated, false);
+  assert.equal(model.authenticated, true);
   assert.equal(model.savedSession, true);
   assert.equal(count('list'), 0);
-  assert.equal(count('queue.attach'), 0);
-  assert.match(model.errorText, /重新登录/);
+  assert.equal(count('queue.attach'), 1);
+  assert.equal(count('validateSession'), 1);
+  assert.match(model.directoryErrorText, /File Station/);
 });
 
 test('a file permission failure after login does not block session persistence or queue attachment', async () => {
@@ -715,7 +717,7 @@ test('the certificate policy follows the address scheme and round-trips through 
   assert.equal(model.authenticated, true);
   assert.equal(model.address, 'https://nas.example.test:5001');
   assert.deepEqual(state.session, { origin: 'https://nas.example.test:5001', account: 'alice',
-    insecureTls: true, sessions: [newSessionRecord] });
+    insecureTls: true, session: newSession });
 });
 
 test('a submitted login keeps a self-signed https policy but never keeps it for a plain http origin', async () => {

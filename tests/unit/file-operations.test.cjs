@@ -35,7 +35,7 @@ async function connected({ json = true, login = true, alter = () => {} } = {}) {
   transport.replies.push(ok(capabilities));
   const connector = new NasConnector(transport);
   await connector.discover('https://nas.example.test:5001');
-  if (login) connector.restoreSession([{ name: 'FileStation', sid: 'test-sid', synoToken: 'test-token' }]);
+  if (login) connector.restoreSession({ sid: 'test-sid', synoToken: 'test-token' });
   return { connector, transport };
 }
 
@@ -368,11 +368,11 @@ test('every write and task query requires a session; expiry invalidates later ca
     () => connector.moveFiles(['/Share/a'], '/Other'), () => connector.fileTaskStatus(task), () => connector.stopFileTask(task)];
   for (const call of methods) await assert.rejects(call(), isKind(K.SessionExpired));
   assert.equal(transport.calls.length, 1);
-  connector.restoreSession([{ name: 'FileStation', sid: 'sid', synoToken: '' }]);
-  transport.replies.push(fail(119));
+  connector.restoreSession({ sid: 'sid', synoToken: '' });
+  transport.replies.push(fail(119), fail(119));
   await assert.rejects(connector.deleteFiles(['/Share/a']), isKind(K.SessionExpired));
   for (const call of methods) await assert.rejects(call(), isKind(K.SessionExpired));
-  assert.equal(transport.calls.length, 2);
+  assert.equal(transport.calls.length, 3);
 });
 
 test('HTTP or network failure leaves a mutation result unconfirmed and never retries automatically', async () => {

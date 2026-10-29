@@ -42,10 +42,10 @@ async function loggedIn() {
   return context;
 }
 
-test('torrent creation uses the Download Station session and a stale upload cannot expire its replacement', async () => {
+test('torrent creation uses the primary session and closing cancels a stale upload', async () => {
   const transport = new FakeTransport();
   const capabilities = { ...fixture.data, 'SYNO.DownloadStation.Task': { path: 'entry.cgi', minVersion: 1, maxVersion: 3 } };
-  transport.replies.push(ok(capabilities), ok({ sid: 'files' }), ok({ sid: 'downloads' }));
+  transport.replies.push(ok(capabilities), ok({ sid: 'files' }));
   const connector = new NasConnector(transport);
   await connector.discover('https://nas.example.test:5001');
   await connector.login('reader', 'password', '');
@@ -53,18 +53,16 @@ test('torrent creation uses the Download Station session and a stale upload cann
   let request, rejectUpload;
   transport.transfers = { async upload(value) { request = value; return ok({}); } };
   await connector.uploadDownloadTorrent({ path: '/private/sample.torrent', bytes: 8 }, 'sample.torrent', '/downloads', new NasTransferCancellation());
-  assert.equal(request.session.sid, 'downloads');
+  assert.equal(request.session.sid, 'files');
   assert.equal(request.address, 'https://nas.example.test:5001/webapi/entry.cgi');
   assert.deepEqual(request.fields.map(field => [field.name, field.content]), [
     ['api', 'SYNO.DownloadStation.Task'], ['version', '3'], ['method', 'create'], ['destination', '/downloads']]);
   transport.transfers.upload = () => new Promise((resolve, reject) => { rejectUpload = reject; });
   const pending = connector.uploadDownloadTorrent({ path: '/private/sample.torrent', bytes: 8 }, 'sample.torrent', '/downloads', new NasTransferCancellation());
-  transport.replies.push(ok({ sid: 'new-downloads' }));
-  await connector.authenticateDownloadStation('reader', 'password', '');
+  connector.close();
   rejectUpload(new NasFailure(K.SessionExpired, 'expired'));
   await assert.rejects(pending, isKind(K.Cancelled));
-  assert.ok(connector.sessionSnapshot().some(session => session.sid === 'new-downloads'));
-  assert.ok(connector.sessionSnapshot().some(session => session.sid === 'files'));
+  assert.equal(transport.closed, true);
 });
 
 test('Photos connector reads independent personal and shared pages without invented totals', async () => {
@@ -85,10 +83,10 @@ test('Photos rejection checks File Station before declaring the saved login expi
   const { connector, transport } = await loggedIn();
   transport.replies.push(fail(119), ok({ shares: [], offset: 0, total: 0 }));
   await assert.rejects(connector.photos(PhotosSpace.Personal), isKind(K.Unsupported));
-  assert.equal(connector.sessionSnapshot()[0].sid, 'test-sid');
+  assert.equal(connector.sessionSnapshot().sid, 'test-sid');
   transport.replies.push(fail(119), fail(119));
   await assert.rejects(connector.photos(PhotosSpace.Personal), isKind(K.SessionExpired));
-  assert.equal(connector.sessionSnapshot().length, 0);
+  assert.equal(Number(connector.sessionSnapshot() !== undefined), 0);
 });
 
 test('Photos list requests and decodes video duration and favorite metadata', async () => {
@@ -122,7 +120,7 @@ test('received albums use personal sharing APIs and keep access tokens in authen
   assert.equal(transport.calls.at(-1).body.has('passphrase'), false);
   transport.replies.push(fail(119), ok({ shares: [], offset: 0, total: 0 }));
   await assert.rejects(connector.sharedAlbums(), isKind(K.Unsupported));
-  assert.equal(connector.sessionSnapshot().length, 1);
+  assert.equal(Number(connector.sessionSnapshot() !== undefined), 1);
 });
 
 test('Photos business errors and invalid pagination do not create an empty success', async () => {
@@ -235,7 +233,8 @@ test('login sends secrets only in POST body using Auth 6, and OTP can be retried
   assert.equal(call.body.get('version'), '6');
   assert.equal(call.body.get('passwd'), 'secret+&密码');
   assert.equal(call.body.get('otp_code'), '123456');
-  assert.equal(call.body.get('format'), 'sid');
+  assert.equal(call.body.get('format'), 'cookie');
+  assert.equal(call.body.get('session'), null);
   assert.ok(!call.address.includes('secret'));
 });
 
@@ -255,7 +254,7 @@ test('JSON requestFormat quotes string parameters and preserves Unicode/comma/ba
 
 test('expired session clears local authorization and does not retry automatically', async () => {
   const { connector, transport } = await loggedIn();
-  transport.replies.push(fail(106));
+  transport.replies.push(fail(106), fail(106));
   await assert.rejects(connector.list(''), isKind(K.SessionExpired));
   const count = transport.calls.length;
   await assert.rejects(connector.list(''), isKind(K.SessionExpired));
@@ -292,18 +291,18 @@ test('session parsing rejects Cookie separators and header injection before usin
 
 test('restored sessions must be discovered, are copied, and invalidation removes the snapshot', async () => {
   const unopened = new NasConnector(new FakeTransport());
-  assert.throws(() => unopened.restoreSession([{ name: 'FileStation', sid: 'saved-sid', synoToken: 'saved-token' }]), isKind(K.Unsupported));
+  assert.throws(() => unopened.restoreSession({ sid: 'saved-sid', synoToken: 'saved-token' }), isKind(K.Unsupported));
   const { connector, transport } = await connected();
-  const saved = [{ name: 'FileStation', sid: 'saved-sid', synoToken: 'saved-token' }];
+  const saved = { sid: 'saved-sid', synoToken: 'saved-token' };
   connector.restoreSession(saved);
-  saved[0].sid = 'mutated';
-  connector.sessionSnapshot()[0].sid = 'also-mutated';
-  assert.deepEqual(connector.sessionSnapshot(), [{ name: 'FileStation', sid: 'saved-sid', synoToken: 'saved-token' }]);
-  transport.replies.push(ok({ offset: 0, total: 0, shares: [] }), fail(119));
+  saved.sid = 'mutated';
+  connector.sessionSnapshot().sid = 'also-mutated';
+  assert.deepEqual(connector.sessionSnapshot(), { sid: 'saved-sid', synoToken: 'saved-token' });
+  transport.replies.push(ok({ offset: 0, total: 0, shares: [] }), fail(119), fail(119));
   await connector.list('');
   assert.equal(transport.calls.at(-1).authorization.sid, 'saved-sid');
   await assert.rejects(connector.list(''), isKind(K.SessionExpired));
-  assert.equal(connector.sessionSnapshot().length, 0);
+  assert.equal(Number(connector.sessionSnapshot() !== undefined), 0);
 });
 
 test('late login response after closing connection cannot create a new session', async () => {
@@ -331,7 +330,7 @@ test('parallel login is rejected before sending duplicate authentication request
 test('IP-bound session failure invalidates in-flight successful responses', async () => {
   const { connector, transport } = await loggedIn();
   let finish;
-  transport.replies.push(() => new Promise(resolve => { finish = resolve; }), fail(150));
+  transport.replies.push(() => new Promise(resolve => { finish = resolve; }), fail(150), fail(150));
   const earlierRead = connector.list('');
   await assert.rejects(connector.list(''), isKind(K.SessionExpired));
   finish(ok({ offset: 0, total: 0, shares: [] }));
@@ -417,7 +416,7 @@ test('transfer plans preserve multipart and JSON special characters without over
     assert.ok(plan.fields.every(field => !['_sid', 'SynoToken', 'passwd'].includes(field.name)));
   }
   upload.session.sid = 'mutated';
-  assert.equal(connector.sessionSnapshot()[0].sid, 'test-sid');
+  assert.equal(connector.sessionSnapshot().sid, 'test-sid');
   assert.equal(transport.calls.length, 2, 'planning must not issue a network request');
 });
 
@@ -429,7 +428,7 @@ test('transfer plans use plain scalar strings when the advertised format is not 
   transport.replies.push(ok(capabilities));
   const connector = new NasConnector(transport);
   await connector.discover('https://nas.example.test:5001');
-  connector.restoreSession([{ name: 'FileStation', sid: 'saved-sid', synoToken: '' }]);
+  connector.restoreSession({ sid: 'saved-sid', synoToken: '' });
   const fields = plan => new Map(plan.fields.map(field => [field.name, field.content]));
   assert.equal(fields(connector.transferUploadPlan('/Archive/Apps/test')).get('path'), '/Archive/Apps/test');
   assert.equal(fields(connector.transferDownloadPlan('/Archive/Apps/test/a.txt')).get('mode'), 'download');
@@ -440,13 +439,13 @@ test('file validation and transfer plans require a live session and reject unsaf
   await assert.rejects(connector.getFileInfo('/Archive/Apps/test/a.txt'), isKind(K.SessionExpired));
   assert.throws(() => connector.transferUploadPlan('/Archive/Apps/test'), isKind(K.SessionExpired));
   assert.throws(() => connector.transferDownloadPlan('/Archive/Apps/test/a.txt'), isKind(K.SessionExpired));
-  connector.restoreSession([{ name: 'FileStation', sid: 'saved-sid', synoToken: '' }]);
+  connector.restoreSession({ sid: 'saved-sid', synoToken: '' });
   for (const path of ['/', '/Archive/../private', '/Archive/Apps/test\u0000']) {
     await assert.rejects(connector.getFileInfo(path), isKind(K.Protocol));
     assert.throws(() => connector.transferUploadPlan(path), isKind(K.Protocol));
     assert.throws(() => connector.transferDownloadPlan(path), isKind(K.Protocol));
   }
-  transport.replies.push(fail(119));
+  transport.replies.push(fail(119), fail(119));
   await assert.rejects(connector.getFileInfo('/Archive/Apps/test/a.txt'), isKind(K.SessionExpired));
   assert.throws(() => connector.transferUploadPlan('/Archive/Apps/test'), isKind(K.SessionExpired));
   assert.throws(() => connector.transferDownloadPlan('/Archive/Apps/test/a.txt'), isKind(K.SessionExpired));

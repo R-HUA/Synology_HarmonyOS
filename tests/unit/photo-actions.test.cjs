@@ -90,7 +90,7 @@ async function fixture() {
       return { path: target.directory + '/image', bytes: 8, discard() {} };
     } } });
   replies.push(ok(capabilities)); await connector.discover('https://nas.example.test');
-  connector.restoreSession([{ name: 'FileStation', sid: 'synthetic-sid', synoToken: 'synthetic-token' }]);
+  connector.restoreSession({ sid: 'synthetic-sid', synoToken: 'synthetic-token' });
   return { connector, calls, replies };
 }
 

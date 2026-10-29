@@ -11,7 +11,8 @@ const moduleFixture = { exports: {} };
 vm.runInNewContext(compiled.outputText, { module: moduleFixture, exports: moduleFixture.exports, Date });
 const { photoGridColumns, photoTimelineRows, photoTakenDate, photoMediaLabel,
   workbenchBottomInset, workbenchShortcutColumns, photoAlbumColumns, photoAlbumRows,
-  workbenchUsageLevel, workbenchRelativeDate, workbenchProtocolHint } = moduleFixture.exports;
+  workbenchUsageLevel, workbenchRelativeDate, workbenchProtocolHint,
+  workbenchFileGridColumns, workbenchFileGridMetadata } = moduleFixture.exports;
 const plain = value => JSON.parse(JSON.stringify(value));
 const item = (id, year, month) => ({ id, space: 0, filename: '照片.jpg', bytes: 12, mediaType: 'photo',
   ...(year === undefined ? {} : { takenAt: new Date(year, month - 1, 15, 12).getTime() / 1000 }) });
@@ -77,6 +78,23 @@ test('album resizing preserves every album, its source space and partial final r
     assert.ok(rows.every(row => row.albums.length > 0 && row.albums.length <= columns));
   }
   assert.deepEqual(plain(photoAlbumRows([], 2)), []);
+});
+
+test('file grid uses its own viewport width with at least three columns and real gutters', () => {
+  for (const [width, columns] of [[200, 3], [320, 3], [360, 3], [419, 3], [420, 4], [440, 4], [600, 5], [840, 8]]) {
+    assert.equal(workbenchFileGridColumns(width), columns);
+    if (width >= 320) assert.ok((width - 32 - (columns - 1) * 12) / columns >= 88);
+  }
+  assert.notEqual(workbenchFileGridColumns(840), workbenchFileGridColumns(360));
+});
+
+test('file grid metadata excludes folder type and invented size or child counts', () => {
+  const modified = new Date(2020, 0, 2, 12).getTime() / 1000;
+  assert.equal(workbenchFileGridMetadata(true, modified, 1024), '2020/01/02');
+  assert.equal(workbenchFileGridMetadata(false, modified, 1024), '2020/01/02\n1.0 KB');
+  assert.equal(workbenchFileGridMetadata(true, undefined, undefined), '');
+  assert.equal(workbenchFileGridMetadata(false, undefined, undefined), '');
+  assert.equal(workbenchFileGridMetadata(false, undefined, 0), '0 B');
 });
 
 test('usage level thresholds distinguish normal, warning and danger capacity', () => {

@@ -68,7 +68,7 @@ async function connectorFixture() {
     descriptors[name] = { path: 'suite/entry.cgi', minVersion: 1, maxVersion: name === 'SYNO.API.Auth' ? 6 : 99, requestFormat: 'JSON' };
   }
   replies.push(ok(descriptors)); await connector.discover('https://nas.example');
-  connector.restoreSession([{ name: 'FileStation', sid: 'private-sid', synoToken: '' }]);
+  connector.restoreSession({ sid: 'private-sid', synoToken: '' });
   return { connector, calls, replies, state: feature => connector.capabilitySnapshots().find(value => value.feature === feature).state };
 }
 
@@ -97,8 +97,8 @@ test('suite session rejection retains the main session unless protected main rea
     else if (proof === 'network') f.replies.push({ status: 503, text: '' });
     else f.replies.push(bad(106));
     await assert.rejects(f.connector.readContainers('list', '', p.decodeContainers), error =>
-      error.kind === (proof === 'expired' ? dsm.NasErrorKind.SessionExpired : dsm.NasErrorKind.Permission));
-    assert.equal(f.connector.sessionSnapshot().length, proof === 'expired' ? 0 : 1);
+      error.kind === (proof === 'expired' ? dsm.NasErrorKind.SessionExpired : proof === 'network' ? dsm.NasErrorKind.Http : dsm.NasErrorKind.Permission));
+    assert.equal(Number(f.connector.sessionSnapshot() !== undefined), proof === 'expired' ? 0 : 1);
   }
 });
 

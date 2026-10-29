@@ -47,7 +47,9 @@ export class RcpNasTransport implements NasTransport {
       const data = new Uint8Array(bytes);
       let offset = 0;
       for (const chunk of chunks) { data.set(chunk, offset); offset += chunk.length; }
-      return { status: reply.statusCode, text: decodeUtf8Complete(data) };
+      const cookies = reply.headers['set-cookie'];
+      return { status: reply.statusCode, text: decodeUtf8Complete(data),
+        setCookies: typeof cookies === 'string' ? [cookies] : cookies };
     } catch (error) {
       if (this.closed) { throw new NasFailure(NasErrorKind.Cancelled, '连接已关闭。'); }
       if (overflow) { throw new NasFailure(NasErrorKind.Protocol, '服务器业务响应过大。'); }

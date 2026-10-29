@@ -75,57 +75,66 @@ const { NasSessionStore } = loadSource('features/connection/NasSessionStore.ets'
 });
 
 const httpsOrigin = 'https://nas.example.test:5001';
-const sessions = [
-  { name: 'FileStation', sid: 'file-station-sid', synoToken: 'file-station-token' },
-  { name: 'DownloadStation', sid: 'download-sid', synoToken: 'download-token' },
-];
+const session = { sid: 'primary-sid', synoToken: 'primary-token' };
 
-test('v2 sessions round-trip through the asset store without credentials beyond SIDs', async () => {
+test('v3 primary session round-trips without passwords or OTP', async () => {
   const store = new NasSessionStore();
-  await store.save({ origin: httpsOrigin, account: 'alice', insecureTls: false, sessions });
+  await store.save({ origin: httpsOrigin, account: 'alice', insecureTls: false, session });
   const loaded = await store.load();
-  assert.deepEqual(plain(loaded), { origin: httpsOrigin, account: 'alice', insecureTls: false, sessions });
+  assert.deepEqual(plain(loaded), { origin: httpsOrigin, account: 'alice', insecureTls: false, session });
   const raw = new TextDecoder().decode(asset.stored.get('synology-harmonyos.nas-session.v1'));
   const payload = JSON.parse(raw);
-  assert.equal(payload.version, 2);
-  assert.deepEqual(payload.sessions, sessions);
-  assert.deepEqual(Object.keys(payload).sort(), ['account', 'insecureTls', 'origin', 'sessions', 'version']);
+  assert.equal(payload.version, 3);
+  assert.deepEqual(payload.session, session);
+  assert.deepEqual(Object.keys(payload).sort(), ['account', 'insecureTls', 'origin', 'session', 'version']);
   await store.clear();
   assert.equal(await store.load(), undefined);
 });
 
-test('legacy v1 payloads restore as the File Station primary session only', async () => {
+test('old persisted versions are rejected without migration', async () => {
   const legacy = new TextEncoder().encode(JSON.stringify(
     { origin: httpsOrigin, account: 'alice', sid: 'legacy-sid', synoToken: 'legacy-token', insecureTls: true }));
   asset.stored.set('synology-harmonyos.nas-session.v1', legacy);
-  const loaded = await new NasSessionStore().load();
-  assert.deepEqual(plain(loaded), { origin: httpsOrigin, account: 'alice', insecureTls: true,
-    sessions: [{ name: 'FileStation', sid: 'legacy-sid', synoToken: 'legacy-token' }] });
+  await assert.rejects(new NasSessionStore().load());
+  asset.stored.set('synology-harmonyos.nas-session.v1', new TextEncoder().encode(JSON.stringify(
+    { version: 2, origin: httpsOrigin, account: 'alice', sessions: [{ name: 'FileStation', ...session }] })));
+  await assert.rejects(new NasSessionStore().load());
 });
 
 test('a plain http origin never keeps the insecure-certificate policy', async () => {
   const store = new NasSessionStore();
   await store.save({ origin: 'http://nas.example.test:5000', account: 'alice', insecureTls: true,
-    sessions: [sessions[0]] });
+    session });
   assert.equal((await store.load()).insecureTls, false);
 });
 
 test('invalid payloads are rejected instead of partially restoring sessions', async () => {
   const store = new NasSessionStore();
-  const base = { origin: httpsOrigin, account: 'alice', insecureTls: false };
+  const base = { origin: httpsOrigin, account: 'alice', insecureTls: false, session };
   const cases = [
-    { ...base, sessions: [] },
-    { ...base, sessions: [{ name: 'FileStation', sid: '', synoToken: '' }] },
-    { ...base, sessions: [{ name: 'UnknownSuite', sid: 'sid', synoToken: '' }] },
-    { ...base, sessions: [sessions[0], { name: 'FileStation', sid: 'other', synoToken: '' }] },
-    { ...base, sessions: [{ name: 'FileStation', sid: 'sid; inject', synoToken: '' }] },
+    { ...base, session: [] },
+    { ...base, session: { sid: '', synoToken: '' } },
+    { ...base, session: { sid: 'sid; inject', synoToken: '' } },
     { ...base, origin: 'ftp://nas.example.test' },
     { ...base, account: '' },
-    { ...base, sessions: 'not-an-array' },
+    { ...base, session: 'not-an-object' },
   ];
   const before = asset.stored.size;
   for (const session of cases) {
     await assert.rejects(() => store.save(session));
   }
   assert.equal(asset.stored.size, before, '拒绝的负载不得写入存档');
+});
+
+test('logout clear waits for an in-flight save and cannot be undone by its late completion', async () => {
+  const store = new NasSessionStore(), originalAdd = asset.add;
+  let release;
+  asset.add = async attributes => { await new Promise(resolve => { release = resolve; }); await originalAdd(attributes); };
+  try {
+    const save = store.save({ origin: httpsOrigin, account: 'alice', insecureTls: false, session });
+    await Promise.resolve();
+    const clear = store.clear();
+    release(); await save; await clear;
+    assert.equal(await store.load(), undefined);
+  } finally { asset.add = originalAdd; }
 });

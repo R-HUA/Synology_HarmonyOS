@@ -1,6 +1,6 @@
 export enum NasErrorKind {
   InvalidInput, Network, Tls, Http, Protocol, Unsupported, Credentials, OtpRequired,
-  OtpInvalid, Permission, SessionExpired, Cancelled, Server
+  OtpInvalid, Permission, SessionExpired, Cancelled, Server, AuthActionRequired
 }
 
 export class NasFailure extends Error {
@@ -183,7 +183,7 @@ export function dsmFailure(api: string, code: number): NasFailure {
       case 404: return new NasFailure(NasErrorKind.OtpInvalid, '动态码验证失败，请输入新的动态码。', code);
       case 407: return new NasFailure(NasErrorKind.Permission, '当前网络地址已被 DSM 封锁，请在 DSM 检查。', code);
       case 408: case 409: case 410:
-        return new NasFailure(NasErrorKind.Credentials, '密码已到期或需要修改，请先在 DSM 网页处理。', code);
+        return new NasFailure(NasErrorKind.AuthActionRequired, '请先在群晖管理页面完成账号验证或修改密码，再重新登录。', code);
     }
   }
   const fileMessage = api.startsWith('SYNO.FileStation.') ? fileStationFailureMessage(api, code) : undefined;

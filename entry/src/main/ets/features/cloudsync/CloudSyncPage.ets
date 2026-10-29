@@ -75,7 +75,7 @@ export struct CloudSyncPage {
       Scroll(this.scroller) {
         Column({ space: 12 }) {
           if (this.model.selected === undefined) { this.list() } else { this.detail() }
-          Button('在浏览器中管理').buttonStyle(ButtonStyleMode.NORMAL).onClick(this.onManagement)
+          Button($r('app.string.package_open_management')).buttonStyle(ButtonStyleMode.NORMAL).onClick(this.onManagement)
         }.width('100%').alignItems(HorizontalAlign.Start).padding({ top: 12, left: 16, right: 16, bottom: this.bottomInset })
       }.width('100%').height('100%').constraintSize({ maxWidth: 960 }).align(Alignment.Top)
     }.width('100%').height('100%').justifyContent(FlexAlign.Center)

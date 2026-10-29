@@ -25,15 +25,25 @@ vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(root, 'features/
   compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS }
 }).outputText, { module: navFixture, exports: navFixture.exports,
   require(id) { return require('../../work/core-build/domain/' + id.split('/').at(-1) + '.js'); } });
-const globals = { ...navFixture.exports, DriveEntryKind: drive.DriveEntryKind, DriveView: V, PhotosSpace: P,
+const presentationFixture = { exports: {} };
+vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(root, 'features/workbench/WorkbenchPresentation.ts'), 'utf8'), {
+  compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS }
+}).outputText, { module: presentationFixture, exports: presentationFixture.exports });
+const titleMenuType = vm.runInNewContext(ts.transpileModule(index.match(/class TitleMenuItem \{[\s\S]*?^\}/m)[0], {
+  compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS }
+}).outputText + '\nTitleMenuItem');
+const globals = { ...navFixture.exports, TitleMenuItem: titleMenuType,
+  DriveEntryKind: drive.DriveEntryKind, DriveView: V, PhotosSpace: P,
   TaskPageState: taskStateModule.exports.TaskPageState,
   HdsSnackBar: class { show(_options, message, operation) { this.message = message; this.operation = operation; } dismiss() {} },
   SnackBarOperationType: { TEXT_ONLY: 1 }, LengthMetrics: { vp: value => value }, $r: name => name,
   canPreviewDriveOriginal: require('../../work/core-build/domain/DriveOriginalProtocol.js').canPreviewDriveOriginal,
+  driveActionAllowed: require('../../work/core-build/domain/DriveActionProtocol.js').driveActionAllowed,
+  driveFileLinkAllowed: require('../../work/core-build/domain/DriveCollaborationProtocol.js').driveFileLinkAllowed,
   canPreviewDriveMedia: require('../../work/core-build/domain/DriveOriginalProtocol.js').canPreviewDriveMedia };
 
 // 执行实际方法体，支持单行方法；ArkUI 构建器仅检查必要的宿主连接。
-function method(source, name) {
+function method(source, name, extraGlobals = {}) {
   const start = source.search(new RegExp('^  (?:private )?(?:async )?' + name + '\\(', 'm'));
   assert.ok(start >= 0, name);
   let end = source.indexOf('{', start) + 1, depth = 1;
@@ -44,7 +54,7 @@ function method(source, name) {
   const compiled = ts.transpileModule('class Subject {\n' + source.slice(start, end) + '\n}', {
     compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS }
   });
-  return vm.runInNewContext(compiled.outputText + '\nSubject.prototype.' + name, { ...globals });
+  return vm.runInNewContext(compiled.outputText + '\nSubject.prototype.' + name, { ...globals, ...extraGlobals });
 }
 function page() {
   const calls = [], paths = [];
@@ -83,6 +93,136 @@ function page() {
     'openModuleTasks', 'openPhotoTransfers', 'showAllTasks']) state[name] = method(index, name);
   return state;
 }
+
+function selectedFilePage() {
+  const state = page();
+  state.driveSelecting = true;
+  state.selectedDriveIds = [];
+  state.selectionMenuVisible = false;
+  state.driveDetailVisible = false;
+  state.previewText = resource => resource;
+  state.model.drive.entries = [
+    { fileId: 'a', kind: drive.DriveEntryKind.Folder, capabilities: { canRead: true, canWrite: true, canRename: true, canDelete: true } },
+    { fileId: 'b', kind: drive.DriveEntryKind.File, capabilities: { canRead: true, canDownload: true, canDelete: false } }
+  ];
+  state.model.drive.trail = [{}, {}];
+  state.model.driveActions = { ready: true, available: true, busy: false, hasPending: false };
+  state.model.driveTransfers = { ready: true, available: true, busy: false, errorText: '' };
+  state.model.driveSharing = { available: true, hasPending: false };
+  for (const name of ['cancelDriveSelection', 'fileSelectionActive', 'selectedDriveEntries', 'selectionCount',
+    'fileSelectionActionAllowed', 'fileSelectionAction', 'fileSelectionMenuItems', 'driveEntryActions',
+    'selectLoadedFiles', 'driveSelectionLocationChanged', 'driveSelectionEntriesChanged']) state[name] = method(index, name);
+  return state;
+}
+
+test('selection actions disable zero, unsupported, unreadable and pending selections', () => {
+  const state = selectedFilePage();
+  for (const action of ['share', 'copy', 'move', 'delete', 'download', 'more']) assert.equal(state.fileSelectionActionAllowed(action), false);
+  state.selectedDriveIds = ['a', 'b'];
+  assert.equal(state.fileSelectionActionAllowed('copy'), true);
+  assert.equal(state.fileSelectionActionAllowed('share'), true);
+  assert.equal(state.fileSelectionActionAllowed('download'), false);
+  assert.equal(state.fileSelectionActionAllowed('delete'), false);
+  state.model.driveActions.hasPending = true;
+  assert.equal(state.fileSelectionActionAllowed('copy'), false);
+  state.model.driveActions.hasPending = false; state.model.driveActions.available = false;
+  assert.equal(state.fileSelectionActionAllowed('copy'), false);
+  state.model.driveActions.available = true; state.model.drive.entries[0].capabilities.canRead = false;
+  assert.equal(state.fileSelectionActionAllowed('copy'), false);
+  state.model.drive.entries = [];
+  assert.equal(state.selectionCount(), 0);
+  assert.equal(state.fileSelectionActionAllowed('more'), false);
+});
+
+test('selection navigation retains selected files behind operation pages and only selects loaded entries', () => {
+  const state = selectedFilePage();
+  state.model.drive.total = 200;
+  state.selectLoadedFiles();
+  assert.deepEqual(Array.from(state.selectedDriveIds), ['a', 'b']);
+  state.navStack.pushPathByName('drive-action');
+  assert.equal(state.fileSelectionActive(), false);
+  assert.deepEqual(Array.from(state.selectedDriveIds), ['a', 'b']);
+  state.navStack.pop(); assert.equal(state.fileSelectionActive(), true);
+  state.model.drive.entries = [state.model.drive.entries[1]];
+  state.driveSelectionEntriesChanged(); assert.deepEqual(Array.from(state.selectedDriveIds), ['b']);
+  state.driveSelectionLocationChanged();
+  assert.equal(state.driveSelecting, false);
+  assert.deepEqual(Array.from(state.selectedDriveIds), []);
+});
+
+test('system back closes selection menus and details before leaving selection or a directory', () => {
+  const state = selectedFilePage(), back = method(index, 'onBackPress');
+  state.selectedDriveIds = ['a']; state.selectionMenuVisible = true; state.driveDetailVisible = true;
+  assert.equal(back.call(state), true); assert.equal(state.selectionMenuVisible, false); assert.equal(state.driveSelecting, true);
+  assert.equal(back.call(state), true); assert.equal(state.driveDetailVisible, false); assert.equal(state.driveSelecting, true);
+  state.sheetVisible = true;
+  assert.equal(back.call(state), true); assert.equal(state.sheetVisible, false); assert.equal(state.driveSelecting, true);
+  assert.equal(back.call(state), true); assert.equal(state.driveSelecting, false);
+  assert.deepEqual(state.calls, []);
+  state.driveSelecting = true; state.navStack.pushPathByName('drive-search'); state.calls.length = 0;
+  assert.equal(back.call(state), true); assert.equal(state.driveSelecting, false);
+  assert.equal(state.navStack.size(), 1); assert.deepEqual(state.calls, []);
+});
+
+test('single-selection more reuses details and rename while batch actions do not duplicate', () => {
+  const state = selectedFilePage(); state.selectedDriveIds = ['a'];
+  const menu = state.fileSelectionMenuItems();
+  assert.equal(menu.filter(item => item.id === 'detail').length, 1);
+  assert.equal(menu.filter(item => item.id === 'rename').length, 1);
+  assert.ok(menu.every(item => !['copy', 'share', 'delete', 'move', 'download'].includes(item.id)));
+  menu.find(item => item.id === 'detail').action();
+  assert.equal(state.driveDetailEntry, state.model.drive.entries[0]); assert.equal(state.driveDetailVisible, true);
+  state.selectedDriveIds = ['a', 'b'];
+  assert.equal(state.fileSelectionMenuItems().length, 2);
+});
+
+test('late download completion cannot clear a new session selection or open its transfer page', async () => {
+  const state = selectedFilePage(); state.selectedDriveIds = ['b']; state.model.sessionGeneration = 1;
+  let finish;
+  state.model.driveTransfers.download = () => new Promise(resolve => { finish = resolve; });
+  state.openDriveTransfers = () => assert.fail('late result must not navigate');
+  const pending = state.fileSelectionAction('download');
+  state.model.sessionGeneration = 2; state.selectedDriveIds = ['a'];
+  finish(); await pending;
+  assert.deepEqual(state.selectedDriveIds, ['a']); assert.equal(state.driveSelecting, true);
+});
+
+test('File Station selection retains its own capability and folder download restrictions', () => {
+  const state = selectedFilePage(); state.module = 'root'; state.activeTab = 1; state.fileSelecting = true;
+  state.model.extensions.canWrite = () => false;
+  state.selectedFiles = [{ path: '/one', isDirectory: true }];
+  assert.equal(state.fileSelectionActionAllowed('download'), false);
+  assert.equal(state.fileSelectionActionAllowed('share'), false);
+  assert.equal(state.fileSelectionActionAllowed('copy'), true);
+  state.model.supports = () => false;
+  assert.equal(state.fileSelectionActionAllowed('copy'), false);
+  assert.equal(state.fileSelectionActionAllowed('delete'), false);
+  state.model.supports = () => true; state.model.entries = [{ path: '/one' }, { path: '/two' }];
+  state.selectLoadedFiles(); assert.deepEqual(state.selectedFiles, state.model.entries);
+});
+
+test('grid resize retains the visible file identity and cancels work when its view disappears', () => {
+  for (const source of [drivePage, filePage]) {
+    const scheduled = new Map(); let timer = 0; const scrolls = [];
+    const context = { workbenchFileGridColumns: presentationFixture.exports.workbenchFileGridColumns,
+      ScrollAlign: { START: 'start' }, setTimeout: callback => { scheduled.set(++timer, callback); return timer; },
+      clearTimeout: id => { scheduled.delete(id); } };
+    const state = { listWidth: 360, grid: true, firstVisibleItem: 3, resizeTimer: -1, active: true,
+      data: Array.from({ length: 12 }, (_, i) => ({ path: '/' + i, fileId: String(i) })),
+      entries() { return this.data; }, visibleEntries() { return this.data; }, canRenderEntries() { return this.active; },
+      scroller: { scrollToItemInGroup(...args) { scrolls.push(args); } } };
+    const resize = method(source, 'resizeList', context);
+    resize.call(state, 440);
+    state.data.unshift({ path: '/before', fileId: 'before' });
+    const callback = scheduled.get(state.resizeTimer); scheduled.clear(); callback();
+    assert.deepEqual(scrolls, [[0, 4, false, 'start']]);
+    state.firstVisibleItem = 4;
+    resize.call(state, 600);
+    method(source, 'aboutToDisappear', context).call(state);
+    assert.equal(scheduled.size, 0);
+    assert.equal(state.resizeTimer, -1);
+  }
+});
 
 test('system back closes sheet and destination before navigating the module', () => {
   const state = page(), back = method(index, 'onBackPress');
@@ -297,13 +437,13 @@ test('Drive file menu keeps metadata details available without granting unavaila
       driveTransfers: { ready: condition !== 'not-ready', busy: condition === 'busy', available: false },
       driveActions: { ready: true, busy: false, hasPending: condition === 'pending', available: false },
       driveSharing: { available: false }
-    }, detailVisible: false };
-    const menu = method(drivePage, 'driveEntryMenu').call(state, file);
+    }, driveDetailVisible: false, previewText: () => '查看详情' };
+    const menu = method(index, 'driveEntryActions').call(state, file);
     assert.equal(menu.length, 1);
-    assert.equal(menu[0].value, '查看详情');
+    assert.equal(menu[0].label, '查看详情');
     menu[0].action();
-    assert.equal(state.detailEntry, file);
-    assert.equal(state.detailVisible, true);
+    assert.equal(state.driveDetailEntry, file);
+    assert.equal(state.driveDetailVisible, true);
   }
 });
 test('one floating HdsTabs owns every module and file tools remain in the title bar', () => {
@@ -349,14 +489,15 @@ test('unreadable entries cannot enter through either UI or model', async () => {
   await openFolder.call(model, entry);
   assert.equal(loads, 1);
   assert.equal(model.trail[0].fileId, '123');
-  assert.match(drivePage, /available: !this\.model\.busy && !this\.model\.drive\.busy && entry\.capabilities\.canRead/);
+  assert.match(drivePage, /available: !this\.model\.busy && !this\.model\.drive\.busy && \(this\.selecting \|\| entry\.capabilities\.canRead/);
 });
 
 test('Drive file action prepares supported files for preview without navigating to transfers', () => {
   const state = page();
-  state.model.driveTransfers = { canPreview: () => true, download(_entry, preview) { state.calls.push(['drive-download', preview]); } };
+  state.model.driveTransfers = { ready: true, busy: false, canPreview: () => true, download(_entry, preview) { state.calls.push(['drive-download', preview]); } };
   state.openDriveTransfers = () => state.calls.push('drive-tasks');
   state.onDownload = (_entry, preview) => state.calls.push(['drive-download', preview]);
+  state.onInspectEntry = (entry, visible) => { state.detailEntry = entry; state.detailVisible = visible; };
   const open = method(drivePage, 'openDriveEntry');
   const file = { name: '记录.txt', kind: 'file', capabilities: { canRead: true, canDownload: true } };
   open.call(state, file);
@@ -386,6 +527,16 @@ test('permitted media open thumbnail preview even when original downloading is f
   state.calls.length = 0;
   open.call(state, { ...picture, capabilities: { canRead: true, canDownload: false, canPreview: true } });
   assert.deepEqual(state.calls, ['drive-original']);
+});
+
+test('readable grid files without download permission retain their details entrance', () => {
+  const state = page();
+  const file = { name: '只读文件.txt', kind: 'file', capabilities: { canRead: true, canDownload: false } };
+  const details = [];
+  state.model.driveTransfers = { ready: true, busy: false, canPreview: () => assert.fail('download is unavailable') };
+  state.onInspectEntry = (entry, visible) => { details.push([entry, visible]); };
+  method(drivePage, 'openDriveEntry').call(state, file);
+  assert.deepEqual(details, [[file, true]]);
 });
 
 

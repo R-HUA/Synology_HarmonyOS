@@ -111,7 +111,7 @@ test('Auth and OTP messages, session invalidation and other API namespaces keep 
     [403, K.OtpRequired, '请输入双重验证动态码。'], [406, K.OtpRequired, '请输入双重验证动态码。'],
     [404, K.OtpInvalid, '动态码验证失败，请输入新的动态码。'],
     [407, K.Permission, '当前网络地址已被 DSM 封锁，请在 DSM 检查。'],
-    [408, K.Credentials, '密码已到期或需要修改，请先在 DSM 网页处理。']
+    [408, K.AuthActionRequired, '请先在群晖管理页面完成账号验证或修改密码，再重新登录。']
   ]) {
     const failure = decodeFailure('SYNO.API.Auth', code, [{ code: 414 }]);
     assert.equal(failure.kind, kind);

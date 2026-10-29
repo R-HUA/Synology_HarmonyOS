@@ -88,7 +88,7 @@ test('connector marks root browsing available only after decoding and does not g
   replies.push(ok({ 'SYNO.API.Auth': { path: 'auth.cgi', minVersion: 1, maxVersion: 7 },
     'SYNO.FileStation.List': { path: 'entry.cgi', minVersion: 1, maxVersion: 2 } }));
   await connector.discover('https://nas.example');
-  connector.restoreSession([{ name: 'FileStation', sid: 'synthetic-sid', synoToken: '' }]);
+  connector.restoreSession({ sid: 'synthetic-sid', synoToken: '' });
   const files = () => connector.capabilitySnapshots().find(value => value.feature === 'fileBrowse');
   assert.equal(files().state, 'unverified');
   replies.push(ok({ shares: [], total: 0, offset: 0 }));
@@ -100,7 +100,7 @@ test('connector marks root browsing available only after decoding and does not g
   replies.push(ok({ shares: 'not-an-array' }));
   await assert.rejects(connector.list(''));
   assert.equal(files().state, 'schemaMismatch');
-  replies.push({ status: 200, text: '{"success":false,"error":{"code":119}}' });
+  replies.push({ status: 200, text: '{"success":false,"error":{"code":119}}' }, { status: 200, text: '{"success":false,"error":{"code":119}}' });
   await assert.rejects(connector.list(''));
   assert.equal(files().state, 'unverified');
   connector.close();
@@ -125,10 +125,10 @@ test('optional module discovery stays independent of package permissions and sen
     await connector.discover('https://nas.example');
     const queried = new URLSearchParams(calls[0][1]).get('query').split(',');
     for (const [, name] of modules) assert.ok(queried.includes(name));
-    connector.restoreSession([{ name: 'FileStation', sid: 'synthetic-sid', synoToken: '' }]);
+    connector.restoreSession({ sid: 'synthetic-sid', synoToken: '' });
     assert.equal(calls.length, 1);
     await assert.rejects(connector.readPackageCatalog(() => connector.packageRequest('list', [])), error => error.kind === K.Permission);
-    assert.equal(connector.sessionSnapshot().length, 1);
+    assert.equal(Number(connector.sessionSnapshot() !== undefined), 1);
     for (const [feature] of modules) {
       const state = connector.capabilitySnapshots().find(value => value.feature === feature);
       assert.equal(state.state, discovered ? 'unsupportedVersion' : 'unverified');

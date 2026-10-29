@@ -46,40 +46,10 @@ export struct NasSystemControlPage {
       Text(this.control.origin).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
       Text('系统控制会中断 NAS 上所有用户的服务；这里只提供重启与关机。')
         .fontSize(14).fontColor($r('sys.color.font_primary')).width('100%')
-      Text('授权在离开页面、切入后台或两分钟后失效。')
-        .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
     }.width('100%').padding(16).borderRadius(WorkbenchMetrics.cardRadius).alignItems(HorizontalAlign.Start)
       .backgroundColor($r('app.color.workbench_surface'))
   }
 
-  @Builder
-  authorizationForm() {
-    Column({ space: 12 }) {
-      WorkbenchSectionTitle({ title: '独立登录授权', subtitle: this.control.authorized ? '临时授权已生效' : '验证账号后才能操作' })
-      Text('请使用有系统控制权限的 NAS 账号。')
-        .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
-      TextInput({ text: this.control.account, placeholder: '系统控制账号' }).maxLength(128).constraintSize({ minHeight: 48 })
-        .enabled(!this.control.busy && !this.control.authorized)
-        .onChange((text: string): void => { this.control.account = text; }).accessibilityText('系统控制独立登录账号')
-      if (!this.control.authorized) {
-        TextInput({ text: this.control.password, placeholder: '密码' }).type(InputType.Password).constraintSize({ minHeight: 48 })
-          .enabled(!this.control.busy).onChange((text: string): void => { this.control.password = text; })
-          .accessibilityText('系统控制独立登录密码')
-        if (this.control.needsOtp) {
-          TextInput({ text: this.control.otp, placeholder: '6 位动态码；请同时重新输入密码' }).type(InputType.Number).maxLength(6)
-            .constraintSize({ minHeight: 48 }).enabled(!this.control.busy)
-            .onChange((text: string): void => { this.control.otp = text; }).accessibilityText('系统控制双重验证动态码')
-        }
-        Button(this.control.busy ? '正在处理…' : '登录并核验设备').width('100%').constraintSize({ minHeight: 48 })
-          .enabled(this.control.canAuthorize() && this.control.account.trim().length > 0 && this.control.password.length > 0)
-          .onClick((): void => { this.control.authorize(); })
-      } else {
-        Button('结束临时授权').width('100%').constraintSize({ minHeight: 48 }).buttonStyle(ButtonStyleMode.TEXTUAL)
-          .enabled(!this.control.busy).onClick((): void => { this.onRefresh(); })
-      }
-    }.width('100%').padding(16).borderRadius(WorkbenchMetrics.cardRadius).alignItems(HorizontalAlign.Start)
-      .backgroundColor($r('app.color.workbench_surface'))
-  }
 
   @Builder
   actionCard() {
@@ -141,10 +111,9 @@ export struct NasSystemControlPage {
         if (this.control.notice.length > 0) {
           Text(this.control.notice).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
         }
-        Button('重新读取并清除临时授权').constraintSize({ minHeight: 48 }).buttonStyle(ButtonStyleMode.TEXTUAL)
+        Button('重新核验设备').constraintSize({ minHeight: 48 }).buttonStyle(ButtonStyleMode.TEXTUAL)
           .enabled(!this.control.busy).onClick((): void => { this.onRefresh(); })
         if (this.control.record !== undefined) { this.recordCard(this.control.record) }
-        this.authorizationForm()
         this.actionCard()
       }.width('100%').constraintSize({ maxWidth: 840 }).padding({ left: 16, right: 16, top: 12, bottom: 32 })
         .alignItems(HorizontalAlign.Start)

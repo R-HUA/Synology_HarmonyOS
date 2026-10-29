@@ -29,7 +29,7 @@ async function fixture(options = {}) {
   if (options.withoutFiles) { delete capabilities['SYNO.SynologyDrive.Files']; }
   const discovery = []; const calls = [];
   const transport = {
-    async post(address, body) { discovery.push({ address, body }); return ok(capabilities); },
+    async post(address, body) { discovery.push({ address, body }); return new URLSearchParams(body).get('method') === 'token' ? errorReply(119) : ok(capabilities); },
     close() {},
     transfers: options.withoutTransfers ? undefined : {
       async upload(request, uploadSource, filename, uploadControl) {
@@ -51,7 +51,7 @@ async function fixture(options = {}) {
   };
   const connector = new NasConnector(transport);
   await connector.discover('https://nas.example.test:5001');
-  connector.restoreSession([{ name: 'FileStation', sid: 'SYNTHETIC-SID', synoToken: 'SYNTHETIC-TOKEN' }]);
+  connector.restoreSession({ sid: 'SYNTHETIC-SID', synoToken: 'SYNTHETIC-TOKEN' });
   return { connector, transport, calls, discovery };
 }
 
@@ -173,7 +173,7 @@ test('slice upload uses an empty probe and the same final token, confirming tota
   assert.equal(f.calls.length, 2);
   const expired = await fixture({ onUpload: async () => errorReply(119) });
   await assert.rejects(expired.connector.probeDriveUpload(upload(), token, { path: '/cache/empty', bytes: 0 }, 8, true, control()), isKind(K.SessionExpired));
-  assert.equal(expired.connector.hasBusinessSession('FileStation'), false);
+  assert.equal((expired.connector.sessionSnapshot() !== undefined), false);
 });
 
 test('Drive download builds a GET with the kernel-injected token and an encoded single-file name', async () => {
@@ -211,7 +211,7 @@ test('Drive download builds a GET with the kernel-injected token and an encoded 
 test('Drive transfer failures keep Drive semantics and a rejected session is invalidated exactly once', async () => {
   const expired = await fixture({ onUpload: async () => errorReply(119) });
   await assert.rejects(expired.connector.uploadDrive(upload(), source(), control()), isKind(K.SessionExpired));
-  assert.equal(expired.connector.hasBusinessSession('FileStation'), false);
+  assert.equal((expired.connector.sessionSnapshot() !== undefined), false);
   // 会话确实失效：下一次调用要求重新登录，而不是带旧会话重试。
   await assert.rejects(expired.connector.uploadDrive(upload(), source(), control()),
     error => isKind(K.SessionExpired)(error) && error.message === '请先登录 NAS。');
@@ -220,12 +220,12 @@ test('Drive transfer failures keep Drive semantics and a rejected session is inv
   const server = await fixture({ onUpload: async () => errorReply(105) });
   await assert.rejects(server.connector.uploadDrive(upload(), source(), control()),
     error => error.kind === K.Server && error.code === 105 && error.message === '暂时无法读取 Drive 内容，请刷新重试。');
-  assert.equal(server.connector.hasBusinessSession('FileStation'), true);
+  assert.equal((server.connector.sessionSnapshot() !== undefined), true);
 
   const mismatch = await fixture({ onUpload: async () => ok({ tmp_newly_created: true, uploaded_size: 3 }) });
   await assert.rejects(mismatch.connector.uploadDrive(upload(), source(), control()),
     error => isKind(K.Protocol)(error) && error.message === '上传结果未能确认，请检查目标文件后再试。');
-  assert.equal(mismatch.connector.hasBusinessSession('FileStation'), true);
+  assert.equal((mismatch.connector.sessionSnapshot() !== undefined), true);
 });
 
 test('a Drive transfer without capability, session or a usable location never reaches the transfer layer', async () => {
@@ -281,7 +281,7 @@ test('a stop reason from the transfer layer survives to the caller, and stale pr
     throw new NasFailure(K.Cancelled, '上传已停止，请检查目标文件以确认结果。'); } });
   await assert.rejects(stopped.connector.uploadDrive(upload(), source(), control()),
     error => isKind(K.Cancelled)(error) && error.message === '上传已停止，请检查目标文件以确认结果。');
-  assert.equal(stopped.connector.hasBusinessSession('FileStation'), true);
+  assert.equal((stopped.connector.sessionSnapshot() !== undefined), true);
 
   const seen = [];
   const progress = await fixture({ onUpload: async () => ok({ tmp_newly_created: true, uploaded_size: 4 }) });

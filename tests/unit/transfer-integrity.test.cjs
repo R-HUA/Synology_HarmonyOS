@@ -21,7 +21,7 @@ async function connectorFixture(jsonParameters, md5Api = true) {
     }, close() {},
   });
   await connector.discover('https://nas.example:5001');
-  connector.restoreSession([{ name: 'FileStation', sid: 'SYNTHETIC-SID', synoToken: 'SYNTHETIC-TOKEN' }]);
+  connector.restoreSession({ sid: 'SYNTHETIC-SID', synoToken: 'SYNTHETIC-TOKEN' });
   return { connector, requests, setResponse: value => { response = value; } };
 }
 
@@ -69,5 +69,5 @@ test('checksum permission denial remains an error and does not clear a valid ses
   const f = await connectorFixture(false);
   f.setResponse({ success: false, error: { code: 403 } });
   await assert.rejects(() => f.connector.fileChecksumStatus('CHECKSUM_001'), { kind: protocol.NasErrorKind.Permission });
-  assert.equal(f.connector.sessionSnapshot().length, 1);
+  assert.equal(Number(f.connector.sessionSnapshot() !== undefined), 1);
 });

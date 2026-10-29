@@ -3,7 +3,8 @@ const { spawn } = require('node:child_process');
 const { writeFileSync, mkdirSync } = require('node:fs');
 const { resolve, dirname } = require('node:path');
 const { NasConnector } = require('../work/core-build/network/NasConnector.js');
-const { NasFailure, NasErrorKind } = require('../work/core-build/domain/DsmProtocol.js');
+const { DsmRpcClient } = require('../work/core-build/network/DsmRpcClient.js');
+const { NasFailure, NasErrorKind, decodeNasResponse } = require('../work/core-build/domain/DsmProtocol.js');
 
 class CurlNasTransport {
   active = new Set();
@@ -63,20 +64,43 @@ async function main() {
     }
     accountInput = JSON.parse(input);
   }
-  const connector = new NasConnector(new CurlNasTransport());
+  const transport = new CurlNasTransport();
+  const connector = new NasConnector(transport);
   const report = { observedAt: new Date().toISOString(), tlsVerified: false,
-    discoveryPassed: false, authentication: 'not-tested', shares: 'not-tested', logout: 'not-tested', capabilities: [] };
+    discoveryPassed: false, authentication: 'not-tested', tokenValidation: 'not-tested',
+    shares: 'not-tested', logout: 'not-tested', capabilities: [] };
   try {
     report.capabilities = await connector.discover(address);
-    report.tlsVerified = true;
+    report.tlsVerified = /^https:\/\//i.test(address);
     report.discoveryPassed = true;
     if (accountInput) {
       try {
         await connector.login(accountInput.account, accountInput.password, accountInput.otp ?? '');
       } finally { accountInput.password = ''; accountInput.otp = ''; }
       report.authentication = 'passed';
-      const page = await connector.list('');
-      report.shares = { state: 'passed', returned: page.entries.length, total: page.total };
+      await connector.validateSession();
+      const auth = report.capabilities.find(api => api.name === 'SYNO.API.Auth');
+      const rpc = new DsmRpcClient(transport);
+      const proofs = [];
+      for (const credentials of [undefined, { sid: 'invalid-unified-session-probe', synoToken: '' }]) {
+        const reply = await rpc.request(address, auth, 6, 'token', [], credentials);
+        let rejected = false;
+        try { decodeNasResponse(auth.name, reply.status, reply.text); }
+        catch (error) {
+          if (!(error instanceof NasFailure) || error.kind !== NasErrorKind.SessionExpired) throw error;
+          rejected = true;
+        }
+        proofs.push(rejected);
+      }
+      report.tokenValidation = { validSessionAccepted: true, anonymousRejected: proofs[0], invalidSessionRejected: proofs[1] };
+      if (!proofs.every(Boolean)) throw new NasFailure(NasErrorKind.Protocol, '认证接口不能区分无效会话，登录恢复验收未通过。');
+      try {
+        const page = await connector.list('');
+        report.shares = { state: 'passed', returned: page.entries.length, total: page.total };
+      } catch (error) {
+        if (!(error instanceof NasFailure) || ![NasErrorKind.Permission, NasErrorKind.Unsupported].includes(error.kind)) throw error;
+        report.shares = { state: 'unavailable', kind: NasErrorKind[error.kind], code: error.code };
+      }
       await connector.logout();
       report.logout = 'passed';
     }

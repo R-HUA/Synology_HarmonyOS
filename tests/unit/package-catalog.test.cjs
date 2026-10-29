@@ -76,7 +76,7 @@ async function connectorFixture(descriptor = { path: 'entry.cgi', minVersion: 1,
   const calls = [];
   const connector = new NasConnector({ post(...args) { calls.push(args); return Promise.resolve(replies.shift()); }, close() {} });
   await connector.discover('https://nas.example.test:5001');
-  connector.restoreSession([{ name: 'FileStation', sid: 'private-sid', synoToken: 'private-token' }]);
+  connector.restoreSession({ sid: 'private-sid', synoToken: 'private-token' });
   const repository = new PackageRepository((method, fields) => connector.packageRequest(method, fields));
   const state = () => connector.capabilitySnapshots().find(item => item.feature === 'packageCatalog').state;
   const ok = data => replies.push({ status: 200, text: JSON.stringify({ success: true, data }) });
@@ -122,7 +122,7 @@ test('catalog permissions and detail failures stay local; schema validation cont
   const f = await connectorFixture();
   f.bad(105);
   await assert.rejects(f.connector.readPackageCatalog(() => f.repository.list()), error => error.kind === dsm.NasErrorKind.Permission);
-  assert.equal(f.state(), 'unauthorized'); assert.equal(f.connector.sessionSnapshot().length, 1);
+  assert.equal(f.state(), 'unauthorized'); assert.equal(Number(f.connector.sessionSnapshot() !== undefined), 1);
   f.ok({ shares: [], total: 0, offset: 0 }); await f.connector.list('');
   f.ok({ packages: {} });
   await assert.rejects(f.connector.readPackageCatalog(() => f.repository.list()), isProtocol);
@@ -130,8 +130,8 @@ test('catalog permissions and detail failures stay local; schema validation cont
   f.ok({ packages: [] }); await f.connector.readPackageCatalog(() => f.repository.list());
   f.bad(105); await assert.rejects(f.repository.get('FileStation'));
   assert.equal(f.state(), 'available');
-  f.bad(107); await assert.rejects(f.repository.get('FileStation'), error => error.kind === dsm.NasErrorKind.SessionExpired);
-  assert.equal(f.connector.sessionSnapshot().length, 0);
+  f.bad(107); f.bad(119); await assert.rejects(f.repository.get('FileStation'), error => error.kind === dsm.NasErrorKind.SessionExpired);
+  assert.equal(Number(f.connector.sessionSnapshot() !== undefined), 0);
 });
 
 function modelFixture() {
@@ -224,6 +224,7 @@ function navigationFixture(available = true) {
   Object.assign(page, {
     pageActive: true, foreground: true, packageDestination: 'package-detail', drivePinned: [],
     model: { authenticated: true, sessionGeneration: 1, supports: () => available, drive: { supportsView: () => available },
+      officialWeb: { open: () => events.push('web.open') },
       containers: { setVisible() {} },
       cloudSync: { setVisible() {} },
       systemLogs: { setVisible() {} },
@@ -232,7 +233,7 @@ function navigationFixture(available = true) {
         showList: () => events.push('showList'), showDetail: () => events.push('showDetail'),
         managementOrigin: () => 'https://nas.example.test:5001' } },
     abilityContext: { openLink: async link => { links.push(link); } },
-    navStack: { clear: () => events.push('clear') }, navigationBusy: () => false, supportsPhotos: () => available,
+    navStack: { clear: () => events.push('clear'), pushPathByName: name => events.push(name) }, navigationBusy: () => false, supportsPhotos: () => available,
     showTitleMenuError: () => events.push('error'), previewText: value => value,
     switchTab: index => events.push('tab:' + index), enterModule: name => events.push('module:' + name),
     openNasDownloads: () => events.push('downloads'), updateTelemetryMode() {},
@@ -252,38 +253,15 @@ test('native package navigation clears catalog destinations before opening the e
   assert.deepEqual(busy.events, []);
 });
 
-test('management opens only the normalized origin and a stale browser failure cannot affect another session', async () => {
+test('management opens the embedded official page and requires the current idle account', async () => {
   const f = navigationFixture(); await f.page.openPackageManagement();
-  assert.deepEqual(f.links, ['https://nas.example.test:5001']);
-  const remote = deferred(); f.page.abilityContext.openLink = () => remote.promise;
-  const operation = f.page.openPackageManagement();
-  f.page.model.sessionGeneration++; remote.reject(new Error('failed')); await operation;
-  assert.deepEqual(f.events, []);
-  f.page.abilityContext.openLink = async () => { throw new Error('failed'); };
-  await f.page.openPackageManagement(); assert.deepEqual(f.events, ['error']);
-});
-
-test('more features can open management when native modules are unavailable and ignores hidden browser failures', async () => {
-  const f = navigationFixture(false);
-  f.page.packageDestination = 'more-features';
-  f.page.updatePackageVisibility();
-  assert.deepEqual(f.events, []);
-  await f.page.openPackageManagement();
-  assert.deepEqual(f.links, ['https://nas.example.test:5001']);
-  for (const hidden of ['destination', 'foreground', 'account']) {
-    const remote = deferred();
-    f.page.packageDestination = 'more-features'; f.page.foreground = true;
-    f.page.abilityContext.openLink = () => remote.promise;
-    const operation = f.page.openPackageManagement();
-    if (hidden === 'destination') f.page.packageDestination = 'package-detail';
-    else if (hidden === 'foreground') f.page.foreground = false;
-    else f.page.model.sessionGeneration++;
-    remote.reject(new Error('failed')); await operation;
-    assert.deepEqual(f.events, []);
-  }
-  f.page.model.authenticated = false;
-  await f.page.openPackageManagement();
-  assert.equal(f.links.length, 1);
+  assert.deepEqual(f.links, []); assert.deepEqual(f.events, ['web.open', 'official-web']);
+  f.events.length = 0; f.page.model.authenticated = false;
+  await f.page.openPackageManagement(); assert.deepEqual(f.events, []);
+  f.page.model.authenticated = true; f.page.navigationBusy = () => true;
+  await f.page.openPackageManagement(); assert.deepEqual(f.events, []);
+  const missingNative = navigationFixture(false); await missingNative.page.openPackageManagement();
+  assert.deepEqual(missingNative.events, ['web.open', 'official-web']);
 });
 
 test('backgrounding invalidates both catalog requests and foreground resumes only the current page', () => {

@@ -20,6 +20,7 @@ import { ConnectionAddressBook } from './ConnectionAddressBook';
 import { SystemControlModel } from '../control/SystemControlModel';
 import { NasExtensionsModel } from '../extensions/NasExtensionsModel';
 import { PackageCatalogModel } from '../packages/PackageCatalogModel';
+import { OfficialWebModel } from '../packages/OfficialWebModel';
 import { ContainerModel } from '../containers/ContainerModel';
 import { CloudSyncModel } from '../cloudsync/CloudSyncModel';
 import { SystemLogModel } from '../systemlogs/SystemLogModel';
@@ -42,6 +43,7 @@ export class ConnectionViewModel {
   @Trace password: string = '';
   @Trace otp: string = '';
   @Trace needsOtp: boolean = false;
+  @Trace authActionRequired: boolean = false;
   @Trace trustDevice: boolean = false;
   @Trace busy: boolean = false;
   @Trace mutationInFlight: boolean = false;
@@ -78,6 +80,7 @@ export class ConnectionViewModel {
   readonly systemControl: SystemControlModel = new SystemControlModel();
   readonly extensions: NasExtensionsModel = new NasExtensionsModel();
   readonly packages: PackageCatalogModel = new PackageCatalogModel();
+  readonly officialWeb: OfficialWebModel = new OfficialWebModel();
   readonly containers: ContainerModel = new ContainerModel();
   readonly cloudSync: CloudSyncModel = new CloudSyncModel();
   readonly systemLogs: SystemLogModel = new SystemLogModel();
@@ -151,15 +154,11 @@ export class ConnectionViewModel {
       this.connected = true;
       this.connectedOrigin = saved.origin;
       this.connectedInsecure = this.insecureTls;
-      connector.restoreSession(saved.sessions);
+      connector.restoreSession(saved.session);
+      await connector.validateSession();
+      if (ticket !== this.generation) { return; }
       await this.verifyDevice(connector, saved.origin, saved.account);
       if (ticket !== this.generation) { return; }
-      if (!this.supports('SYNO.FileStation.List')) {
-        throw new NasFailure(NasErrorKind.Unsupported, '当前账号没有可用于验证保存会话的文件读取接口，请重新登录。');
-      }
-      const verifiedPage = await connector.list('', 0);
-      if (ticket !== this.generation) { return; }
-      this.applyPage('', verifiedPage);
       this.authenticated = true;
       await this.attachQueue(connector);
       if (ticket !== this.generation) { return; }
@@ -176,6 +175,7 @@ export class ConnectionViewModel {
     } finally { if (ticket === this.generation) { this.busy = false; } }
     if (restored && ticket === this.generation) {
       await this.saveLoginHistory(ticket);
+      if (ticket === this.generation) { await this.loadInitialDirectory(); }
       hilog.info(0x0000, 'NasConnection', 'operation=restore result=success');
     }
   }
@@ -365,12 +365,12 @@ export class ConnectionViewModel {
       if (ticket !== this.generation) { return; }
       await this.attachQueue(connector);
       if (ticket !== this.generation) { return; }
-      const sessions = connector.sessionSnapshot();
-      if (sessions.length === 0 || ticket !== this.generation) { return; }
+      const session = connector.sessionSnapshot();
+      if (session === undefined || ticket !== this.generation) { return; }
       this.busy = true;
       let sessionSaved = false;
       try {
-        await this.store.save({ origin: this.address, account: this.account.trim(), sessions: sessions,
+        await this.store.save({ origin: this.address, account: this.account.trim(), session: session,
           insecureTls: this.insecureTls });
         sessionSaved = true;
         if (ticket === this.generation) {
@@ -475,24 +475,6 @@ export class ConnectionViewModel {
     finally { if (ticket === this.generation) { this.busy = false; } }
   }
 
-  /** 套件验证只更新其会话；保存失败会明确提示，不能重放原下载操作。 */
-  async authenticateDownloads(): Promise<void> {
-    const connector = this.connector;
-    if (connector === undefined || !this.authenticated || this.busy) { return; }
-    const ticket = this.generation;
-    if (!await this.extensions.authenticateDownloads() || ticket !== this.generation) { return; }
-    try {
-      await this.store.save({ origin: this.address, account: this.account.trim(),
-        sessions: connector.sessionSnapshot(), insecureTls: this.insecureTls });
-      if (ticket === this.generation) { this.savedSession = true; }
-    } catch (error) {
-      if (ticket === this.generation) {
-        this.extensions.downloadError = '下载套件已验证，但保存登录信息失败；下次启动需重新验证。';
-        hilog.error(0x0000, 'NasConnection', 'operation=save-download-session result=failed code=%{public}d',
-          error instanceof NasFailure ? error.code : 0);
-      }
-    }
-  }
 
   private async verifyDevice(connector: NasConnector, origin: string, account: string): Promise<void> {
     const ticket = this.generation;
@@ -526,7 +508,7 @@ export class ConnectionViewModel {
     const context = this.context;
     if (this.busy || !this.authenticated || connector === undefined || context === undefined) { return; }
     const ticket = this.generation;
-    const error = await this.systemControl.open(context, connector, this.address, this.insecureTls, (): void => {
+    const error = await this.systemControl.open(context, connector, this.address, this.account.trim(), (): void => {
       if (ticket !== this.generation || connector !== this.connector || !this.authenticated) {
         throw new NasFailure(NasErrorKind.Cancelled, '当前 NAS 连接已变化，请重新进入系统控制。');
       }
@@ -549,7 +531,10 @@ export class ConnectionViewModel {
     const ticket = this.generation;
     this.busy = true;
     this.sessionTransition = true;
-    try { await this.systemControl.submit(); }
+    try {
+      const error = await this.systemControl.submit();
+      if (ticket === this.generation && error !== undefined) { await this.showFailure(error as Error, 'system-control'); }
+    }
     finally { if (ticket === this.generation) { this.busy = false; this.sessionTransition = false; } }
   }
   async goBack(): Promise<void> {
@@ -903,6 +888,9 @@ export class ConnectionViewModel {
 
   private async attachQueue(connector: NasConnector): Promise<void> {
     const extensionTicket = this.generation;
+    this.officialWeb.attach(connector, this.address, this.insecureTls, async (error: NasFailure): Promise<void> => {
+      if (extensionTicket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'official-web'); }
+    });
     this.packages.attach(connector, this.address, async (error: NasFailure): Promise<void> => {
       if (extensionTicket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'packages'); }
     });
@@ -915,7 +903,7 @@ export class ConnectionViewModel {
     this.systemLogs.attach(connector, async (error: NasFailure): Promise<void> => {
       if (extensionTicket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'systemLogs'); }
     });
-    this.notes.attach(connector, this.account.trim(), this.context, async (error: NasFailure): Promise<void> => {
+    this.notes.attach(connector, this.context, async (error: NasFailure): Promise<void> => {
       if (extensionTicket === this.generation && connector === this.connector) { await this.showFailure(error as Error, 'notes'); }
     });
     // Drive 复用 File Station 会话（实测 cookie-header-only），但状态独立：
@@ -1049,6 +1037,7 @@ export class ConnectionViewModel {
     if (this.busy || this.queue.busy) { return; }
     this.busy = true;
     this.sessionTransition = true;
+    this.officialWeb.close();
     try { await this.driveSharing.stopAll(); await this.driveActions.stopAll(); await this.driveTransfers.stopAll(); await this.queue.stopAll(); }
     catch (error) {
       this.errorText = error instanceof NasFailure ? error.message : '停止传输失败，请在任务页重试后再退出账号。';
@@ -1184,6 +1173,7 @@ export class ConnectionViewModel {
     this.listLoading = 'idle';
     this.mutationInFlight = false;
     this.extensions.reset();
+    this.officialWeb.reset();
     this.packages.reset();
     this.containers.reset();
     this.cloudSync.reset();
@@ -1219,6 +1209,7 @@ export class ConnectionViewModel {
     this.otp = '';
     this.needsOtp = false;
     this.entries = [];
+    this.authActionRequired = false;
     this.directory = '';
     this.history = [];
     this.nextFileOffset = 0;
@@ -1232,15 +1223,25 @@ export class ConnectionViewModel {
     this.connectedOrigin = '';
     this.connectedInsecure = false;
   }
+
+  /** 账号状态要求官方页面处理时只交接地址，不传递密码或会话凭证。 */
+  async openAccountVerification(): Promise<void> {
+    if (!this.authActionRequired || this.busy || this.context === undefined) { return; }
+    const ticket = this.generation;
+    try { await this.context.openLink(normalizeNasOrigin(this.address)); }
+    catch { if (ticket === this.generation) { this.errorText = '群晖管理页面无法打开，请检查当前连接地址。'; } }
+  }
   private async showFailure(error: Error, operation: string): Promise<void> {
     const ticket = this.generation;
     hilog.error(0x0000, 'NasConnection', 'operation=%{public}s kind=%{public}d code=%{public}d',
       operation, error instanceof NasFailure ? error.kind : -1, error instanceof NasFailure ? error.code : 0);
     this.errorText = error instanceof NasFailure || error instanceof NasSessionStoreFailure ? error.message : '请求未完成，请重试或检查服务器配置。';
     if (error instanceof NasFailure) {
+      this.authActionRequired = error.kind === NasErrorKind.AuthActionRequired;
       if (error.kind === NasErrorKind.OtpRequired || error.kind === NasErrorKind.OtpInvalid) { this.needsOtp = true; }
       if (error.kind === NasErrorKind.SessionExpired) {
         this.sessionTransition = true;
+        this.officialWeb.close();
         try {
           await this.driveSharing.stopAll(); await this.driveActions.stopAll(); await this.driveTransfers.stopAll(); await this.queue.stopAll();
         } catch (stopError) {

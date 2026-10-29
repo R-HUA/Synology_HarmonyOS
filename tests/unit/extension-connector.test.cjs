@@ -4,7 +4,7 @@ const { NasConnector, NAS_DISCOVERY_QUERY } = require('../../work/core-build/net
 const { NasFailure, NasErrorKind: K } = require('../../work/core-build/domain/DsmProtocol.js');
 const ok = data => ({ status: 200, text: JSON.stringify({ success: true, data }) });
 
-async function fixture(shareVersion = 3, downloadVersion = 20, downloadSession = true) {
+async function fixture(shareVersion = 3, downloadVersion = 20) {
   const calls = [];
   const responses = [ok({
     'SYNO.API.Auth': { path: 'auth.cgi', minVersion: 1, maxVersion: 6 },
@@ -14,9 +14,7 @@ async function fixture(shareVersion = 3, downloadVersion = 20, downloadSession =
   })];
   const connector = new NasConnector({ post(...args) { calls.push(args); return Promise.resolve(responses.shift()); }, close() {} });
   await connector.discover('https://nas.example.test');
-  const sessions = [{ name: 'FileStation', sid: 'private-sid', synoToken: 'private-token' }];
-  if (downloadSession) { sessions.push({ name: 'DownloadStation', sid: 'download-sid', synoToken: 'download-token' }); }
-  connector.restoreSession(sessions);
+  connector.restoreSession({ sid: 'private-sid', synoToken: 'private-token' });
   return { connector, calls, responses };
 }
 
@@ -24,7 +22,7 @@ test('extension discovery selects only the tested versions and uses protected PO
   assert.match(NAS_DISCOVERY_QUERY, /SYNO.FileStation.Sharing/);
   assert.match(NAS_DISCOVERY_QUERY, /SYNO.DownloadStation.Task/);
   const { connector, calls, responses } = await fixture();
-  for (const [feature, version, sid] of [['fileSharing', '3', 'private-sid'], ['nasDownloads', '3', 'download-sid']]) {
+  for (const [feature, version, sid] of [['fileSharing', '3', 'private-sid'], ['nasDownloads', '3', 'private-sid']]) {
     responses.push(ok({}));
     await connector.extensionRequest(feature, 'list', []);
     const [address, body, session] = calls.at(-1);
@@ -51,88 +49,35 @@ test('capability reads include schema validation rather than trusting API discov
   assert.equal(state(), 'schemaMismatch');
 });
 
-test('Download Station session errors do not invalidate a still-valid File Station session', async () => {
-  const { connector, responses } = await fixture();
-  responses.push({ status: 200, text: '{"success":false,"error":{"code":107}}' });
+test('a suite rejection checks the primary session without replaying the operation', async () => {
+  const { connector, responses, calls } = await fixture();
+  responses.push({ status: 200, text: '{"success":false,"error":{"code":107}}' }, ok({ synotoken: 'private-token' }));
+  await assert.rejects(connector.extensionRequest('nasDownloads', 'create', []), error => error.kind === K.Permission);
+  assert.equal(connector.sessionSnapshot().sid, 'private-sid');
+  assert.deepEqual(calls.slice(1).map(([, body]) => new URLSearchParams(body).get('method')), ['create', 'token']);
+  responses.push({ status: 200, text: '{"success":false,"error":{"code":119}}' }, { status: 200, text: '{"success":false,"error":{"code":119}}' });
   await assert.rejects(connector.extensionRequest('nasDownloads', 'list', []), error => error.kind === K.SessionExpired);
-  assert.deepEqual(connector.sessionSnapshot().map(record => record.name), ['FileStation']);
-  responses.push(ok({ shares: [], total: 0, offset: 0 }));
-  await connector.list('');
-  assert.equal(connector.hasBusinessSession('DownloadStation'), false);
-  await assert.rejects(connector.extensionRequest('nasDownloads', 'list', []), error => error.kind === K.SessionExpired);
+  assert.equal(connector.sessionSnapshot(), undefined);
 });
 
-test('a missing Download Station session is rejected before any request is sent', async () => {
-  const { connector, calls } = await fixture(3, 20, false);
-  const before = calls.length;
-  await assert.rejects(connector.extensionRequest('nasDownloads', 'list', []),
-    error => error.kind === K.SessionExpired && /下载套件需要重新验证/.test(error.message));
-  assert.equal(calls.length, before);
-});
-
-test('Download Station OTP recovery replaces only its session and does not replay a write', async () => {
-  const { connector, calls, responses } = await fixture(3, 20, false);
-  responses.push({ status: 200, text: '{"success":false,"error":{"code":403}}' });
-  await assert.rejects(connector.authenticateDownloadStation('alice', 'password', ''), error => error.kind === K.OtpRequired);
-  assert.deepEqual(connector.sessionSnapshot().map(x => x.name), ['FileStation']);
-  responses.push(ok({ sid: 'new-download-sid', synotoken: 'new-download-token' }));
-  await connector.authenticateDownloadStation('alice', 'password', '123456');
-  assert.equal(connector.sessionSnapshot()[0].sid, 'private-sid');
-  assert.equal(connector.sessionSnapshot()[1].sid, 'new-download-sid');
-  const fields = new URLSearchParams(calls.at(-1)[1]);
-  assert.equal(fields.get('session'), 'DownloadStation'); assert.equal(fields.get('otp_code'), '123456');
-  assert.equal(calls.filter(([, body]) => new URLSearchParams(body).get('method') === 'create').length, 0);
-});
-
-test('suite authentication failure cannot invalidate the main session', async () => {
-  const { connector, responses } = await fixture();
-  responses.push({ status: 200, text: '{"success":false,"error":{"code":119}}' });
-  await assert.rejects(connector.authenticateDownloadStation('alice', 'password', ''));
-  assert.equal(connector.sessionSnapshot()[0].sid, 'private-sid');
-});
-
-test('login establishes the Download Station suite session only when its API is discovered', async () => {
-  const responses = [ok({
-    'SYNO.API.Auth': { path: 'auth.cgi', minVersion: 1, maxVersion: 6 },
-    'SYNO.FileStation.List': { path: 'entry.cgi', minVersion: 1, maxVersion: 2 },
-    'SYNO.DownloadStation.Task': { path: 'DownloadStation/task.cgi', minVersion: 1, maxVersion: 20 },
-  })];
-  responses.push(ok({ sid: 'file-station-sid', synotoken: 'file-station-token' }));
-  responses.push(ok({ sid: 'download-station-sid', synotoken: 'download-station-token' }));
+test('one login with OTP serves all suites and one logout ends the primary session', async () => {
   const calls = [];
+  const responses = [ok({ 'SYNO.API.Auth': { path: 'auth.cgi', minVersion: 1, maxVersion: 6 },
+    'SYNO.DownloadStation.Task': { path: 'task.cgi', minVersion: 1, maxVersion: 3 } }),
+    { ...ok({ sid: 'primary', synotoken: 'token' }), setCookies: ['id=primary; Path=/; Secure; HttpOnly'] }, ok({ tasks: [] }), ok(undefined)];
   const connector = new NasConnector({ post(...args) { calls.push(args); return Promise.resolve(responses.shift()); }, close() {} });
   await connector.discover('https://nas.example.test');
-  await connector.login('alice', 'password', '');
-  const logins = calls.filter(([, body]) => new URLSearchParams(body).get('method') === 'login');
-  assert.deepEqual(logins.map(([, body]) => new URLSearchParams(body).get('session')), ['FileStation', 'DownloadStation']);
-  assert.deepEqual(connector.sessionSnapshot(), [
-    { name: 'FileStation', sid: 'file-station-sid', synoToken: 'file-station-token' },
-    { name: 'DownloadStation', sid: 'download-station-sid', synoToken: 'download-station-token' }]);
-});
-
-test('a failed Download Station suite login keeps the primary session usable', async () => {
-  const responses = [ok({
-    'SYNO.API.Auth': { path: 'auth.cgi', minVersion: 1, maxVersion: 6 },
-    'SYNO.FileStation.List': { path: 'entry.cgi', minVersion: 1, maxVersion: 2 },
-    'SYNO.DownloadStation.Task': { path: 'DownloadStation/task.cgi', minVersion: 1, maxVersion: 20 },
-  })];
-  responses.push(ok({ sid: 'file-station-sid', synotoken: 'file-station-token' }));
-  responses.push({ status: 200, text: '{"success":false,"error":{"code":404}}' });
-  const connector = new NasConnector({ post(...args) { return Promise.resolve(responses.shift()); }, close() {} });
-  await connector.discover('https://nas.example.test');
-  await connector.login('alice', 'password', '');
-  assert.deepEqual(connector.sessionSnapshot().map(record => record.name), ['FileStation']);
-  await assert.rejects(connector.extensionRequest('nasDownloads', 'list', []), error => error.kind === K.SessionExpired);
-});
-
-test('logout ends every established business session', async () => {
-  const { connector, responses, calls } = await fixture();
-  responses.push(ok(undefined));
-  responses.push(ok(undefined));
+  await connector.login('alice', 'password', '123456');
+  assert.deepEqual(connector.webSessionCookies(), ['id=primary; Path=/; Secure; HttpOnly']);
+  const copiedCookies = connector.webSessionCookies(); copiedCookies[0] = 'mutated';
+  assert.equal(connector.webSessionCookies()[0], 'id=primary; Path=/; Secure; HttpOnly');
+  await connector.extensionRequest('nasDownloads', 'list', []);
   await connector.logout();
-  const logouts = calls.filter(([, body]) => new URLSearchParams(body).get('method') === 'logout');
-  assert.deepEqual(logouts.map(([, body]) => new URLSearchParams(body).get('session')), ['FileStation', 'DownloadStation']);
-  assert.deepEqual(logouts.map(([, , session]) => session.sid), ['private-sid', 'download-sid']);
+  const login = new URLSearchParams(calls[1][1]);
+  assert.equal(login.get('session'), null); assert.equal(login.get('format'), 'cookie'); assert.equal(login.get('otp_code'), '123456');
+  assert.equal(calls[2][2].sid, 'primary'); assert.equal(calls[3][2].sid, 'primary');
+  assert.equal(new URLSearchParams(calls[3][1]).get('session'), null);
+  assert.equal(calls.filter(([, body]) => new URLSearchParams(body).get('method') === 'login').length, 1);
 });
 
 test('NAS download creation uses the documented v3 contract, not the legacy v1 example', async () => {
@@ -168,7 +113,6 @@ test('discovery no longer requires File Station but authentication remains manda
     'SYNO.DownloadStation.Task': { path: 'DownloadStation/task.cgi', minVersion: 1, maxVersion: 20 },
   })];
   responses.push(ok({ sid: 'file-station-sid', synotoken: 'file-station-token' }));
-  responses.push(ok({ sid: 'download-station-sid', synotoken: 'download-station-token' }));
   const connector = new NasConnector({ post(...args) { return Promise.resolve(responses.shift()); }, close() {} });
   const capabilities = await connector.discover('https://nas.example.test');
   assert.equal(capabilities.some(api => api.name === 'SYNO.FileStation.List'), false);
@@ -176,6 +120,7 @@ test('discovery no longer requires File Station but authentication remains manda
   assert.equal(fileBrowse.state, 'unverified');
   assert.equal(fileBrowse.reason, 'apiNotDiscovered');
   await connector.login('alice', 'password', '');
+  assert.equal(responses.length, 0);
   await assert.rejects(connector.list(''), error => error.kind === K.Unsupported);
 
   const authless = new NasConnector({ post() { return Promise.resolve(ok({})); }, close() {} });

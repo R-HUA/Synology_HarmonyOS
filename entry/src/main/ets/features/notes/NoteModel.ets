@@ -29,24 +29,16 @@ export class NoteModel {
   @Trace detail: NoteDetail | undefined = undefined;
   @Trace detailLoading: boolean = false;
   @Trace detailError: string = '';
-  @Trace authenticationRequired: boolean = true;
-  @Trace authenticating: boolean = false;
-  @Trace password: string = '';
-  @Trace otp: string = '';
-  @Trace needsOtp: boolean = false;
   readonly attachments: NoteAttachmentStore = new NoteAttachmentStore();
-  private connector: NasConnector | undefined = undefined;
   private repository: NoteRepository | undefined = undefined;
-  private account: string = '';
   private visible: boolean = false;
   private generation: number = 0;
   private revision: number = 0;
   private detailRevision: number = 0;
   private offset: number = 0;
   private onExpired: (error: NasFailure) => Promise<void> = async (): Promise<void> => {};
-  attach(connector: NasConnector, account: string, context: common.UIAbilityContext | undefined, expired: (error: NasFailure) => Promise<void>): void {
-    this.reset(); this.connector = connector; this.repository = new NoteRepository(connector); this.account = account; this.onExpired = expired;
-    this.authenticationRequired = !connector.hasBusinessSession('NoteStation');
+  attach(connector: NasConnector, context: common.UIAbilityContext | undefined, expired: (error: NasFailure) => Promise<void>): void {
+    this.reset(); this.repository = new NoteRepository(connector); this.onExpired = expired;
     const generation = this.generation;
     this.attachments.attach(context, this.repository, async (error: Error): Promise<void> => {
       if (generation === this.generation) { await this.failure(error, 'attachment'); }
@@ -54,37 +46,20 @@ export class NoteModel {
   }
   reset(): void {
     this.generation++; this.setVisible(false); this.revision++; this.back(); this.attachments.reset();
-    this.connector = undefined; this.repository = undefined; this.account = ''; this.items = []; this.notebooks = []; this.tags = [];
+    this.repository = undefined; this.items = []; this.notebooks = []; this.tags = [];
     this.notebookOffset = 0; this.tagOffset = 0; this.moreNotebooks = false; this.moreTags = false; this.notebookError = ''; this.tagError = '';
     this.loaded = false; this.loading = false; this.checkedAt = 0; this.errorText = ''; this.more = false; this.offset = 0;
-    this.query = ''; this.notebook = ''; this.tag = ''; this.authenticationRequired = true; this.authenticating = false;
-    this.password = ''; this.otp = ''; this.needsOtp = false; this.onExpired = async (): Promise<void> => {};
+    this.query = ''; this.notebook = ''; this.tag = ''; this.onExpired = async (): Promise<void> => {};
   }
   setVisible(value: boolean): void {
     if (this.visible === value) { return; } this.visible = value;
-    if (!value) { this.revision++; this.detailRevision++; this.loading = false; this.detailLoading = false; this.password = ''; this.otp = ''; this.attachments.cancel(); }
-    else if (!this.authenticationRequired && this.selected !== undefined && this.detail === undefined) { this.refreshDetail(); }
-    else if (!this.authenticationRequired && !this.loaded && this.errorText.length === 0) { this.refresh(); }
-  }
-  async authenticate(): Promise<void> {
-    const connector = this.connector;
-    if (!this.visible || connector === undefined || this.authenticating || this.password.length === 0) { return; }
-    const generation = this.generation, revision = this.revision, password = this.password, otp = this.otp;
-    this.password = ''; this.otp = ''; this.authenticating = true; this.errorText = '';
-    try {
-      await connector.authenticateNotes(this.account, password, otp);
-      if (generation !== this.generation) { return; } this.authenticationRequired = false; this.needsOtp = false;
-      if (revision === this.revision && this.visible) { await this.refresh(); }
-    } catch (error) {
-      if (generation === this.generation && revision === this.revision) {
-        this.needsOtp = error instanceof NasFailure && [NasErrorKind.OtpRequired, NasErrorKind.OtpInvalid].includes(error.kind);
-        const text = await this.failure(error as Error, 'authenticate'); if (generation === this.generation && revision === this.revision) { this.errorText = text; }
-      }
-    } finally { if (generation === this.generation) { this.authenticating = false; } }
+    if (!value) { this.revision++; this.detailRevision++; this.loading = false; this.detailLoading = false; this.attachments.cancel(); }
+    else if (this.selected !== undefined && this.detail === undefined) { this.refreshDetail(); }
+    else if (!this.loaded && this.errorText.length === 0) { this.refresh(); }
   }
   async refresh(append: boolean = false): Promise<void> {
     const repository = this.repository;
-    if (!this.visible || this.loading || this.authenticationRequired || repository === undefined || append && !this.more) { return; }
+    if (!this.visible || this.loading || repository === undefined || append && !this.more) { return; }
     const revision = ++this.revision, offset = append ? this.offset : 0; this.loading = true; this.errorText = '';
     try {
       const page = await repository.list(offset);
@@ -97,7 +72,7 @@ export class NoteModel {
     finally { if (revision === this.revision) { this.loading = false; } }
   }
   async loadFolders(kind: string): Promise<void> {
-    if (!this.visible || this.loading || this.authenticationRequired || (kind === 'notebooks' ? !this.moreNotebooks : !this.moreTags)) { return; }
+    if (!this.visible || this.loading || (kind === 'notebooks' ? !this.moreNotebooks : !this.moreTags)) { return; }
     const revision = this.revision; this.loading = true;
     try { await this.readFolders(kind, true, revision); } finally { if (revision === this.revision) { this.loading = false; } }
   }
@@ -122,7 +97,7 @@ export class NoteModel {
   }
   async refreshDetail(): Promise<void> {
     const repository = this.repository, item = this.selected;
-    if (!this.visible || repository === undefined || item === undefined || this.detailLoading || this.authenticationRequired) { return; }
+    if (!this.visible || repository === undefined || item === undefined || this.detailLoading) { return; }
     const revision = ++this.detailRevision; this.detailLoading = true; this.detailError = '';
     try { const detail = await repository.detail(item.id); if (revision === this.detailRevision) { this.detail = detail; } }
     catch (error) { if (revision === this.detailRevision) { const text = await this.failure(error as Error, 'detail'); if (revision === this.detailRevision) { this.detailError = text; } } }
@@ -131,7 +106,6 @@ export class NoteModel {
   private async failure(error: Error, operation: string): Promise<string> {
     hilog.error(0, 'NasNotes', 'operation=%{public}s kind=%{public}d code=%{public}d', operation,
       error instanceof NasFailure ? error.kind : -1, error instanceof NasFailure ? error.code : -1);
-    if (this.connector !== undefined) { this.authenticationRequired = !this.connector.hasBusinessSession('NoteStation'); }
     if (error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) { await this.onExpired(error); }
     return error instanceof NasFailure ? error.message : '笔记读取失败，请重试。';
   }

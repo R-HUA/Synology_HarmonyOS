@@ -91,6 +91,20 @@ export function workbenchShortcutColumns(width: number): number {
   return 5;
 }
 
+/** 列宽按列表内容区域计算，窄窗口仍保留三列。 */
+export function workbenchFileGridColumns(width: number): number {
+  return Math.max(3, Math.floor((width - 32 + 12) / 100));
+}
+
+/** 网格仅展示已有日期和文件大小，不推断目录数量。 */
+export function workbenchFileGridMetadata(directory: boolean, modifiedAt: number | undefined,
+  bytes: number | undefined): string {
+  const date = workbenchRelativeDate(modifiedAt);
+  if (directory || bytes === undefined) { return date; }
+  const size = workbenchBytes(bytes);
+  return date.length > 0 ? date + '\n' + size : size;
+}
+
 export function photoAlbumColumns(width: number): number {
   return Math.max(1, Math.min(4, Math.floor(Math.max(160, width - 32) / 160)));
 }

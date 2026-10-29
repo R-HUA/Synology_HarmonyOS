@@ -13,7 +13,6 @@ export struct DownloadStationPage {
   @Param refreshRevision: number = 0;
   @Param bottomInset: number = 16;
   @Event onChooseDirectory: () => void = (): void => {};
-  @Event onAuthenticate: () => void = (): void => {};
   @Local private filter: string = 'all';
   @Local private creating: boolean = false;
   @Local private showingDetail: boolean = false;
@@ -30,14 +29,14 @@ export struct DownloadStationPage {
   }
   @Monitor('visible', 'model.downloadFormRequested')
   private restoreDownloadForm(): void {
-    if (!this.visible) { this.filterRevision++; this.model.cancelDownloadAuthentication(); this.showingDetail = false; }
+    if (!this.visible) { this.filterRevision++; this.showingDetail = false; }
     if (this.visible && this.model.downloadFormRequested) {
       this.creating = true;
       this.model.downloadFormRequested = false;
     }
   }
 
-  aboutToDisappear(): void { this.filterRevision++; this.model.cancelDownloadAuthentication(); this.model.closeDownloadDetail(); }
+  aboutToDisappear(): void { this.filterRevision++; this.model.closeDownloadDetail(); }
 
   @Monitor('showingDetail')
   private detailVisibilityChanged(): void {
@@ -275,7 +274,6 @@ export struct DownloadStationPage {
       Button($r('app.string.task_choose_directory')).buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: 48 }).enabled(!this.model.busy)
         .onClick((): void => { this.creating = false; this.onChooseDirectory(); })
       ExtensionStatusPanel({ model: this.model, feature: 'nasDownloads' })
-      if (this.model.downloadAuthenticationRequired) { this.authenticationForm() }
       if (!this.model.canCreateDownload) {
         WorkbenchNotice({ text: '当前无法在此 NAS 创建下载任务，可查看和管理已有任务。', warning: true })
       }
@@ -285,41 +283,6 @@ export struct DownloadStationPage {
     }.width('100%').padding(16).alignItems(HorizontalAlign.Start)
   }
 
-  @Builder
-  authenticationForm() {
-    Column({ space: 12 }) {
-      Row({ space: 12 }) {
-        WorkbenchIconTile({
-          icon: $r('sys.symbol.lock'),
-          iconSize: 20, tileSize: 40, tileRadius: 12,
-          iconColor: $r('app.color.workbench_warning'),
-          tileColor: $r('app.color.workbench_warning_surface')
-        })
-        Column({ space: 2 }) {
-          Text('需要验证 NAS 账号密码').fontSize(15).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
-          Text('执行此操作需要重新验证当前 DSM 账户凭据').fontSize(12).fontColor($r('sys.color.font_secondary'))
-        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-      }.width('100%')
-      TextInput({ text: this.model.downloadPassword, placeholder: $r('app.string.download_password') })
-        .type(InputType.Password).height(48).borderRadius(12).enabled(!this.model.busy)
-        .onChange((value: string): void => { this.model.downloadPassword = value; })
-        .accessibilityText($r('app.string.download_password'))
-      if (this.model.downloadNeedsOtp) {
-        TextInput({ text: this.model.downloadOtp, placeholder: $r('app.string.download_otp') })
-          .type(InputType.Number).height(48).borderRadius(12).enabled(!this.model.busy)
-          .onChange((value: string): void => { this.model.downloadOtp = value; })
-          .accessibilityText($r('app.string.download_otp'))
-      }
-      Row({ space: 12 }) {
-        Button($r('app.string.action_cancel')).buttonStyle(ButtonStyleMode.TEXTUAL).constraintSize({ minHeight: 44 }).layoutWeight(1)
-          .onClick((): void => { this.model.cancelDownloadAuthentication(); })
-        Button($r('app.string.download_authenticate')).constraintSize({ minHeight: 44 }).layoutWeight(1)
-          .enabled(!this.model.busy && this.model.downloadPassword.length > 0)
-          .onClick((): void => { this.onAuthenticate(); })
-      }.width('100%')
-    }.width('100%').padding(16).borderRadius(WorkbenchMetrics.cardRadius)
-      .backgroundColor($r('app.color.workbench_surface'))
-  }
 
   @Builder
   detail() {
@@ -392,7 +355,6 @@ export struct DownloadStationPage {
           ListItem() {
             Column({ space: 12 }) {
               ExtensionStatusPanel({ model: this.model, feature: 'nasDownloads' })
-              if (this.model.downloadAuthenticationRequired) { this.authenticationForm() }
             }.width('100%')
           }
           Repeat<DownloadTask>(this.tasks()).each((entry: RepeatItem<DownloadTask>): void => {

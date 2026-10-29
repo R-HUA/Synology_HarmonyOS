@@ -7,7 +7,6 @@ const ts = require(path.join(process.env.HARMONY_SDK_ROOT || 'D:/Program Files/D
 const dsm = require('../../work/core-build/domain/DsmProtocol.js');
 const common = require('../../work/core-build/domain/ReadOnlyProtocol.js');
 const transfers = require('../../work/core-build/network/NasTransferTransport.js');
-const { SessionRegistry } = require('../../work/core-build/network/SessionRegistry.js');
 const { NasConnector } = require('../../work/core-build/network/NasConnector.js');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const plain = value => JSON.parse(JSON.stringify(value));
@@ -76,19 +75,14 @@ async function fixture(binary) {
   const connector = new NasConnector({ async post(...args) { calls.push(args); assert.ok(replies.length, 'missing reply'); return replies.shift(); },
     transfers: binary ? { download: binary } : undefined, close() {} });
   replies.push(ok(descriptors)); await connector.discover('https://nas.example');
-  connector.restoreSession([{ name: 'FileStation', sid: 'main-sid', synoToken: 'main-token' }]);
+  connector.restoreSession({ sid: 'main-sid', synoToken: 'main-token' });
   return { connector, calls, replies };
 }
 
-test('note session is registered independently, authenticated on demand and read methods are fixed', async () => {
-  const registry = new SessionRegistry(); registry.register('FileStation', { sid: 'main-sid', synoToken: '' });
-  registry.register('NoteStation', { sid: 'note-sid', synoToken: '' }); registry.invalidate('NoteStation'); assert.equal(registry.has('FileStation'), true);
+test('notes share the primary session and keep their fixed read methods', async () => {
   const f = await fixture(); assert.equal(f.calls.length, 1);
-  await assert.rejects(f.connector.readNotes('list', '', 0, x => x), x => x.kind === dsm.NasErrorKind.Permission); assert.equal(f.calls.length, 1);
-  f.replies.push(ok({ sid: 'note-sid', synotoken: 'note-token' })); await f.connector.authenticateNotes('account', 'password', '');
-  assert.equal(new URLSearchParams(f.calls.at(-1)[1]).get('session'), 'NoteStation');
   f.replies.push(ok({ notes: [note] })); await f.connector.readNotes('list', '', 0, x => p.decodeNotes(x, 0));
-  assert.equal(f.calls.at(-1)[2].sid, 'note-sid'); assert.equal(new URLSearchParams(f.calls.at(-1)[1]).get('version'), '3');
+  assert.equal(f.calls.at(-1)[2].sid, 'main-sid'); assert.equal(new URLSearchParams(f.calls.at(-1)[1]).get('version'), '3');
   assert.equal(f.connector.capabilitySnapshots().find(x => x.feature === 'noteDetail').state, 'unverified');
   f.replies.push(ok(note)); await f.connector.readNotes('detail', note.object_id, 0, x => p.decodeNoteDetail(x, note.object_id));
   assert.equal(JSON.parse(new URLSearchParams(f.calls.at(-1)[1]).get('object_id')), note.object_id);
@@ -98,29 +92,24 @@ test('note session is registered independently, authenticated on demand and read
   assert.doesNotMatch(f.calls.map(x => x[1]).join(' '), /method=(?:init|set|create|delete|edit|check)/);
 });
 
-test('note session rejection clears only notes; main expiry requires protected main read proof', async () => {
+test('note rejection rechecks primary authentication and preserves the account on network failure', async () => {
   for (const proof of ['valid', 'network', 'expired']) {
     const f = await fixture();
-    f.connector.sessions.register('NoteStation', { sid: 'note-sid', synoToken: '' });
-    f.replies.push(bad(107), proof === 'valid' ? ok({ shares: [], total: 0, offset: 0 }) : proof === 'network' ? { status: 503, text: '' } : bad(106));
-    await assert.rejects(f.connector.readNotes('list', '', 0, x => x), x => x.kind === (proof === 'expired' ? dsm.NasErrorKind.SessionExpired : dsm.NasErrorKind.Permission));
-    assert.equal(f.connector.hasBusinessSession('NoteStation'), false); assert.equal(f.connector.hasBusinessSession('FileStation'), proof !== 'expired');
+    f.replies.push(bad(107), proof === 'valid' ? ok({ synotoken: 'main-token' }) : proof === 'network' ? { status: 503, text: '' } : bad(106));
+    await assert.rejects(f.connector.readNotes('list', '', 0, x => x), x => x.kind === (proof === 'expired' ? dsm.NasErrorKind.SessionExpired : proof === 'network' ? dsm.NasErrorKind.Http : dsm.NasErrorKind.Permission));
+    assert.equal(f.connector.sessionSnapshot() !== undefined, proof !== 'expired');
   }
-  const f = await fixture(); f.replies.push(bad(107));
-  await assert.rejects(f.connector.authenticateNotes('account', 'password', ''), x => x.kind === dsm.NasErrorKind.Permission);
-  assert.equal(f.connector.hasBusinessSession('FileStation'), true);
 });
 
-test('binary attachment read uses note identity, raw download and isolated authorization', async () => {
+test('binary attachment read uses note identity, raw download and primary authorization', async () => {
   let request;
   const f = await fixture(async (input, target, control, validate) => {
     request = input; validate({ status: 200, contentType: 'image/png', contentLength: '4', contentDisposition: 'attachment', bytes: 4, prefixText: 'data' });
     return { path: target.directory + '/file', bytes: 4, discard() {} };
   });
-  f.connector.sessions.register('NoteStation', { sid: 'note-sid', synoToken: '' });
   const result = await f.connector.downloadNoteAttachment(attachment.noteId, attachment.version, attachment.fileId,
     { directory: '/cache/uuid', maximumBytes: 100, expectedBytes: 4 }, new transfers.NasTransferCancellation());
-  assert.equal(result.bytes, 4); assert.equal(request.session.sid, 'note-sid'); assert.equal(request.method, 'POST');
+  assert.equal(result.bytes, 4); assert.equal(request.session.sid, 'main-sid'); assert.equal(request.method, 'POST');
   const fields = Object.fromEntries(request.fields.map(x => [x.name, x.content]));
   assert.equal(fields.api, 'SYNO.NoteStation.Note'); assert.equal(fields.ver, JSON.stringify(attachment.version));
   assert.equal(JSON.parse(fields.file_id), attachment.fileId); assert.equal(JSON.parse(fields.mode), 'download');
@@ -134,15 +123,13 @@ test('missing or rejected attachment authorization cannot invalidate the main se
       prefixText: '{"success":false,"error":{"code":107}}' });
   });
   const download = () => f.connector.downloadNoteAttachment('note', 'version', 'file', { directory: '/cache/uuid', maximumBytes: 100 }, new transfers.NasTransferCancellation());
-  await assert.rejects(download(), x => x.kind === dsm.NasErrorKind.Permission); assert.equal(reads, 0);
-  f.connector.sessions.register('NoteStation', { sid: 'note-sid', synoToken: '' }); f.replies.push(ok({ shares: [], total: 0, offset: 0 }));
-  await assert.rejects(download(), x => x.kind === dsm.NasErrorKind.Permission); assert.equal(f.connector.hasBusinessSession('FileStation'), true);
-  assert.equal(f.connector.hasBusinessSession('NoteStation'), false);
+  f.replies.push(ok({ synotoken: 'main-token' }));
+  await assert.rejects(download(), x => x.kind === dsm.NasErrorKind.Permission); assert.equal(reads, 1);
+  assert.equal(f.connector.sessionSnapshot().sid, 'main-sid');
 });
 
 test('note model preserves successful reads, clears credentials and rejects hidden or cross-account callbacks', async () => {
   const { NoteModel } = load('NoteModel.ets'), model = new NoteModel(); let resolve;
-  model.authenticationRequired = false;
   model.repository = { list: async () => p.decodeNotes({ notes: [note] }, 0), notebooks: async () => { throw Error('denied'); }, tags: async () => [] };
   model.setVisible(true); await tick(); assert.equal(model.loaded, true); assert.equal(model.items.length, 1); assert.ok(model.notebookError);
   const checked = model.checkedAt;
@@ -150,7 +137,7 @@ test('note model preserves successful reads, clears credentials and rejects hidd
   await model.refresh(); assert.equal(model.items.length, 1); assert.equal(model.checkedAt, checked);
   model.repository.detail = () => new Promise(done => { resolve = done; }); model.select(detail.item); model.setVisible(false);
   resolve(detail); await tick(); assert.equal(model.detail, undefined);
-  model.password = 'private'; model.otp = '123456'; model.reset(); assert.equal(model.password, ''); assert.equal(model.otp, ''); assert.equal(model.items.length, 0);
+  model.reset(); assert.equal(model.items.length, 0);
 });
 
 test('attachment download failures and account switches clean private files while exports remain outside ownership', async () => {

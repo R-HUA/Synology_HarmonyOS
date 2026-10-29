@@ -72,7 +72,7 @@ async function connected(albumVersion = 1) {
   }, close() {} });
   replies.push(ok(capabilities));
   await connector.discover('https://nas.example.test:5001');
-  connector.restoreSession([{ name: 'FileStation', sid: 'private-sid', synoToken: 'private-token' }]);
+  connector.restoreSession({ sid: 'private-sid', synoToken: 'private-token' });
   return { connector, calls, replies };
 }
 
@@ -168,12 +168,12 @@ test('Photos detail and media expiry first verify the base session and distingui
   const { connector, replies } = await connected();
   replies.push(bad(119), ok({ shares: [], offset: 0, total: 0 }));
   await assert.rejects(connector.photoDetail(item(1)), isKind(K.Unsupported));
-  assert.equal(connector.sessionSnapshot()[0].sid, 'private-sid');
+  assert.equal(connector.sessionSnapshot().sid, 'private-sid');
   replies.push(ok({ shares: [], offset: 0, total: 0 }));
   await assert.rejects(connector.photoMediaFailure(failure(K.SessionExpired)), isKind(K.Unsupported));
   replies.push(bad(119));
   await assert.rejects(connector.photoMediaFailure(failure(K.SessionExpired)), isKind(K.SessionExpired));
-  assert.equal(connector.sessionSnapshot().length, 0);
+  assert.equal(Number(connector.sessionSnapshot() !== undefined), 0);
 });
 
 class MockMedia {
@@ -484,13 +484,14 @@ test('shared media HTTP401 and package119 recheck base login; permission refusal
   for (const error of [new NasFailure(K.Http, 'shared HTTP401', 401), new NasFailure(K.SessionExpired, 'shared119', 119)]) {
     replies.push(ok({ shares: [], offset: 0, total: 0 }));
     await assert.rejects(connector.photoMediaFailure(error), isKind(error.kind === K.Http ? K.Permission : K.Unsupported));
-    assert.equal(calls.at(-1).body.get('api'), 'SYNO.FileStation.List');
-    assert.equal(connector.sessionSnapshot()[0].sid, 'private-sid');
+    assert.equal(calls.at(-1).body.get('api'), 'SYNO.API.Auth');
+    assert.equal(calls.at(-1).body.get('method'), 'token');
+    assert.equal(connector.sessionSnapshot().sid, 'private-sid');
   }
   const count = calls.length;
   await assert.rejects(connector.photoMediaFailure(new NasFailure(K.Http, 'denied', 403)), isKind(K.Permission));
   assert.equal(calls.length, count);
-  assert.equal(connector.sessionSnapshot()[0].sid, 'private-sid');
+  assert.equal(connector.sessionSnapshot().sid, 'private-sid');
 });
 
 test('shared library details use trusted list metadata, isolate album credential contexts and clear them on close', async () => {

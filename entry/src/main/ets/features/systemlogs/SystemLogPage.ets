@@ -69,7 +69,7 @@ export struct SystemLogPage {
           if (this.model.selected === undefined) { this.list() } else { this.detail() }
           if (this.model.loading) { LoadingProgress().width(32).height(32) }
           if (this.model.errorText.length > 0) { Text(this.model.errorText).fontColor($r('app.color.workbench_danger')) }
-          Button('在浏览器中管理').buttonStyle(ButtonStyleMode.NORMAL).onClick(this.onManagement)
+          Button($r('app.string.package_open_management')).buttonStyle(ButtonStyleMode.NORMAL).onClick(this.onManagement)
         }.width('100%').alignItems(HorizontalAlign.Start).padding({ top: 12, left: 16, right: 16, bottom: this.bottomInset })
       }.width('100%').height('100%').constraintSize({ maxWidth: 960 }).align(Alignment.Top)
     }.width('100%').height('100%').justifyContent(FlexAlign.Center)

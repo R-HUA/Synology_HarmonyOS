@@ -1,82 +1,30 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { SessionRegistry, parseBusinessSessionRecord, parseBusinessSessionRecords } =
-  require('../../work/core-build/network/SessionRegistry.js');
-const { NasFailure, NasErrorKind: K } = require('../../work/core-build/domain/DsmProtocol.js');
+const { SessionRegistry, parseNasSession } = require('../../work/core-build/network/SessionRegistry.js');
 
-const authorization = { sid: 'SID-0123.~_', synoToken: 'TOKEN-0123' };
-const record = { name: 'FileStation', ...authorization };
-
-test('register, get and has copy session credentials instead of sharing references', () => {
+test('one primary session copies credentials and revisions invalidate late responses', () => {
   const registry = new SessionRegistry();
-  assert.equal(registry.has('FileStation'), false);
-  registry.register('FileStation', authorization);
-  assert.equal(registry.has('FileStation'), true);
-  assert.deepEqual(registry.get('FileStation'), authorization);
-  const exposed = registry.get('FileStation');
-  exposed.sid = 'mutated';
-  assert.equal(registry.get('FileStation').sid, authorization.sid);
-  assert.equal(registry.get('DownloadStation'), undefined);
+  const input = { sid: 'primary-sid', synoToken: 'primary-token' };
+  assert.equal(registry.get(), undefined);
+  const initial = registry.revision();
+  registry.register(input);
+  input.sid = 'mutated';
+  assert.equal(registry.get().sid, 'primary-sid');
+  const copy = registry.get(); copy.sid = 'mutated-again';
+  assert.equal(registry.get().sid, 'primary-sid');
+  assert.ok(registry.revision() > initial);
+  const revision = registry.revision(); registry.clear();
+  assert.equal(registry.has(), false); assert.equal(registry.get(), undefined);
+  assert.ok(registry.revision() > revision);
 });
 
-test('register rejects unknown business names and malformed credentials', () => {
+test('invalid and old business-session payloads never replace the primary session', () => {
   const registry = new SessionRegistry();
-  for (const name of ['DownloadStation2', '', 'WebAPI', 'filestation', 'NasControl ']) {
-    assert.throws(() => registry.register(name, authorization), isProtocol);
+  registry.register({ sid: 'valid', synoToken: '' });
+  for (const input of [undefined, [], [{ name: 'FileStation', sid: 'old', synoToken: '' }],
+    { sid: '', synoToken: '' }, { sid: 'bad;cookie', synoToken: '' }, { sid: 'good', synoToken: 4 }]) {
+    assert.throws(() => registry.register(input));
+    assert.equal(registry.get().sid, 'valid');
   }
-  assert.throws(() => registry.register('DownloadStation', { sid: 'sid; id=other', synoToken: '' }), isProtocol);
-  assert.throws(() => registry.register('DownloadStation', { sid: 'sid\r\nX-Injected: yes', synoToken: '' }), isProtocol);
-  assert.throws(() => registry.register('DownloadStation', { sid: 'sid', synoToken: 'token\r\nInjected: yes' }), isProtocol);
-  assert.equal(registry.revision(), 0);
-});
-
-function isProtocol(error) { return error instanceof NasFailure && error.kind === K.Protocol; }
-
-test('invalidate removes one business while others keep working; clear removes all', () => {
-  const registry = new SessionRegistry();
-  registry.register('FileStation', authorization);
-  registry.register('DownloadStation', { sid: 'download-sid', synoToken: '' });
-  const revision = registry.revision();
-  assert.equal(registry.invalidate('FileStation'), true);
-  assert.equal(registry.invalidate('FileStation'), false);
-  assert.equal(registry.revision(), revision + 1);
-  assert.equal(registry.has('FileStation'), false);
-  assert.deepEqual(registry.get('DownloadStation'), { sid: 'download-sid', synoToken: '' });
-  registry.clear();
-  assert.equal(registry.has('DownloadStation'), false);
-  assert.equal(registry.revision(), revision + 2);
-});
-
-test('snapshot orders by registered business and restore replaces the whole set', () => {
-  const registry = new SessionRegistry();
-  registry.register('DownloadStation', { sid: 'download-sid', synoToken: 'download-token' });
-  registry.register('FileStation', authorization);
-  assert.deepEqual(registry.snapshot(), [record, { name: 'DownloadStation', sid: 'download-sid', synoToken: 'download-token' }]);
-  registry.restore([record, { name: 'NasControl', sid: 'control-sid', synoToken: '' }]);
-  assert.deepEqual(registry.snapshot(), [record, { name: 'NasControl', sid: 'control-sid', synoToken: '' }]);
-  assert.equal(registry.has('DownloadStation'), false);
-});
-
-test('restore rejects invalid groups without keeping partial sessions', () => {
-  const registry = new SessionRegistry();
-  registry.register('FileStation', authorization);
-  for (const input of [[], [record, record],
-    [{ name: 'FileStation', sid: '', synoToken: '' }],
-    [{ name: 'Unknown', sid: 'sid', synoToken: '' }],
-    [{ name: 'FileStation', sid: 'sid; inject', synoToken: '' }],
-    [record, { name: 'DownloadStation', sid: 'download-sid', synoToken: '' }, { name: 'NasControl', sid: 'control-sid', synoToken: '' },
-      { name: 'FileStation', sid: 'duplicate-sid', synoToken: '' }]]) {
-    assert.throws(() => registry.restore(input), isProtocol, JSON.stringify(input));
-  }
-  assert.deepEqual(registry.snapshot(), [record]);
-});
-
-test('parse helpers validate wire payloads for persistence boundaries', () => {
-  assert.deepEqual(parseBusinessSessionRecord(record), record);
-  assert.deepEqual(parseBusinessSessionRecords([record, { name: 'DownloadStation', sid: 'sid', synoToken: 'token' }]),
-    [record, { name: 'DownloadStation', sid: 'sid', synoToken: 'token' }]);
-  for (const input of ['text', 42, null, [], {}, { name: 'FileStation' }, { name: 'FileStation', sid: '', synoToken: '' },
-    [{ name: 'FileStation', sid: 'sid', synoToken: '' }, { name: 'FileStation', sid: 'sid2', synoToken: '' }]]) {
-    assert.throws(() => parseBusinessSessionRecords(input), isProtocol);
-  }
+  assert.deepEqual(parseNasSession({ sid: 'good', synoToken: '' }), { sid: 'good', synoToken: '' });
 });

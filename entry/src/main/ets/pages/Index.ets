@@ -1,11 +1,12 @@
 import { common } from '@kit.AbilityKit';
 import { deviceInfo } from '@kit.BasicServicesKit';
-import { ComponentContent, curves, DrawableDescriptor, LengthMetrics, SymbolGlyphModifier, uiMaterial, window } from '@kit.ArkUI';
+import { ComponentContent, curves, DrawableDescriptor, LengthMetrics, SymbolGlyphModifier, uiMaterial, window,
+  ToolBarV2, ToolBarV2Item, ToolBarV2ItemText, ToolBarV2ItemState, ToolBarV2SymbolGlyph } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileUri } from '@kit.CoreFileKit';
 import { HdsNavigation, HdsSideBar, HdsNavigationTitleMode, HdsNavDestination, HdsTabs, HdsTabsController, hdsMaterial, SystemMaterialParams, IconStyleMode, TextStyleMode, ScrollEffectType, HdsNavigationMenuItemOptions, HdsSnackBar, SnackBarOperationType } from '@kit.UIDesignKit';
 import { NasFailure, NasFileEntry } from '../core/domain/DsmProtocol';
-import { DriveEntry, DriveView, driveViewLabel } from '../core/domain/DriveProtocol';
+import { DriveEntry, DriveEntryKind, DriveView, driveViewLabel } from '../core/domain/DriveProtocol';
 import { DriveUploadReview, DriveTransferModePicker } from '../features/drive/DriveTransferUi';
 import type { DriveAction } from '../core/domain/DriveActionProtocol';
 import { DriveActionPage } from '../features/drive/DriveActionUi';
@@ -13,6 +14,7 @@ import { DriveOriginalPage } from '../features/drive/DriveOriginalUi';
 import { ImagePreview, PreviewInformation } from '../features/workbench/ImagePreview';
 import { telemetryTimestamp } from '../core/domain/TelemetryProtocol';
 import { driveActionAllowed } from '../core/domain/DriveActionProtocol';
+import { canPreviewDriveOriginal } from '../core/domain/DriveOriginalProtocol';
 import { driveFileLinkAllowed } from '../core/domain/DriveCollaborationProtocol';
 import { ExtensionStatusPanel } from '../features/extensions/ExtensionStatusPanel';
 import { PhotoAction, PhotoActionInput, PhotoFolder } from '../core/domain/PhotoActions';
@@ -37,6 +39,7 @@ import { NasSystemControlPage } from '../features/control/SystemControlPage';
 import { ShareLinksPage } from '../features/fileSharing/ShareLinksPage';
 import { DownloadStationPage } from '../features/downloadStation/DownloadStationPage';
 import { PackageCatalogPage, PackageDetailPage } from '../features/packages/PackageCatalogPage';
+import { OfficialWebPage } from '../features/packages/OfficialWebPage';
 import { InstalledPackage, PackageNativeTarget } from '../features/packages/PackageProtocol';
 import { MoreFeaturesPage } from '../features/workbench/MoreFeaturesPage';
 import { ContainerPage } from '../features/containers/ContainerPage';
@@ -58,15 +61,19 @@ import { ModuleTabStore } from '../features/workbench/ModuleTabStore';
 import { WorkbenchSettings } from '../features/workbench/WorkbenchSettings';
 import { FileStationPage } from '../features/files/FileStationPage';
 import { DriveModulePage } from '../features/drive/DriveModulePage';
+import { DriveBrowserModel } from '../features/drive/DriveBrowserModel';
 import { PhotoModulePage } from '../features/photos/PhotoModulePage';
 import type { PhotoLibrarySection } from '../features/photos/PhotoLibrary';
 
+type FileSelectionAction = 'share' | 'copy' | 'move' | 'delete' | 'download';
+
 class TitleMenuItem {
+  id: string;
   label: string;
   enabled: boolean;
   action: () => void;
-  constructor(label: string, enabled: boolean, action: () => void) {
-    this.label = label; this.enabled = enabled; this.action = action;
+  constructor(label: string, enabled: boolean, action: () => void, id: string = '') {
+    this.label = label; this.enabled = enabled; this.action = action; this.id = id;
   }
 }
 
@@ -85,6 +92,7 @@ struct Index {
   @Local private model: ConnectionViewModel = new ConnectionViewModel();
   @Local private observedQueue: TransferQueue = this.model.queue;
   @Local private observedDriveTransfers: DriveTransferModel = this.model.driveTransfers;
+  @Local private observedDriveBrowser: DriveBrowserModel = this.model.drive;
   @Local private transferLiveView: TransferLiveView = new TransferLiveView();
   @Local private activeTab: number = 0;
   @Local private module: WorkbenchModule = 'root';
@@ -92,7 +100,7 @@ struct Index {
   @Local private driveTabId: string = 'mydrive';
   @Local private photoTabId: string = 'photos';
   @Local private driveMoreView: string = '';
-  private driveSearchScroller: Scroller = new Scroller();
+  private driveSearchScroller: ListScroller = new ListScroller();
   private photoBackupScroller: Scroller = new Scroller();
   @Local private photoBackupViewportTop: number = 0;
   @Local private photoMoreShared: boolean = false;
@@ -179,6 +187,11 @@ struct Index {
   @Local private formSubmitting: boolean = false;
   @Local private pendingEntries: NasFileEntry[] = [];
   @Local private fileSelecting: boolean = false;
+  @Local private driveSelecting: boolean = false;
+  @Local private selectedDriveIds: string[] = [];
+  @Local private driveDetailEntry: DriveEntry | undefined = undefined;
+  @Local private driveDetailVisible: boolean = false;
+  @Local private selectionMenuVisible: boolean = false;
   @Local private selectedFiles: NasFileEntry[] = [];
   @Local private pendingOperation: string = '';
   @Local private transferSubmitting: boolean = false;
@@ -215,13 +228,13 @@ struct Index {
   private readonly artworkSize: number = 64;
   private navStack: NavPathStack = new NavPathStack();
   private homeScroller: Scroller = new Scroller();
-  private filesScroller: Scroller = new Scroller();
-  private driveScrollers: Scroller[] = [new Scroller(), new Scroller(), new Scroller(), new Scroller(),
-    new Scroller(), new Scroller(), new Scroller(), new Scroller()];
+  private filesScroller: ListScroller = new ListScroller();
+  private driveScrollers: ListScroller[] = [new ListScroller(), new ListScroller(), new ListScroller(), new ListScroller(),
+    new ListScroller(), new ListScroller(), new ListScroller(), new ListScroller()];
   private photoScrollers: Scroller[] = [new Scroller(), new Scroller(), new Scroller(), new Scroller(), new Scroller(), new Scroller()];
   private settingsScroller: Scroller = new Scroller();
   private tabSettingsScroller: Scroller = new Scroller();
-  private pickerScroller: Scroller = new Scroller();
+  private pickerScroller: ListScroller = new ListScroller();
   private taskCategoryScrollers: Scroller[] = [new Scroller(), new Scroller(), new Scroller(), new Scroller()];
   private tabsController: HdsTabsController = new HdsTabsController();
   /** 不支持沉浸材质时交由导航组件呈现默认背景。 */
@@ -297,10 +310,13 @@ struct Index {
   }
 
   onBackPress(): boolean {
+    if (this.selectionMenuVisible) { this.selectionMenuVisible = false; return true; }
+    if (this.driveDetailVisible) { this.driveDetailVisible = false; return true; }
     if (this.titleMenuContent !== undefined) { this.closeTitleMenu(); return true; }
     if (this.bootPending) { this.leaveBootScreen(); return true; }
     if (this.sheetVisible) { if (!this.formSubmitting && !this.backup.submitting) { this.sheetVisible = false; } return true; }
     if (this.navStack.size() > 0) {
+      if (this.navStack.getAllPathName().slice(-1)[0] === 'drive-search' && this.driveSelecting) { this.cancelDriveSelection(); return true; }
       if (this.navStack.getAllPathName().slice(-1)[0] === 'drive-search') { this.exitDriveSearch(); return true; }
       if (this.pickerMode.length > 0 && this.navStack.getAllPathName().slice(-1)[0] === 'directory-picker') {
         if (this.backup.submitting) { return true; }
@@ -312,6 +328,7 @@ struct Index {
     if (this.module === 'root' && this.activeTab === 1 && this.fileSelecting) { this.cancelFileSelection(); return true; }
     if (this.module === 'root' && this.activeTab === 1 && this.pendingEntries.length > 0) { this.pendingEntries = []; this.pendingOperation = ''; return true; }
     if (this.model.authenticated && this.module === 'drive') {
+      if (this.driveSelecting) { this.cancelDriveSelection(); return true; }
       if (this.driveViewMatches() && this.model.drive.trail.length > 1 && this.model.drive.canGoUp()) { if (!this.model.drive.busy) { this.model.drive.goUp(); } return true; }
       if (this.driveTabId === 'more' && this.driveMoreView.length > 0) { this.backToDriveMore(); return true; }
       this.exitModule(); return true;
@@ -375,7 +392,7 @@ struct Index {
       this.selectedFiles.some((selected: NasFileEntry): boolean => selected.path === entry.path));
   }
 
-  private cancelFileSelection(): void { this.fileSelecting = false; this.selectedFiles = []; }
+  private cancelFileSelection(): void { this.fileSelecting = false; this.selectedFiles = []; this.selectionMenuVisible = false; }
 
   private toggleFileSelection(entry: NasFileEntry): void {
     this.selectedFiles = this.selectedFiles.some((selected: NasFileEntry): boolean => selected.path === entry.path) ?
@@ -418,6 +435,182 @@ struct Index {
   @Monitor('model.deviceModel')
   private deviceModelChanged(): void { this.resolveDeviceArtwork(); }
 
+  @Monitor('observedDriveBrowser.trail', 'module', 'driveTabId', 'driveMoreView', 'model.authenticated', 'model.address', 'model.account')
+  private driveSelectionLocationChanged(): void {
+    this.cancelDriveSelection(); this.driveDetailVisible = false; this.driveDetailEntry = undefined;
+  }
+
+  @Monitor('observedDriveBrowser.entries')
+  private driveSelectionEntriesChanged(): void {
+    this.selectedDriveIds = this.model.drive.entries.filter((entry: DriveEntry): boolean =>
+      this.selectedDriveIds.includes(entry.fileId)).map((entry: DriveEntry): string => entry.fileId);
+  }
+
+  private cancelDriveSelection(): void {
+    this.driveSelecting = false; this.selectedDriveIds = []; this.selectionMenuVisible = false;
+  }
+
+  private fileSelectionActive(): boolean {
+    if (!this.model.authenticated) { return false; }
+    const paths = this.navStack.getAllPathName();
+    if (paths.length > 0 && paths[paths.length - 1] !== 'drive-search') { return false; }
+    return this.module === 'drive' ? this.driveSelecting : this.module === 'root' && this.activeTab === 1 && this.fileSelecting;
+  }
+
+  private selectedDriveEntries(): DriveEntry[] {
+    return this.model.drive.entries.filter((entry: DriveEntry): boolean => this.selectedDriveIds.includes(entry.fileId));
+  }
+
+  private selectionCount(): number { return this.module === 'drive' ? this.selectedDriveEntries().length : this.selectedFiles.length; }
+
+  private fileSelectionTitle(): string {
+    return this.selectionCount() === 0 ? this.previewText($r('app.string.file_selection_empty')) :
+      this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.file_selected_count').id, this.selectionCount());
+  }
+
+  private selectLoadedFiles(): void {
+    if (this.model.busy || this.module === 'drive' && this.model.drive.busy) { return; }
+    if (this.module === 'drive') { this.selectedDriveIds = this.model.drive.entries.map((entry: DriveEntry): string => entry.fileId); }
+    else { this.selectedFiles = this.model.entries.slice(); }
+  }
+
+  /** 两种文件协议各自判断权限，工具栏和更多菜单复用同一结果。 */
+  private fileSelectionActionAllowed(action: FileSelectionAction | 'more'): boolean {
+    if (!this.fileSelectionActive() || this.selectionCount() === 0 || this.model.busy) { return false; }
+    if (action === 'more') { return this.module !== 'drive' || !this.model.drive.busy; }
+    if (this.module !== 'drive') {
+      if (action === 'share') { return this.model.supports('SYNO.FileStation.Sharing') && this.model.extensions.canWrite('fileSharing'); }
+      if (action === 'download') { return this.model.supports('SYNO.FileStation.Download') && this.model.queue.ready &&
+        !this.model.queue.busy && this.selectedFiles.every((entry: NasFileEntry): boolean => !entry.isDirectory); }
+      return this.model.supports(action === 'delete' ? 'SYNO.FileStation.Delete' : 'SYNO.FileStation.CopyMove');
+    }
+    const entries = this.selectedDriveEntries();
+    if (this.model.drive.busy || entries.length !== this.selectedDriveIds.length) { return false; }
+    if (action === 'share') { return this.model.driveSharing.available && !this.model.driveSharing.hasPending && entries.every(driveFileLinkAllowed); }
+    if (action === 'download') { return this.model.driveTransfers.ready && !this.model.driveTransfers.busy &&
+      entries.every((entry: DriveEntry): boolean => entry.kind === DriveEntryKind.File && entry.capabilities.canDownload); }
+    const rootRestricted = this.model.drive.trail.length === 1 && (action === 'copy' ? this.model.drive.view === DriveView.TeamFolders :
+      [DriveView.TeamFolders, DriveView.SharedWithMe, DriveView.SharedWithOthers].includes(this.model.drive.view));
+    return !rootRestricted && this.model.driveActions.available && this.model.driveActions.ready &&
+      !this.model.driveActions.busy && !this.model.driveActions.hasPending &&
+      entries.every((entry: DriveEntry): boolean => driveActionAllowed(entry, action));
+  }
+
+  private async fileSelectionAction(action: FileSelectionAction): Promise<void> {
+    if (!this.fileSelectionActionAllowed(action)) { return; }
+    if (this.module !== 'drive') { await this.selectedFileAction(action); return; }
+    const entries = this.selectedDriveEntries();
+    if (action === 'share') {
+      if (this.model.driveSharing.prepare(entries[0], entries)) { this.navStack.pushPathByName('drive-links', undefined); }
+    } else if (action === 'download') {
+      const generation = this.model.sessionGeneration;
+      for (const entry of entries) {
+        if (generation !== this.model.sessionGeneration) { return; }
+        await this.model.driveTransfers.download(entry);
+        if (generation !== this.model.sessionGeneration || this.model.driveTransfers.errorText.length > 0) { return; }
+      }
+      this.cancelDriveSelection(); this.openDriveTransfers();
+    } else { await this.prepareDriveAction(entries[0], action, entries); }
+  }
+
+  private selectionToolbarItem(label: Resource, icon: Resource, action: FileSelectionAction | 'more'): ToolBarV2Item {
+    return new ToolBarV2Item({ content: new ToolBarV2ItemText({ text: label }),
+      icon: new ToolBarV2SymbolGlyph({ normal: new SymbolGlyphModifier(icon) }),
+      state: this.fileSelectionActionAllowed(action) ? ToolBarV2ItemState.ENABLE : ToolBarV2ItemState.DISABLE,
+      action: (_index: number): void => {
+        if (action === 'more') { this.selectionMenuVisible = true; }
+        else { this.fileSelectionAction(action); }
+      } });
+  }
+
+  @Builder
+  fileSelectionToolbar() {
+    ToolBarV2({ toolBarList: [
+      this.selectionToolbarItem($r('app.string.file_selection_share'), $r('sys.symbol.share'), 'share'),
+      this.selectionToolbarItem($r('app.string.file_selection_copy'), $r('sys.symbol.square_and_square'), 'copy'),
+      this.selectionToolbarItem($r('app.string.preview_delete'), $r('sys.symbol.trash'), 'delete'),
+      this.selectionToolbarItem($r('app.string.file_selection_more'), $r('sys.symbol.more'), 'more')
+    ] }).bindMenu(this.selectionMenuVisible, this.fileSelectionMenu(), {
+      placement: Placement.TopRight, onDisappear: (): void => { this.selectionMenuVisible = false; }
+    })
+  }
+
+  @Builder
+  fileSelectionMenu() { titleMenu(this.fileSelectionMenuItems()) }
+
+  private fileSelectionMenuItems(): TitleMenuItem[] {
+    const items = [new TitleMenuItem(this.previewText($r('app.string.preview_move')), this.fileSelectionActionAllowed('move'),
+      (): void => { this.fileSelectionAction('move'); }),
+      new TitleMenuItem(this.previewText($r('app.string.preview_download')), this.fileSelectionActionAllowed('download'),
+        (): void => { this.fileSelectionAction('download'); })];
+    if (this.selectionCount() === 1) {
+      const single = this.module === 'drive' ? this.driveEntryActions(this.selectedDriveEntries()[0]) : this.fileEntryActions(this.selectedFiles[0]);
+      items.push(...single.filter((item: TitleMenuItem): boolean => !['share', 'copy', 'move', 'delete', 'download'].includes(item.id)));
+    }
+    return items;
+  }
+
+  /** 列表菜单与选中后的单项操作共用，避免入口变化带来权限差异。 */
+  private fileEntryActions(entry: NasFileEntry): TitleMenuItem[] {
+    const items = [new TitleMenuItem(this.previewText($r('app.string.notice_details')), true,
+      (): void => { this.fileEntryAction('detail', entry); }, 'detail')];
+    if (this.model.supports('SYNO.FileStation.Sharing') && this.model.extensions.canWrite('fileSharing')) {
+      items.push(new TitleMenuItem(this.previewText($r('app.string.file_action_share_link')), true, (): void => { this.fileEntryAction('share', entry); }, 'share'));
+    }
+    if (!entry.isDirectory && this.model.supports('SYNO.FileStation.Download') && this.model.queue.ready && !this.model.queue.busy) {
+      items.push(new TitleMenuItem(this.previewText($r('app.string.file_action_download')), true, (): void => { this.fileEntryAction('download', entry); }, 'download'));
+    }
+    if (this.model.directory.length > 0) {
+      if (this.model.supports('SYNO.FileStation.CopyMove')) {
+        items.push(new TitleMenuItem(this.previewText($r('app.string.preview_copy')), true, (): void => { this.fileEntryAction('copy', entry); }, 'copy'));
+        items.push(new TitleMenuItem(this.previewText($r('app.string.preview_move')), true, (): void => { this.fileEntryAction('move', entry); }, 'move'));
+      }
+      if (this.model.supports('SYNO.FileStation.Rename')) {
+        items.push(new TitleMenuItem(this.previewText($r('app.string.file_selection_rename')), true,
+          (): void => { this.fileEntryAction('rename', entry); }, 'rename'));
+      }
+      if (this.model.supports('SYNO.FileStation.Delete')) {
+        items.push(new TitleMenuItem(this.previewText($r('app.string.preview_delete')), true,
+          (): void => { this.fileEntryAction('delete', entry); }, 'delete'));
+      }
+    }
+    return items;
+  }
+
+  private driveEntryActions(entry: DriveEntry): TitleMenuItem[] {
+    const items = [new TitleMenuItem(this.previewText($r('app.string.notice_details')), true,
+      (): void => { this.driveDetailEntry = entry; this.driveDetailVisible = true; }, 'detail')];
+    if (this.model.drive.view === DriveView.Trash) { return items; }
+    if (!this.model.driveActions.ready || !this.model.driveTransfers.ready || this.model.driveTransfers.busy ||
+      this.model.driveActions.busy || this.model.driveActions.hasPending) { return items; }
+    if (this.model.driveSharing.available && driveFileLinkAllowed(entry)) {
+      items.push(new TitleMenuItem(this.previewText($r('app.string.file_action_get_link')), true, (): void => { this.openDriveLinks(entry); }, 'share'));
+    }
+    if (canPreviewDriveOriginal(entry)) {
+      items.push(new TitleMenuItem(this.previewText($r('app.string.preview_original')), true,
+        (): void => { this.openDriveOriginal(entry); }, 'original'));
+    }
+    if (entry.kind === DriveEntryKind.File && entry.capabilities.canRead && entry.capabilities.canDownload) {
+      items.push(new TitleMenuItem(this.previewText($r('app.string.file_action_download')), true,
+        (): void => { this.driveDetailVisible = false; this.submitDriveDownload(entry, '', false); }, 'download'));
+    }
+    if (this.model.driveTransfers.available && entry.kind === DriveEntryKind.Folder && entry.capabilities.canRead && entry.capabilities.canWrite) {
+      items.push(new TitleMenuItem(this.previewText($r('app.string.file_action_upload_folder')), true, (): void => { this.prepareDriveUpload(entry); }, 'upload'));
+    }
+    if (!this.model.driveActions.available) { return items; }
+    const rootRestricted = this.model.drive.trail.length === 1 && [DriveView.TeamFolders, DriveView.SharedWithMe, DriveView.SharedWithOthers].includes(this.model.drive.view);
+    const actions: DriveAction[] = ['rename', 'copy', 'move', 'delete'];
+    for (const action of actions) {
+      if (driveActionAllowed(entry, action) && (action === 'copy' ?
+        !(this.model.drive.view === DriveView.TeamFolders && this.model.drive.trail.length === 1) : !rootRestricted)) {
+        const label = action === 'rename' ? $r('app.string.file_selection_rename') : action === 'copy' ? $r('app.string.preview_copy') :
+          action === 'move' ? $r('app.string.preview_move') : $r('app.string.preview_delete');
+        items.push(new TitleMenuItem(this.previewText(label), true, (): void => { this.prepareDriveAction(entry, action); }, action));
+      }
+    }
+    return items;
+  }
+
   /** 连接方式文案：优先用地址簿登记的类型，否则按地址判断内网/公网。 */
   private routeLabel(): string {
     const saved = this.model.addressBook.addresses.find((address: NasConnectionAddress): boolean =>
@@ -436,9 +629,7 @@ struct Index {
   }
 
   private pageTitle(): string {
-    if (this.module === 'root' && this.activeTab === 1 && this.fileSelecting) {
-      return this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.file_selected_count').id, this.selectedFiles.length);
-    }
+    if (this.fileSelectionActive()) { return this.fileSelectionTitle(); }
     if (this.module === 'photos' && this.model.photoLibrary.selecting) {
       return this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.photos_selected_count').id, this.model.photoLibrary.selectedKeys.length);
     }
@@ -535,18 +726,10 @@ struct Index {
     this.updateTelemetryMode();
   }
 
-  private async openPackageManagement(): Promise<void> {
-    const origin = this.model.packages.managementOrigin();
-    const generation = this.model.sessionGeneration;
-    const destination = this.packageDestination;
-    if (this.abilityContext === undefined || origin.length === 0 || !this.model.authenticated) { return; }
-    try { await this.abilityContext.openLink(origin); }
-    catch {
-      if (this.pageActive && this.foreground && this.packageDestination === destination &&
-        ['package-detail', 'more-features', 'containers', 'cloud-sync', 'system-logs', 'notes'].includes(destination) && generation === this.model.sessionGeneration) {
-        this.showTitleMenuError(this.previewText($r('app.string.package_browser_failed')));
-      }
-    }
+  private openPackageManagement(): void {
+    if (!this.model.authenticated || this.navigationBusy()) { return; }
+    this.model.officialWeb.open();
+    this.navStack.pushPathByName('official-web', undefined);
   }
 
   private remoteDownloadMenus(): HdsNavigationMenuItemOptions[] {
@@ -613,6 +796,7 @@ struct Index {
   }
 
   private bottomInset(): number {
+    if (this.fileSelectionActive()) { return 16; }
     if (this.module === 'photos' && this.model.photoLibrary.selecting) { return 16; }
     return this.windowWidth >= 600 ? this.navigationInset + 16 : workbenchBottomInset(this.floatingBarBottomMargin());
   }
@@ -882,7 +1066,7 @@ struct Index {
     return driveMoreViews((view: DriveView): boolean => this.model.drive.supportsView(view), this.drivePinned);
   }
 
-  private driveScrollerFor(id: string): Scroller {
+  private driveScrollerFor(id: string): ListScroller {
     return this.driveScrollers[Math.max(0, ['mydrive', 'teamFolders', 'recent', 'starred', 'sharedWithMe', 'sharedWithOthers', 'trash', 'more'].indexOf(id))];
   }
 
@@ -1066,6 +1250,11 @@ struct Index {
   }
 
   private pageMenu(): HdsNavigationMenuItemOptions[] {
+    if (this.fileSelectionActive()) {
+      return [{ content: { label: this.previewText($r('app.string.file_select_loaded')), type: TextStyleMode.NORMAL,
+        isEnabled: !this.model.busy && (this.module !== 'drive' || !this.model.drive.busy),
+        action: (): void => { this.selectLoadedFiles(); } } }];
+    }
     if (this.module === 'drive') {
       const items: HdsNavigationMenuItemOptions[] = [];
       if (this.driveTabId === 'mydrive' && this.model.drive.supportsView(DriveView.Search)) {
@@ -1329,6 +1518,10 @@ struct Index {
               .enterKeyType(EnterKeyType.Go).onSubmit((): void => { this.submitLogin(); })
               .onChange((text: string): void => { this.model.password = text; }).accessibilityText('NAS 密码')
             }.width('100%')
+            if (this.model.authActionRequired) {
+              Button($r('app.string.official_account_verification')).buttonStyle(ButtonStyleMode.TEXTUAL)
+                .enabled(!this.model.busy).onClick((): void => { this.model.openAccountVerification(); })
+            }
             if (this.model.needsOtp) {
               TextInput({ text: this.model.otp, placeholder: '6 位动态码' }).constraintSize({ minHeight: 48 })
                 .type(InputType.Number).maxLength(6).enabled(!this.model.busy)
@@ -1656,20 +1849,23 @@ struct Index {
   modulePage(tab: ModuleTab) {
     if (this.module === 'drive') {
       DriveModulePage({ model: this.model, wide: this.windowWidth >= 600, tabId: tab.id, active: tab.id === this.driveTabId,
+        selecting: tab.id === this.driveTabId && this.driveSelecting,
+        selectedIds: tab.id === this.driveTabId ? this.selectedDriveIds : [],
+        onSelectionChange: (selecting: boolean, ids: string[]): void => {
+          if (this.module === 'drive' && tab.id === this.driveTabId && this.navStack.size() === 0) { this.driveSelecting = selecting; this.selectedDriveIds = ids; }
+        },
+        detailEntry: this.driveDetailEntry, detailVisible: tab.id === this.driveTabId && this.driveDetailVisible && this.navStack.size() === 0,
+        onInspectEntry: (entry: DriveEntry | undefined, visible: boolean): void => {
+          if (this.module === 'drive' && tab.id === this.driveTabId && this.navStack.size() === 0) { this.driveDetailEntry = entry; this.driveDetailVisible = visible; }
+        },
+        menuForEntry: (entry: DriveEntry): MenuElement[] => this.driveEntryActions(entry).map((item: TitleMenuItem): MenuElement => ({ value: item.label, action: item.action })),
         expectedView: tab.view ?? (this.driveMoreView.length > 0 ? this.driveMoreView as DriveView : DriveView.MyDrive),
         scroller: this.driveScrollerFor(tab.id), topInset: this.contentTopInset(), bottomInset: this.bottomInset(),
         moreView: this.driveMoreView, moreViews: this.driveMoreViews(),
         onSelectMore: (view: DriveView): void => { this.selectDriveMore(view); },
         onOpenTransfers: (): void => { this.openDriveTransfers(); },
         onDownload: (entry: DriveEntry, open: boolean): void => { this.submitDriveDownload(entry, '', open); },
-        onUploadTo: (entry: DriveEntry): void => { this.prepareDriveUpload(entry); },
-        onOpenAction: (action: DriveAction, entry?: DriveEntry): void => { if (entry !== undefined) { this.prepareDriveAction(entry, action); } },
-        onOpenBatchAction: (action: DriveAction, entries: DriveEntry[]): void => { this.prepareDriveAction(entries[0], action, entries); },
         onOpenOriginal: (entry: DriveEntry): void => { this.openDriveOriginal(entry); },
-        onOpenLinks: (entry?: DriveEntry): void => { this.openDriveLinks(entry); },
-        onOpenBatchLinks: (entries: DriveEntry[]): void => {
-          if (this.model.driveSharing.prepare(entries[0], entries)) { this.navStack.pushPathByName('drive-links', undefined); }
-        },
         onCustomize: (): void => { this.navStack.pushPathByName('module-tabs', 'drive'); } })
     } else if (this.module === 'photos') {
       if (tab.id === 'transfers') { this.taskPage(this.photoTasks, this.photoTasksScroller, this.contentTopInset(), this.bottomInset()) }
@@ -1710,9 +1906,7 @@ struct Index {
         onToggleSelection: (entry: NasFileEntry): void => { this.toggleFileSelection(entry); },
         onBeginSelection: (entry: NasFileEntry): void => { this.fileSelecting = true; this.selectedFiles = [entry]; },
         onSort: (): void => { this.openForm('sort'); },
-        onSelectAll: (): void => { this.selectedFiles = this.model.entries.slice(); },
-        onCancelSelection: (): void => { this.cancelFileSelection(); },
-        onSelectionAction: (kind: string): void => { this.selectedFileAction(kind); },
+        menuForEntry: (entry: NasFileEntry): MenuElement[] => this.fileEntryActions(entry).map((item: TitleMenuItem): MenuElement => ({ value: item.label, action: item.action })),
         onOpenForm: (kind: string, entry?: NasFileEntry): void => { this.fileEntryAction(kind, entry); },
         onOpenImage: (entry: NasFileEntry): void => { this.navStack.pushPathByName('file-preview', undefined); this.model.fileOriginal.openFile(entry); },
         onNavigateBreadcrumb: (target: string): void => { this.navigateBreadcrumb(target); },
@@ -2197,7 +2391,7 @@ struct Index {
 
   /** 返回箭头保留系统模板尺寸，颜色交由标题栏适配材质。 */
   private navigationBackSymbol(): SymbolGlyphModifier {
-    return new SymbolGlyphModifier($r('sys.symbol.chevron_left')).fontSize(24);
+    return new SymbolGlyphModifier(this.fileSelectionActive() ? $r('sys.symbol.xmark') : $r('sys.symbol.chevron_left')).fontSize(24);
   }
 
   @Builder
@@ -2227,23 +2421,35 @@ struct Index {
     } else if (name === 'drive-search') {
       HdsNavDestination() {
         DriveModulePage({ model: this.model, tabId: 'search', expectedView: DriveView.Search, searchPage: true,
+          selecting: this.driveSelecting, selectedIds: this.selectedDriveIds,
+          onSelectionChange: (selecting: boolean, ids: string[]): void => {
+            if (this.module === 'drive' && this.navStack.getAllPathName().slice(-1)[0] === 'drive-search') {
+              this.driveSelecting = selecting; this.selectedDriveIds = ids;
+            }
+          },
+          detailEntry: this.driveDetailEntry, detailVisible: this.driveDetailVisible,
+          onInspectEntry: (entry: DriveEntry | undefined, visible: boolean): void => {
+            if (this.module === 'drive' && this.navStack.getAllPathName().slice(-1)[0] === 'drive-search') {
+              this.driveDetailEntry = entry; this.driveDetailVisible = visible;
+            }
+          },
+          menuForEntry: (entry: DriveEntry): MenuElement[] => this.driveEntryActions(entry).map((item: TitleMenuItem): MenuElement => ({ value: item.label, action: item.action })),
           scroller: this.driveSearchScroller, bottomInset: this.navigationInset + 16,
           onExitSearch: (): void => { this.exitDriveSearch(); },
-          onOpenBatchAction: (action: DriveAction, entries: DriveEntry[]): void => { this.prepareDriveAction(entries[0], action, entries); },
-          onOpenBatchLinks: (entries: DriveEntry[]): void => { this.model.driveSharing.prepare(entries[0], entries); this.navStack.pushPathByName('drive-links', undefined); },
           onOpenTransfers: (): void => { this.openDriveTransfers(); },
           onDownload: (entry: DriveEntry, open: boolean): void => { this.submitDriveDownload(entry, '', open); },
-          onOpenOriginal: (entry: DriveEntry): void => { this.openDriveOriginal(entry); },
-          onOpenAction: (action: DriveAction, entry?: DriveEntry): void => { if (entry !== undefined) { this.prepareDriveAction(entry, action); } },
-          onOpenLinks: (entry?: DriveEntry): void => { this.openDriveLinks(entry); },
-          onUploadTo: (entry: DriveEntry): void => { this.prepareDriveUpload(entry); } })
+          onOpenOriginal: (entry: DriveEntry): void => { this.openDriveOriginal(entry); } })
       }.backgroundColor($r('app.color.workbench_background'))
-        .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: $r('app.string.drive_search_title') } },
+        .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL,
+          action: (): void => { if (this.driveSelecting) { this.cancelDriveSelection(); } else { this.exitDriveSearch(); } } },
+          title: { mainTitle: this.driveSelecting ? this.fileSelectionTitle() : $r('app.string.drive_search_title') },
+          menu: { value: this.driveSelecting ? this.pageMenu() : [] } },
           style: { systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE,
             materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE },
             scrollEffectOpts: { enableScrollEffect: true, scrollEffectType: ScrollEffectType.GRADIENT_BLUR } } })
         .bindToScrollable([this.driveSearchScroller])
-        .onBackPressed((): boolean => { this.exitDriveSearch(); return true; })
+        .toolbarConfiguration(this.fileSelectionToolbar, { barStyle: BarStyle.STANDARD }).hideToolBar(!this.driveSelecting)
+        .onBackPressed((): boolean => { return this.onBackPress(); })
     } else if (name === 'drive-links') {
       HdsNavDestination() {
         DriveSharingPage({ model: this.model.driveSharing, scroller: this.driveLinksScroller,
@@ -2375,6 +2581,13 @@ struct Index {
         .onBackPressed((): boolean => this.model.notes.back())
         .onShown((): void => { this.packageDestination = 'notes'; this.updatePackageVisibility(); this.updateTelemetryMode(); })
         .onHidden((): void => { this.model.notes.setVisible(false); if (this.packageDestination === 'notes') { this.packageDestination = ''; } this.updateTelemetryMode(); })
+    } else if (name === 'official-web') {
+      HdsNavDestination() { OfficialWebPage({ model: this.model.officialWeb }) }
+        .backgroundColor($r('app.color.workbench_background'))
+        .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL },
+          title: { mainTitle: $r('app.string.official_web') } } })
+        .onBackPressed((): boolean => this.model.officialWeb.onBack())
+        .onHidden((): void => { this.model.officialWeb.close(); })
     } else if (name === 'packages') {
       HdsNavDestination() {
         PackageCatalogPage({ model: this.model.packages, scroller: this.packagesScroller, bottomInset: this.navigationInset + 16,
@@ -2419,8 +2632,7 @@ struct Index {
       HdsNavDestination() {
         DownloadStationPage({ model: this.model.extensions, scroller: this.downloadsScroller, visible: this.downloadsVisible,
           refreshRevision: this.downloadsRefreshRevision, bottomInset: this.navigationInset + 16,
-          onChooseDirectory: (): void => { this.chooseDownloadDirectory(); },
-          onAuthenticate: (): void => { this.model.authenticateDownloads(); } })
+          onChooseDirectory: (): void => { this.chooseDownloadDirectory(); } })
       }
         .backgroundColor($r('app.color.workbench_background'))
         .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL },
@@ -2814,6 +3026,7 @@ struct Index {
                     .tabBar(new BottomTabBarStyle({ normal: new SymbolGlyphModifier(this.tabIcon(tab.id)) }, tab.label))
                 }, (tab: ModuleTab): string => this.module + ':' + tab.id)
               }.width('100%').layoutWeight(1).barPosition(BarPosition.End).scrollable(false)
+                .barHeight(this.fileSelectionActive() ? 0 : 56)
                 .barOverlap(true).vertical(false)
                 .barFloatingStyle({ barBottomMargin: this.floatingBarBottomMargin(),
                   systemMaterialEffect: this.navigationMaterial, thermoCtrl: true })
@@ -2827,13 +3040,15 @@ struct Index {
           }
         }.width('100%').height('100%')
           .overlay(this.transferCapsule(), { align: Alignment.Top, offset: { y: this.statusInset + 56 } })
-      }.width('100%').height('100%').backgroundColor($r('app.color.workbench_background')).mode(NavigationMode.Stack).hideBackButton(this.module === 'root')
+      }.width('100%').height('100%').backgroundColor($r('app.color.workbench_background')).mode(NavigationMode.Stack)
+        .hideBackButton(this.module === 'root' && !this.fileSelectionActive())
         .hideTitleBar(!this.model.authenticated)
         .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
         .navDestination(this.destinationBuilder).bindToScrollable(this.activeScrollers())
+        .toolbarConfiguration(this.fileSelectionToolbar, { barStyle: BarStyle.STANDARD }).hideToolBar(!this.fileSelectionActive())
         .titleMode(HdsNavigationTitleMode.MINI).titleBar({ enableComponentSafeArea: false,
           content: { title: { mainTitle: this.pageTitle() },
-            backIcon: this.module === 'root' ? undefined : { icon: this.navigationBackSymbol(),
+            backIcon: this.module === 'root' && !this.fileSelectionActive() ? undefined : { icon: this.navigationBackSymbol(),
               action: (): void => { this.onBackPress(); }, type: IconStyleMode.SMALL },
             menu: { value: this.pageMenu(), maxCount: 2 } },
           style: { scrollEffectOpts: { enableScrollEffect: true, scrollEffectType: ScrollEffectType.GRADIENT_BLUR },

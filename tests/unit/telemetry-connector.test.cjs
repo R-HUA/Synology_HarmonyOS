@@ -51,7 +51,7 @@ const ok = data => ({ status: 200, text: JSON.stringify({ success: true, data })
 const bad = code => ({ status: 200, text: JSON.stringify({ success: false, error: { code } }) });
 const isKind = (kind, code) => error => error instanceof NasFailure && error.kind === kind && (code === undefined || error.code === code);
 const session = { sid: 'synthetic-private-sid', synoToken: 'synthetic-private-token' };
-const sessions = [{ name: 'FileStation', sid: session.sid, synoToken: session.synoToken }];
+const sessions = { sid: session.sid, synoToken: session.synoToken };
 const origin = 'https://nas.example.test:5001';
 const monitorApis = [
   { method: 'telemetrySystem', api: 'SYNO.Core.System', operation: 'info', path: 'synthetic-system.cgi' },
@@ -194,9 +194,9 @@ for (const descriptor of monitorApis) {
   for (const code of [106, 107, 119, 150]) {
     test(descriptor.method + ' expiration ' + code + ' clears the session and blocks subsequent requests', async () => {
       const context = await authenticated();
-      context.transport.replies.push(bad(code));
+      context.transport.replies.push(bad(code), bad(code));
       await assert.rejects(context.connector[descriptor.method](), isKind(K.SessionExpired, code));
-      assert.equal(context.connector.sessionSnapshot().length, 0);
+      assert.equal(Number(context.connector.sessionSnapshot() !== undefined), 0);
       const requestCount = context.transport.calls.length;
       for (const next of monitorApis) {
         await assert.rejects(context.connector[next.method](), isKind(K.SessionExpired));

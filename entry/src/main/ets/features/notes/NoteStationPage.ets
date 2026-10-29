@@ -27,18 +27,6 @@ export struct NoteStationPage {
     return path.length > 0 ? fileUri.getUriFromPath(path) : '';
   }
   @Builder
-  authentication() {
-    Text('验证笔记访问权限').fontSize(20).fontWeight(FontWeight.Medium)
-    TextInput({ text: this.model.password, placeholder: '当前账号密码' }).type(InputType.Password)
-      .onChange((value: string): void => { this.model.password = value; }).enabled(!this.model.authenticating)
-    if (this.model.needsOtp) {
-      TextInput({ text: this.model.otp, placeholder: '六位动态码' }).type(InputType.Number).maxLength(6)
-        .onChange((value: string): void => { this.model.otp = value; }).enabled(!this.model.authenticating)
-    }
-    Button('验证').enabled(!this.model.authenticating && this.model.password.length > 0).onClick((): void => { this.model.authenticate(); })
-    if (this.model.authenticating) { LoadingProgress().width(32).height(32) }
-  }
-  @Builder
   list() {
     Search({ value: this.model.query, placeholder: '搜索已加载笔记标题' }).onChange((value: string): void => { this.model.query = value; })
     Text('笔记本、标签筛选和标题搜索仅限已加载笔记').fontSize(14).fontColor($r('sys.color.font_secondary'))
@@ -114,11 +102,10 @@ export struct NoteStationPage {
     Row() {
       Scroll(this.scroller) {
         Column({ space: 12 }) {
-          if (this.model.authenticationRequired) { this.authentication() }
-          else if (this.model.selected === undefined) { this.list() } else { this.detail() }
+          if (this.model.selected === undefined) { this.list() } else { this.detail() }
           if (this.model.loading) { LoadingProgress().width(32).height(32) }
           if (this.model.errorText.length > 0) { Text(this.model.errorText).fontColor($r('app.color.workbench_danger')) }
-          Button('在浏览器中管理').buttonStyle(ButtonStyleMode.NORMAL).onClick(this.onManagement)
+          Button($r('app.string.package_open_management')).buttonStyle(ButtonStyleMode.NORMAL).onClick(this.onManagement)
         }.width('100%').alignItems(HorizontalAlign.Start).padding({ top: 12, left: 16, right: 16, bottom: this.bottomInset })
       }.width('100%').height('100%').constraintSize({ maxWidth: 960 }).align(Alignment.Top)
     }.width('100%').height('100%').justifyContent(FlexAlign.Center)

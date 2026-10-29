@@ -244,6 +244,10 @@ export struct WorkbenchEntryRow {
   @Param grid: boolean = false;
   @Param title: string = '';
   @Param subtitle: string = '';
+  @Param gridMetadata: string = '';
+  @Param selecting: boolean = false;
+  @Param selected: boolean = false;
+  @Param selectionAvailable: boolean = true;
   @Param icon: Resource = $r('sys.symbol.doc');
   @Param iconColor: ResourceColor = $r('sys.color.font_secondary');
   @Param available: boolean = true;
@@ -259,40 +263,63 @@ export struct WorkbenchEntryRow {
   @Event onOpen: () => void = (): void => {};
   @Event onAction: () => void = (): void => {};
   @Local private pressed: boolean = false;
+  @Local private thumbnailFailed: boolean = false;
   @Event onLongPress: () => void = (): void => {};
+  @Event onSelect: () => void = (): void => {};
+
+  @Monitor('thumbnail')
+  private thumbnailChanged(): void { this.thumbnailFailed = false; }
 
   build() {
     if (this.grid) {
-      Column({ space: 4 }) {
+      Stack({ alignContent: Alignment.Top }) {
         Button() {
-          Column({ space: 8 }) {
-            if (this.thumbnail.length > 0) {
-              Image(this.thumbnail).width(64).height(64).objectFit(ImageFit.Cover).borderRadius(12)
-                .geometryTransition(this.transitionId)
-            } else {
-              WorkbenchIconTile({ icon: this.icon, iconSize: 40, tileSize: 64, iconColor: this.iconColor })
-            }
+          Column({ space: 4 }) {
+            Stack() {
+              if (this.thumbnail.length > 0 && !this.thumbnailFailed) {
+                Image(this.thumbnail).width('100%').aspectRatio(1).objectFit(ImageFit.Cover).borderRadius(8)
+                  .geometryTransition(this.transitionId)
+                  .onError((): void => { this.thumbnailFailed = true; })
+              } else {
+                SymbolGlyph(this.icon).fontSize('48vp').fontColor([this.iconColor]).accessibilityLevel('no')
+              }
+            }.width('100%').constraintSize({ maxWidth: 64 }).height(64).margin({ bottom: 4 })
             Text(this.title).fontSize(14).fontColor($r('sys.color.font_primary')).maxLines(2)
+              .lineHeight('18fp').constraintSize({ minHeight: '36fp' })
               .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%').textAlign(TextAlign.Center)
-            Text(this.subtitle).fontSize(12).fontColor($r('sys.color.font_secondary')).maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-          }.width('100%')
-        }.type(ButtonType.Normal).backgroundColor(Color.Transparent).width('100%').layoutWeight(1)
+            Text(this.gridMetadata).fontSize(12).lineHeight('14fp')
+              .fontColor($r('sys.color.font_secondary')).maxLines(2).constraintSize({ minHeight: '14fp' })
+              .textAlign(TextAlign.Center).width('100%').textOverflow({ overflow: TextOverflow.Ellipsis })
+          }.width('100%').padding({ top: 8, bottom: 8 })
+        }.type(ButtonType.Normal).padding(0).backgroundColor(Color.Transparent).width('100%')
           .enabled(this.available).onClick(this.onOpen).gesture(LongPressGesture().onAction(this.onLongPress))
-        if (this.menu.length > 0) {
-          Button() { SymbolGlyph($r('sys.symbol.ellipsis_circle')).fontSize(22).fontColor([$r('sys.color.icon_secondary')]) }
-            .width(48).height(48).backgroundColor(Color.Transparent).bindMenu(this.menu).enabled(this.menuAvailable)
-            .accessibilityText(this.title + '，操作菜单')
+          .accessibilityText(this.title)
+        if (this.selecting) {
+          Row() {
+            Stack({ alignContent: Alignment.BottomEnd }) {
+              Checkbox().select(this.selected).width(24).height(24)
+                .responseRegion({ x: -12, y: -12, width: 48, height: 48 })
+                .enabled(this.selectionAvailable).accessibilityText(this.title)
+                .onChange((value: boolean): void => { if (value !== this.selected) { this.onSelect(); } })
+            }.width('100%').constraintSize({ maxWidth: 64 }).height(64).hitTestBehavior(HitTestMode.Transparent)
+          }.width('100%').margin({ top: 8 }).justifyContent(FlexAlign.Center).hitTestBehavior(HitTestMode.Transparent)
         }
-      }.width('100%').height(220).padding(12).borderRadius(16).backgroundColor($r('app.color.workbench_surface'))
+      }.width('100%')
     } else {
     Column() {
       Row() {
+        if (this.selecting) {
+          Checkbox().select(this.selected).width(24).height(24).margin({ left: 16, right: 0 })
+            .responseRegion({ x: -12, y: -12, width: 48, height: 48 })
+            .enabled(this.selectionAvailable).accessibilityText(this.title)
+            .onChange((value: boolean): void => { if (value !== this.selected) { this.onSelect(); } })
+        }
         Button() {
           Row({ space: 12 }) {
-            if (this.thumbnail.length > 0) {
+            if (this.thumbnail.length > 0 && !this.thumbnailFailed) {
               Image(this.thumbnail).width(40).height(40).objectFit(ImageFit.Cover).borderRadius(8)
                 .geometryTransition(this.transitionId)
+                .onError((): void => { this.thumbnailFailed = true; })
                 .accessibilityLevel('no')
             } else {
               WorkbenchIconTile({ icon: this.icon, iconSize: 22, tileSize: 40, tileRadius: 12,
@@ -328,7 +355,7 @@ export struct WorkbenchEntryRow {
       if (this.showDivider) {
         Divider().color($r('app.color.workbench_divider')).margin({ left: this.contentInset + 52, right: 16 })
       }
-    }.width('100%').backgroundColor($r('app.color.workbench_surface'))
+    }.width('100%')
     }
   }
 }

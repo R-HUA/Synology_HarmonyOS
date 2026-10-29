@@ -100,6 +100,7 @@ async function fixture(options = {}) {
     '../control/SystemControlModel': { SystemControlModel: class { deactivate() {} async open(_context, _connector, _origin, _tls, validate) { this.validate = validate; } } },
     '../extensions/NasExtensionsModel': { NasExtensionsModel: class { recordsReady = true; pending = []; busy = false; async attach() {} reset() {} } },
     '../packages/PackageCatalogModel': { PackageCatalogModel: class { attach() {} reset() {} } },
+    '../packages/OfficialWebModel': { OfficialWebModel: class { attach() {} reset() {} close() {} } },
     '../containers/ContainerModel': { ContainerModel: class { attach() {} reset() {} } },
     '../cloudsync/CloudSyncModel': { CloudSyncModel: class { attach() {} reset() {} } },
     '../systemlogs/SystemLogModel': { SystemLogModel: class { attach() {} reset() {} } },
