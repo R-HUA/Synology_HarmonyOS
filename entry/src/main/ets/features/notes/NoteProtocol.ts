@@ -14,22 +14,23 @@ function unique(ids: string[]): void {
   if (new Set(ids).size !== ids.length) { throw new NasFailure(NasErrorKind.Protocol, '笔记条目标识重复。'); }
 }
 export function decodeNotebooks(data: Object): NoteFolder[] {
-  const result = readArray(data['notebooks']).map((value: Object): NoteFolder => {
+  const result = readArray(Array.isArray(data) ? data : data['notebooks']).map((value: Object): NoteFolder => {
     const row = nasRecord(value); return { id: readId(row['object_id']), title: readText(row['title']) || '未命名笔记本' };
   }); unique(result.map((row: NoteFolder): string => row.id)); return result;
 }
 export function decodeNoteTags(data: Object): NoteFolder[] {
-  const result = readArray(data['tags']).map((value: Object): NoteFolder => {
+  const result = readArray(Array.isArray(data) ? data : data['tags']).map((value: Object): NoteFolder => {
     const row = nasRecord(value), name = readId(row['tag_name']); return { id: name, title: name };
   }); unique(result.map((row: NoteFolder): string => row.id)); return result;
 }
 function summary(row: Record<string, Object>): NoteSummary {
+  const tag = row['tag'];
   return { id: readId(row['object_id']), title: readText(row['title']) || '未命名笔记',
     notebook: row['parent_id'] === undefined ? '' : readId(row['parent_id']),
-    tags: row['tag'] === undefined ? [] : readArray(row['tag']).map((value: Object): string => readId(value)) };
+    tags: tag === undefined || tag === null || tag === '' ? [] : (Array.isArray(tag) ? tag : [tag]).map((value: Object): string => readId(value)) };
 }
 export function decodeNotes(data: Object, offset: number): NotePage {
-  const rows = readArray(data['notes']);
+  const rows = readArray(Array.isArray(data) ? data : data['notes']);
   if (rows.length > 100) { throw new NasFailure(NasErrorKind.Protocol, '笔记列表超过单次读取范围。'); }
   const items = rows.map((value: Object): NoteSummary => summary(nasRecord(value))); unique(items.map((item: NoteSummary): string => item.id));
   const total = readNumber(data['total']);

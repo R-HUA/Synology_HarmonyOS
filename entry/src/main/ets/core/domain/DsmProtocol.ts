@@ -197,6 +197,11 @@ export function dsmFailure(api: string, code: number): NasFailure {
 
 /** HTTP 成功与业务成功分别校验；不向 UI 传播原始响应或敏感数据。 */
 export function decodeNasResponse(api: string, status: number, text: string): Record<string, Object> {
+  return nasRecord(decodeNasResponseData(api, status, text));
+}
+
+/** 列表型 data 与对象型 data 共用相同的 HTTP、业务错误及信封校验。 */
+export function decodeNasResponseData(api: string, status: number, text: string): Object {
   if (status >= 300 && status < 400) { throw new NasFailure(NasErrorKind.Http, '服务器要求跳转，请直接填写最终的 HTTPS 地址。', status); }
   if (status !== 200) { throw new NasFailure(NasErrorKind.Http, '服务器 HTTP 请求失败（' + status.toString() + '）。', status); }
   let parsed: Object;
@@ -214,7 +219,8 @@ export function decodeNasResponse(api: string, status: number, text: string): Re
   }
   if (envelope['error'] !== undefined) { throw protocolError(); }
   // 登出和上传的空 success 响应是公开合同的一部分。
-  return envelope['data'] === undefined ? {} : nasRecord(envelope['data']);
+  const data = envelope['data'];
+  return data === undefined ? {} : Array.isArray(data) ? data : nasRecord(data);
 }
 
 export function decodeCapabilities(data: Record<string, Object>): NasApiDescriptor[] {

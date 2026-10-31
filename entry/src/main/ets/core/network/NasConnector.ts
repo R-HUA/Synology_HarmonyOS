@@ -1042,9 +1042,9 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
    * 传输、会话失效与代际校验只保留一份实现，解码器可替换：
    * Drive 需要在解析入口做保精度预处理，并使用自己的错误码语义。
    */
-  private async callWith(name: string, version: number, method: string, parameters: NasFormField[],
-    decode: (api: string, status: number, text: string) => Record<string, Object>,
-    invalidateExpired: boolean = true): Promise<Record<string, Object>> {
+  private async callWith<T>(name: string, version: number, method: string, parameters: NasFormField[],
+    decode: (api: string, status: number, text: string) => T,
+    invalidateExpired: boolean = true): Promise<T> {
     this.ensureOpen();
     const ticket = this.generation;
     const revision = this.sessions.revision();

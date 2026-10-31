@@ -65,6 +65,22 @@ test('note lists use separate notebook and tag identities and title-only filteri
   assert.doesNotMatch(JSON.stringify(detail), /<p>|attachment":/);
 });
 
+test('notes accept direct list data and scalar tags without masking malformed records', () => {
+  assert.equal(p.decodeNotebooks([{ object_id: 'book-id', title: '笔记本' }])[0].id, 'book-id');
+  assert.equal(p.decodeNoteTags([{ tag_name: '标签' }])[0].id, '标签');
+  for (const tag of [undefined, null, '', [], '标签', ['标签']]) {
+    const page = p.decodeNotes([{ ...note, tag }], 0);
+    assert.deepEqual(plain(page.items[0].tags), tag === '标签' || Array.isArray(tag) && tag.length ? ['标签'] : []);
+    assert.equal(page.more, false);
+  }
+  assert.deepEqual(plain(p.decodeNoteDetail({ ...note, tag: '标签' }, note.object_id).item.tags), ['标签']);
+  assert.equal(p.decodeNotes(Array.from({ length: 100 }, (_, i) => ({ ...note, object_id: String(i) })), 0).more, true);
+  assert.throws(() => p.decodeNotes({}, 0), error => error.kind === dsm.NasErrorKind.Protocol);
+  assert.throws(() => p.decodeNotes([{ ...note, tag: {} }], 0), error => error.kind === dsm.NasErrorKind.Protocol);
+  assert.throws(() => p.decodeNotes([{ ...note, object_id: undefined }], 0), error => error.kind === dsm.NasErrorKind.Protocol);
+  assert.throws(() => p.decodeNotes([note, note], 0), error => error.kind === dsm.NasErrorKind.Protocol);
+});
+
 test('native note blocks preserve basic formats and reject unsafe links or external image loads', () => {
   const body = p.parseNoteBody('<h2>标题</h2><p>普通 <strong>加粗</strong> <em>斜体</em> <a href="https://example.test/a">链接</a> <a href="javascript:alert(1)">无效</a></p><ol><li>第一项</li><li>第二项</li></ol><img ref="image-ref" src="https://private.example/image"><img src="https://remote.example/a" alt="外链图片"><table><tr><td>复杂内容</td></tr></table><script>secret()</script>', detail.attachments);
   const spans = body.blocks.flatMap(x => x.spans), text = spans.map(x => x.text).join('');
@@ -87,7 +103,7 @@ test('attachment ownership includes note, file, version and metadata', () => {
 
 async function fixture(binary) {
   const calls = [], replies = [], descriptors = {};
-  for (const name of ['SYNO.API.Auth', 'SYNO.FileStation.List', 'SYNO.NoteStation.Note', 'SYNO.NoteStation.Notebook', 'SYNO.NoteStation.Tag']) {
+  for (const name of ['SYNO.API.Auth', 'SYNO.DSM.Info', 'SYNO.FileStation.List', 'SYNO.NoteStation.Note', 'SYNO.NoteStation.Notebook', 'SYNO.NoteStation.Tag']) {
     descriptors[name] = { path: 'entry.cgi', minVersion: 1, maxVersion: 99, requestFormat: 'JSON' };
   }
   const connector = new NasConnector({ async post(...args) { calls.push(args); assert.ok(replies.length, 'missing reply'); return replies.shift(); },
@@ -110,12 +126,33 @@ test('notes share the primary session and keep their fixed read methods', async 
   assert.doesNotMatch(f.calls.map(x => x[1]).join(' '), /method=(?:init|set|create|delete|edit|check)/);
 });
 
+test('direct note list envelopes reach the module decoder with exact identifiers and normal error classification', async () => {
+  const f = await fixture();
+  f.replies.push({ status: 200, text: '{"success":true,"data":[{"object_id":9007199254740993,"title":"笔记","tag":"标签"}]}' });
+  const page = await f.connector.readNotes('list', '', 0, x => p.decodeNotes(x, 0));
+  assert.equal(page.items[0].id, '9007199254740993'); assert.deepEqual(plain(page.items[0].tags), ['标签']);
+  assert.equal(f.connector.capabilitySnapshots().find(x => x.feature === 'noteList').state, 'available');
+  assert.equal(f.calls.length, 2);
+  f.replies.push(ok([{ object_id: 'book-id', title: '笔记本' }]));
+  assert.equal((await f.connector.readNotes('notebooks', '', 0, p.decodeNotebooks))[0].id, 'book-id');
+  f.replies.push(ok([{ tag_name: '标签' }]));
+  assert.equal((await f.connector.readNotes('tags', '', 0, p.decodeNoteTags))[0].id, '标签');
+  f.replies.push(ok([note]));
+  await assert.rejects(f.connector.readNotes('detail', note.object_id, 0, x => p.decodeNoteDetail(x, note.object_id)), error => error.kind === dsm.NasErrorKind.Protocol);
+  const arrayReply = JSON.stringify({ success: true, data: [] });
+  assert.throws(() => dsm.decodeNasResponse('SYNO.FileStation.List', 200, arrayReply), error => error.kind === dsm.NasErrorKind.Protocol);
+  assert.throws(() => common.decodeReadOnlyResponse('SYNO.Docker.Container', 200, arrayReply), error => error.kind === dsm.NasErrorKind.Protocol);
+  assert.throws(() => common.decodeReadOnlyResponse('SYNO.NoteStation.Note', 200, JSON.stringify({ success: false, error: { code: 105 }, data: [] })), error => error.kind === dsm.NasErrorKind.Permission);
+  assert.throws(() => common.decodeReadOnlyResponse('SYNO.NoteStation.Note', 503, arrayReply), error => error.kind === dsm.NasErrorKind.Http);
+});
+
 test('note rejection rechecks primary authentication and preserves the account on network failure', async () => {
   for (const proof of ['valid', 'network', 'expired']) {
     const f = await fixture();
-    f.replies.push(bad(107), proof === 'valid' ? ok({ synotoken: 'main-token' }) : proof === 'network' ? { status: 503, text: '' } : bad(106));
+    f.replies.push(bad(107), proof === 'valid' ? ok({ model: 'test-nas' }) : proof === 'network' ? { status: 503, text: '' } : bad(106));
     await assert.rejects(f.connector.readNotes('list', '', 0, x => x), x => x.kind === (proof === 'expired' ? dsm.NasErrorKind.SessionExpired : proof === 'network' ? dsm.NasErrorKind.Http : dsm.NasErrorKind.Permission));
     assert.equal(f.connector.sessionSnapshot() !== undefined, proof !== 'expired');
+    assert.equal(new URLSearchParams(f.calls.at(-1)[1]).get('api'), 'SYNO.DSM.Info');
   }
 });
 
@@ -141,7 +178,7 @@ test('missing or rejected attachment authorization cannot invalidate the main se
       prefixText: '{"success":false,"error":{"code":107}}' });
   });
   const download = () => f.connector.downloadNoteAttachment('note', 'version', 'file', { directory: '/cache/uuid', maximumBytes: 100 }, new transfers.NasTransferCancellation());
-  f.replies.push(ok({ synotoken: 'main-token' }));
+  f.replies.push(ok({ model: 'test-nas' }));
   await assert.rejects(download(), x => x.kind === dsm.NasErrorKind.Permission); assert.equal(reads, 1);
   assert.equal(f.connector.sessionSnapshot().sid, 'main-sid');
 });

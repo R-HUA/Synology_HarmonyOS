@@ -64,7 +64,7 @@ async function connectorFixture() {
   const replies = [], calls = [];
   const connector = new NasConnector({ post(...args) { calls.push(args); assert.ok(replies.length); return Promise.resolve(replies.shift()); }, close() {} });
   const descriptors = {};
-  for (const name of ['SYNO.API.Auth', 'SYNO.FileStation.List', 'SYNO.Docker.Container', 'SYNO.Docker.Container.Log', 'SYNO.Docker.Container.Resource']) {
+  for (const name of ['SYNO.API.Auth', 'SYNO.DSM.Info', 'SYNO.FileStation.List', 'SYNO.Docker.Container', 'SYNO.Docker.Container.Log', 'SYNO.Docker.Container.Resource']) {
     descriptors[name] = { path: 'suite/entry.cgi', minVersion: 1, maxVersion: name === 'SYNO.API.Auth' ? 6 : 99, requestFormat: 'JSON' };
   }
   replies.push(ok(descriptors)); await connector.discover('https://nas.example');
@@ -93,12 +93,13 @@ test('suite session rejection retains the main session unless protected main rea
   for (const proof of ['valid', 'network', 'expired']) {
     const f = await connectorFixture();
     f.replies.push(bad(107));
-    if (proof === 'valid') f.replies.push(ok({ shares: [], total: 0, offset: 0 }));
+    if (proof === 'valid') f.replies.push(ok({ model: 'test-nas' }));
     else if (proof === 'network') f.replies.push({ status: 503, text: '' });
     else f.replies.push(bad(106));
     await assert.rejects(f.connector.readContainers('list', '', p.decodeContainers), error =>
       error.kind === (proof === 'expired' ? dsm.NasErrorKind.SessionExpired : proof === 'network' ? dsm.NasErrorKind.Http : dsm.NasErrorKind.Permission));
     assert.equal(Number(f.connector.sessionSnapshot() !== undefined), proof === 'expired' ? 0 : 1);
+    assert.equal(new URLSearchParams(f.calls.at(-1)[1]).get('api'), 'SYNO.DSM.Info');
   }
 });
 

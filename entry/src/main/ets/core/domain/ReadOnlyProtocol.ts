@@ -1,13 +1,13 @@
-import { decodeNasResponse, NasErrorKind, NasFailure } from './DsmProtocol';
+import { decodeNasResponse, decodeNasResponseData, NasErrorKind, NasFailure } from './DsmProtocol';
 
 export const READ_WINDOW_BYTES: number = 512 * 1024;
 export const READ_WINDOW_ROWS: number = 500;
 
 /** 不透明整数在 JSON 解析前转为字符串，不能先舍入再恢复身份。 */
-export function decodeReadOnlyResponse(api: string, status: number, text: string): Record<string, Object> {
+export function decodeReadOnlyResponse(api: string, status: number, text: string): Object {
   const precise = text.replace(/"(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g,
     (token: string): string => /^-?\d{16,}$/.test(token) && !Number.isSafeInteger(Number(token)) ? '"' + token + '"' : token);
-  return decodeNasResponse(api, status, precise);
+  return api.startsWith('SYNO.NoteStation.') ? decodeNasResponseData(api, status, precise) : decodeNasResponse(api, status, precise);
 }
 
 export function readId(value: Object | undefined): string {

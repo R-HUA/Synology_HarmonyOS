@@ -104,8 +104,9 @@ export class NoteModel {
     finally { if (revision === this.detailRevision) { this.detailLoading = false; } }
   }
   private async failure(error: Error, operation: string): Promise<string> {
-    hilog.error(0, 'NasNotes', 'operation=%{public}s kind=%{public}d code=%{public}d', operation,
-      error instanceof NasFailure ? error.kind : -1, error instanceof NasFailure ? error.code : -1);
+    hilog.error(0, 'NasNotes', 'operation=%{public}s kind=%{public}d code=%{public}d reason=%{public}s', operation,
+      error instanceof NasFailure ? error.kind : -1, error instanceof NasFailure ? error.code : -1,
+      error instanceof NasFailure && error.kind === NasErrorKind.Protocol ? error.message : '');
     if (error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) { await this.onExpired(error); }
     return error instanceof NasFailure ? error.message : '笔记读取失败，请重试。';
   }
