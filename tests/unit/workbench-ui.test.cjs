@@ -14,6 +14,22 @@ const { photoGridColumns, photoTimelineRows, photoTakenDate, photoMediaLabel,
   workbenchUsageLevel, workbenchRelativeDate, workbenchProtocolHint,
   workbenchFileGridColumns, workbenchFileGridMetadata } = moduleFixture.exports;
 const plain = value => JSON.parse(JSON.stringify(value));
+
+test('HDS can invoke the transfer mini bar with no receiver while it retains the page and current task state', () => {
+  const page = fs.readFileSync(path.join(__dirname, '../../entry/src/main/ets/pages/Index.ets'), 'utf8');
+  const expression = page.match(/miniBar: (this\.hasTransferMiniBar\(\) \? \{[\s\S]*?\} : undefined),/)[1];
+  const configure = vm.runInNewContext(ts.transpileModule(`(function() { return ${expression}; })`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None }
+  }).outputText, { HdsBarStyle: { EXPAND: 1 }, HdsBarLayoutMode: { VERTICAL: 1 } });
+  const rendered = [];
+  const view = { active: true, taskCount: 1, hasTransferMiniBar() { return this.active; },
+    transferMiniBar() { assert.equal(this, view); rendered.push(this.taskCount); } };
+  const bar = configure.call(view);
+  bar.miniBarBuilder.call(undefined);
+  view.taskCount = 2; bar.miniBarBuilder.call({});
+  assert.deepEqual(rendered, [1, 2]);
+  view.active = false; assert.equal(configure.call(view), undefined);
+});
 const item = (id, year, month) => ({ id, space: 0, filename: '照片.jpg', bytes: 12, mediaType: 'photo',
   ...(year === undefined ? {} : { takenAt: new Date(year, month - 1, 15, 12).getTime() / 1000 }) });
 

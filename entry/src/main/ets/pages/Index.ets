@@ -3085,7 +3085,7 @@ struct Index {
                 .barOverlap(true).vertical(false)
                 .barFloatingStyle({ barBottomMargin: this.floatingBarBottomMargin(),
                   adaptToHandedness: true,
-                  miniBar: this.hasTransferMiniBar() ? { miniBarBuilder: this.transferMiniBar,
+                  miniBar: this.hasTransferMiniBar() ? { miniBarBuilder: (): void => { this.transferMiniBar(); },
                     miniBarStyle: HdsBarStyle.EXPAND, barLayoutMode: HdsBarLayoutMode.VERTICAL } : undefined,
                   systemMaterialEffect: this.navigationMaterial, thermoCtrl: true })
                 .onContentWillChange((current: number, target: number): boolean => target === this.activeTab || !this.navigationBusy())
