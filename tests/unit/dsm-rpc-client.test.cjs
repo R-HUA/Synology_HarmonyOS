@@ -53,3 +53,51 @@ test('discovery remains a single unauthenticated POST and transport failure neve
   await assert.rejects(client.request('https://nas.example', descriptor, 2, 'create', []), error => error === failure);
   assert.equal(calls.length, 2);
 });
+
+test('saved-session validation accepts the protected DSM read even when Auth token rejects the same session', async () => {
+  const { NasConnector } = require('../../work/core-build/network/NasConnector.js');
+  const calls = [], session = { sid: 'saved-session', synoToken: 'saved-token' };
+  const connector = new NasConnector({
+    async post(address, body, authorization) {
+      calls.push([address, body, authorization]);
+      const api = new URLSearchParams(body).get('api');
+      if (api === 'SYNO.API.Info') {
+        return { status: 200, text: JSON.stringify({ success: true, data: {
+          'SYNO.API.Auth': { path: 'auth.cgi', minVersion: 1, maxVersion: 7 },
+          'SYNO.DSM.Info': { path: 'entry.cgi', minVersion: 2, maxVersion: 2 }
+        } }) };
+      }
+      if (api === 'SYNO.API.Auth') { return { status: 200, text: '{"success":false,"error":{"code":400}}' }; }
+      assert.equal(api, 'SYNO.DSM.Info');
+      return { status: 200, text: '{"success":true,"data":{"model":"Synthetic NAS"}}' };
+    }, close() {}
+  });
+  await connector.discover('https://nas.example'); connector.restoreSession(session);
+  await connector.validateSession();
+  assert.deepEqual(connector.sessionSnapshot(), session);
+  assert.equal(calls[1][0], 'https://nas.example/webapi/entry.cgi');
+  assert.deepEqual(Object.fromEntries(new URLSearchParams(calls[1][1])), { api: 'SYNO.DSM.Info', version: '2', method: 'getinfo' });
+  assert.deepEqual(calls[1][2], session);
+  assert.equal(calls.length, 2);
+});
+
+test('only an explicit primary-session rejection clears authorization; failed reads do not retry or request a password', async () => {
+  const { NasConnector } = require('../../work/core-build/network/NasConnector.js');
+  for (const code of [119, 150, 105, 400]) {
+    const calls = [], session = { sid: 'saved-session', synoToken: 'saved-token' };
+    const connector = new NasConnector({
+      async post(address, body) {
+        const fields = Object.fromEntries(new URLSearchParams(body)); calls.push(fields);
+        return { status: 200, text: JSON.stringify(fields.api === 'SYNO.API.Info' ? { success: true, data: {
+          'SYNO.API.Auth': { path: 'entry.cgi', minVersion: 6, maxVersion: 7 },
+          'SYNO.DSM.Info': { path: 'entry.cgi', minVersion: 2, maxVersion: 2 }
+        } } : { success: false, error: { code } }) };
+      }, close() {}
+    });
+    await connector.discover('https://nas.example'); connector.restoreSession(session);
+    await assert.rejects(connector.validateSession(), error => error.code === code && !/密码/.test(error.message));
+    assert.deepEqual(connector.sessionSnapshot(), [119, 150].includes(code) ? undefined : session);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[1], { api: 'SYNO.DSM.Info', version: '2', method: 'getinfo' });
+  }
+});

@@ -175,7 +175,7 @@ export struct ShareLinksPage {
                 Column({ space: 2 }) {
                   Text(link.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
                     .width('100%').maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-                  Text((link.hasPassword ? '口令保护 · ' : '无需口令 · ') + this.stateText(link.status))
+                  Text((link.hasPassword ? '口令保护，' : '无需口令，') + this.stateText(link.status))
                     .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
                 }.layoutWeight(1).alignItems(HorizontalAlign.Start)
                 SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(WorkbenchMetrics.rowArrowSize)

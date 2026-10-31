@@ -1,0 +1,7 @@
+{
+  "name": "nas-workbench-checks",
+  "private": true,
+  "scripts": {
+    "lint:design": "node scripts/lint-design.cjs"
+  }
+}

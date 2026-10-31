@@ -1,10 +1,9 @@
 import { common } from '@kit.AbilityKit';
-import { deviceInfo } from '@kit.BasicServicesKit';
 import { ComponentContent, curves, DrawableDescriptor, LengthMetrics, SymbolGlyphModifier, uiMaterial, window,
   ToolBarV2, ToolBarV2Item, ToolBarV2ItemText, ToolBarV2ItemState, ToolBarV2SymbolGlyph } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileUri } from '@kit.CoreFileKit';
-import { HdsNavigation, HdsSideBar, HdsNavigationTitleMode, HdsNavDestination, HdsTabs, HdsTabsController, hdsMaterial, SystemMaterialParams, IconStyleMode, TextStyleMode, ScrollEffectType, HdsNavigationMenuItemOptions, HdsSnackBar, SnackBarOperationType } from '@kit.UIDesignKit';
+import { HdsNavigation, HdsSideBar, HdsNavigationTitleMode, HdsNavDestination, HdsTabs, HdsTabsController, SystemMaterialParams, IconStyleMode, TextStyleMode, ScrollEffectType, HdsNavigationMenuItemOptions, HdsSnackBar, SnackBarOperationType } from '@kit.UIDesignKit';
 import { NasFailure, NasFileEntry } from '../core/domain/DsmProtocol';
 import { DriveEntry, DriveEntryKind, DriveView, driveViewLabel } from '../core/domain/DriveProtocol';
 import { DriveUploadReview, DriveTransferModePicker } from '../features/drive/DriveTransferUi';
@@ -28,7 +27,7 @@ import { PhotoBackupSettingsPage } from '../features/backup/PhotoBackupSettingsP
 import { TransferQueue, TransferUploadSource } from '../features/transfers/TransferQueue';
 import { DriveTransferModel } from '../features/drive/DriveTransferModel';
 import { TransferLiveView } from '../features/tasks/TransferLiveView';
-import { TaskScope, taskRecords, taskEnded } from '../core/domain/TaskPresentation';
+import { TaskScope, TaskRecordView, taskRecords, taskEnded } from '../core/domain/TaskPresentation';
 import { DownloadSubmitResult } from '../core/domain/DownloadSubmitResult';
 import { TaskPage } from '../features/tasks/TaskPage';
 import { TaskPageState } from '../features/tasks/TaskPageState';
@@ -47,7 +46,7 @@ import { CloudSyncPage } from '../features/cloudsync/CloudSyncPage';
 import { SystemLogPage } from '../features/systemlogs/SystemLogPage';
 import { NoteStationPage } from '../features/notes/NoteStationPage';
 import { NasTelemetrySummary, NasTelemetryStorageCard, NasTelemetryDashboard } from '../features/telemetry/TelemetryDashboard';
-import { photoTakenDate, workbenchBytes,
+import { photoTakenDate, workbenchBytes, workbenchShortcutColumns,
   workbenchCanUseDestination, workbenchBottomInset,
   connectionRouteLabel, workbenchProtocolHint } from '../features/workbench/WorkbenchPresentation';
 import { bundledDeviceArtwork, fallbackDeviceArtwork, hasModelArtwork, deviceArtworkPath } from '../features/workbench/NasDeviceArtwork';
@@ -62,6 +61,9 @@ import { WorkbenchSettings } from '../features/workbench/WorkbenchSettings';
 import { FileStationPage } from '../features/files/FileStationPage';
 import { DriveModulePage } from '../features/drive/DriveModulePage';
 import { DriveBrowserModel } from '../features/drive/DriveBrowserModel';
+import { ImmersiveMaterials } from '../platform/ImmersiveMaterials';
+import { serviceUpdatedTime } from '../features/workbench/ServicePresentation';
+import { HdsBarStyle, HdsBarLayoutMode } from '@kit.UIDesignKit';
 import { PhotoModulePage } from '../features/photos/PhotoModulePage';
 import type { PhotoLibrarySection } from '../features/photos/PhotoLibrary';
 
@@ -150,6 +152,7 @@ struct Index {
   private cloudSyncScroller: Scroller = new Scroller();
   private systemLogsScroller: Scroller = new Scroller();
   private notesScroller: Scroller = new Scroller();
+  private notesDetailScroller: Scroller = new Scroller();
   private telemetryScroller: Scroller = new Scroller();
   private addressBookScroller: Scroller = new Scroller();
   private systemControlScroller: Scroller = new Scroller();
@@ -200,7 +203,6 @@ struct Index {
   @Local private backup: PhotoUpload = new PhotoUpload();
   @Local private contentWidth: number = 360;
   @Local private windowWidth: number = 360;
-  @Local private windowHeight: number = 800;
   @Local private deviceInfo: string[] = [];
   @Local private rootTasks: TaskPageState = new TaskPageState('root');
   @Local private fileTasks: TaskPageState = new TaskPageState('files');
@@ -216,17 +218,17 @@ struct Index {
    * 半模态背板的沉浸式系统材质。官方《开启沉浸光感》给半模态/弹窗的推荐档位就是 ULTRA_THICK。
    * 注意材质层在 backgroundColor 之下，所以背板要设成透明色，否则材质被不透明背景盖住看不见。
    */
-  private sheetMaterial: uiMaterial.Material =
-    new uiMaterial.ImmersiveMaterial({ style: uiMaterial.ImmersiveStyle.ULTRA_THICK });
+  private sheetMaterial: uiMaterial.Material | undefined = ImmersiveMaterials.SHEET_ULTRA_THICK;
   /** 设备是否支持 ImmersiveMaterial；不支持时退回不透明背板，避免得到一块全透明的弹层。 */
-  private sheetMaterialAvailable: boolean = uiMaterial.isImmersiveMaterialSupported();
+  private sheetMaterialAvailable: boolean = ImmersiveMaterials.supported;
   @Local private photoDestinationMode: 'album' | 'copy' | 'move' | 'backup' = 'album';
   @Local private photoBatchDestination: boolean = false;
   @Local private photoFolderTrail: PhotoFolder[] = [];
   /** 未收录型号联网取回的产品图路径；为空时用内置图。 */
   @Local private deviceArtworkPath: string = '';
-  private readonly artworkSize: number = 64;
+  private readonly artworkSize: number = 88;
   private navStack: NavPathStack = new NavPathStack();
+  private loginScroller: Scroller = new Scroller();
   private homeScroller: Scroller = new Scroller();
   private filesScroller: ListScroller = new ListScroller();
   private driveScrollers: ListScroller[] = [new ListScroller(), new ListScroller(), new ListScroller(), new ListScroller(),
@@ -242,16 +244,7 @@ struct Index {
 
   aboutToAppear(): void {
     this.pageActive = true;
-    if (deviceInfo.apiAvailable('26.0.0')) {
-      if (hdsMaterial.getSystemMaterialTypes().includes(hdsMaterial.MaterialType.IMMERSIVE)) {
-        this.navigationMaterial = { materialType: hdsMaterial.MaterialType.IMMERSIVE,
-          materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE };
-      } else {
-        this.navigationMaterial = undefined;
-      }
-    } else {
-      this.navigationMaterial = undefined;
-    }
+    this.navigationMaterial = ImmersiveMaterials.HDS_ADAPTIVE_EFFECT;
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
     this.abilityContext = context;
     this.preferences.load(context);
@@ -262,15 +255,20 @@ struct Index {
     this.transferNotificationOpened();
     this.updateTelemetryMode();
     this.restoreSession(context);
-    window.getLastWindow(context).then((mainWindow: window.Window): void => {
-      if (!this.pageActive) { return; }
+    const windowName = this.getUIContext().getWindowName();
+    if (windowName === undefined) {
+      hilog.error(0x0000, 'NasLayout', 'operation=window_lookup result=missing');
+    } else {
+      try {
+      const mainWindow = window.findWindow(windowName);
       this.mainWindow = mainWindow;
       this.normalWindowFullScreen = mainWindow.getWindowProperties().isLayoutFullScreen;
       this.navigationInset = this.getUIContext().px2vp(mainWindow.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR).bottomRect.height);
       this.statusInset = this.getUIContext().px2vp(mainWindow.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM).topRect.height);
       mainWindow.on('avoidAreaChange', this.navigationAreaChanged);
       if (this.photoPreviewOpened) { this.updatePhotoPreviewWindow(); }
-    }).catch((): void => { hilog.error(0x0000, 'NasLayout', 'operation=navigation_avoid_area result=failed'); });
+      } catch { hilog.error(0x0000, 'NasLayout', 'operation=navigation_avoid_area result=failed'); }
+    }
   }
   aboutToDisappear(): void {
     this.closeTitleMenu();
@@ -514,17 +512,24 @@ struct Index {
   }
 
   private selectionToolbarItem(label: Resource, icon: Resource, action: FileSelectionAction | 'more'): ToolBarV2Item {
+    return this.toolbarButton(label, icon, this.fileSelectionActionAllowed(action), (): void => {
+      if (action === 'more') { this.selectionMenuVisible = true; } else { this.fileSelectionAction(action); }
+    });
+  }
+
+  private toolbarButton(label: Resource, icon: Resource, available: boolean, action: () => void): ToolBarV2Item {
     return new ToolBarV2Item({ content: new ToolBarV2ItemText({ text: label }),
       icon: new ToolBarV2SymbolGlyph({ normal: new SymbolGlyphModifier(icon) }),
-      state: this.fileSelectionActionAllowed(action) ? ToolBarV2ItemState.ENABLE : ToolBarV2ItemState.DISABLE,
-      action: (_index: number): void => {
-        if (action === 'more') { this.selectionMenuVisible = true; }
-        else { this.fileSelectionAction(action); }
-      } });
+      state: available ? ToolBarV2ItemState.ENABLE : ToolBarV2ItemState.DISABLE, action: (_index: number): void => { action(); } });
+  }
+
+  private photoSelectionActive(): boolean {
+    return this.model.authenticated && this.module === 'photos' && this.model.photoLibrary.selecting && this.navStack.size() === 0;
   }
 
   @Builder
   fileSelectionToolbar() {
+    if (this.photoSelectionActive()) { this.photoSelectionBar() } else {
     ToolBarV2({ toolBarList: [
       this.selectionToolbarItem($r('app.string.file_selection_share'), $r('sys.symbol.share'), 'share'),
       this.selectionToolbarItem($r('app.string.file_selection_copy'), $r('sys.symbol.square_and_square'), 'copy'),
@@ -533,6 +538,7 @@ struct Index {
     ] }).bindMenu(this.selectionMenuVisible, this.fileSelectionMenu(), {
       placement: Placement.TopRight, onDisappear: (): void => { this.selectionMenuVisible = false; }
     })
+    }
   }
 
   @Builder
@@ -757,7 +763,7 @@ struct Index {
   }
 
   private activeScrollers(): Scroller[] {
-    if (!this.model.authenticated) { return [this.homeScroller]; }
+    if (!this.model.authenticated) { return [this.loginScroller]; }
     if (this.module === 'drive') { return [this.driveScrollerFor(this.driveTabId)]; }
     if (this.module === 'photos') { return [this.photoTabId === 'transfers' ? this.photoTasksScroller : this.photoScrollerFor(this.photoTabId)]; }
     return [this.activeTab === 1 ? this.filesScroller : this.activeTab === ROOT_TASK_TAB ? this.taskCategoryScrollers[this.rootTasks.categoryIndex] :
@@ -795,10 +801,33 @@ struct Index {
     });
   }
 
+  private serviceSubtitle(name: string): ResourceStr {
+    const timestamp = name === 'containers' ? this.model.containers.checkedAt :
+      name === 'cloud-sync' ? this.model.cloudSync.checkedAt : name === 'notes' ? this.model.notes.checkedAt : this.model.systemLogs.checkedAt;
+    return timestamp > 0 ? $r('app.string.service_updated', serviceUpdatedTime(timestamp)) : '';
+  }
+
+  private serviceMenu(name: string): HdsNavigationMenuItemOptions[] {
+    const loading = name === 'containers' ? this.model.containers.loading || this.model.containers.detailLoading :
+      name === 'cloud-sync' ? this.model.cloudSync.loading || this.model.cloudSync.detailLoading :
+        name === 'notes' ? this.model.notes.loading || this.model.notes.detailLoading : this.model.systemLogs.loading;
+    return [{ content: { icon: $r('sys.symbol.arrow_clockwise'), label: this.previewText($r('app.string.service_refresh')), type: IconStyleMode.SMALL, isEnabled: !loading,
+      action: (): void => {
+        if (name === 'containers') {
+          if (this.model.containers.selected === undefined) { this.model.containers.refresh(); } else { this.model.containers.refreshDetail(); }
+        } else if (name === 'cloud-sync') {
+          if (this.model.cloudSync.selected === undefined) { this.model.cloudSync.refresh(); } else { this.model.cloudSync.refreshDetail(); }
+        } else if (name === 'notes') {
+          if (this.model.notes.selected === undefined) { this.model.notes.refresh(); } else { this.model.notes.refreshDetail(); }
+        } else { this.model.systemLogs.refresh(); }
+      } } }];
+  }
+
   private bottomInset(): number {
     if (this.fileSelectionActive()) { return 16; }
     if (this.module === 'photos' && this.model.photoLibrary.selecting) { return 16; }
-    return this.windowWidth >= 600 ? this.navigationInset + 16 : workbenchBottomInset(this.floatingBarBottomMargin());
+    return this.windowWidth >= 840 ? this.navigationInset + 16 :
+      workbenchBottomInset(this.floatingBarBottomMargin(), 56 + (this.hasTransferMiniBar() ? 56 : 0));
   }
 
   /** 页签位置与滚动末尾占位共用底距，避免无导航指示条时互相脱节。 */
@@ -809,12 +838,41 @@ struct Index {
 
   /** 内容区延伸到标题栏之下，首项需要让出状态栏与单行标题栏的高度。 */
   private contentTopInset(): number {
-    return this.statusInset + 56 + (this.activeTransferCount() > 0 ? 44 : 0);
+    return this.statusInset + 56 + (this.activeTransferCount() > 0 && !this.hasTransferMiniBar() ? 44 : 0);
   }
 
   private activeTransferCount(): number {
     return taskRecords('root', this.model.queue.items, this.model.driveTransfers.items, this.model.fileTasks, this.model.driveActions.items)
       .filter((record): boolean => !taskEnded(record.state)).length;
+  }
+
+  private hasTransferMiniBar(): boolean {
+    return this.model.authenticated && this.windowWidth < 840 && this.activeTransferCount() > 0 &&
+      !this.fileSelectionActive() && !(this.module === 'photos' && this.model.photoLibrary.selecting);
+  }
+
+  private currentTransfer(): TaskRecordView | undefined {
+    return taskRecords('root', this.model.queue.items, this.model.driveTransfers.items, this.model.fileTasks, this.model.driveActions.items)
+      .find((record: TaskRecordView): boolean => !taskEnded(record.state));
+  }
+
+  @Builder
+  transferMiniBar() {
+    Button() {
+      Row({ space: 12 }) {
+        if (this.currentTransfer()?.progress !== undefined) {
+          Progress({ value: this.currentTransfer()?.progress ?? 0, total: 100, type: ProgressType.Ring }).width(28).height(28)
+        } else { SymbolGlyph($r('sys.symbol.arrow_down_circle')).fontSize(24).fontColor([$r('sys.color.icon_emphasize')]) }
+        Column({ space: 2 }) {
+          Text($r('app.string.global_transfer_count', this.activeTransferCount())).fontSize(14).fontColor($r('sys.color.font_primary'))
+          if (this.currentTransfer()?.bytesPerSecond !== undefined) {
+            Text($r('app.string.transfer_speed_value', workbenchBytes(this.currentTransfer()?.bytesPerSecond ?? 0)))
+              .fontSize(12).fontColor($r('sys.color.font_secondary'))
+          }
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      }.width('100%').padding({ left: 16, right: 16 })
+    }.width('100%').height(56).padding(0).type(ButtonType.Normal).backgroundColor(Color.Transparent)
+      .onClick((): void => { this.showAllTasks(); })
   }
 
   @Monitor('observedQueue.items', 'observedDriveTransfers.items', 'model.authenticated')
@@ -854,32 +912,14 @@ struct Index {
   @Builder
   transferCapsule() {
     Row() {
-    if (this.model.authenticated && this.activeTransferCount() > 0) {
+    if (this.model.authenticated && this.activeTransferCount() > 0 && !this.hasTransferMiniBar()) {
       Button($r('app.string.global_transfer_count', this.activeTransferCount()))
         .height(40).buttonStyle(ButtonStyleMode.TEXTUAL).borderRadius(20)
         .backgroundColor($r('app.color.workbench_accent_surface'))
         .onClick((): void => { this.showAllTasks(); })
     }
-    }.width('100%').height(this.model.authenticated && this.activeTransferCount() > 0 ? 40 : 0)
+    }.width('100%').height(this.model.authenticated && this.activeTransferCount() > 0 && !this.hasTransferMiniBar() ? 40 : 0)
       .justifyContent(FlexAlign.Center).hitTestBehavior(HitTestMode.Transparent)
-  }
-
-  /** 未登录时隐藏了标题栏，顶部只需让出状态栏。 */
-  private loginTopInset(): number {
-    return this.statusInset + 8;
-  }
-
-  /** 登录页没有悬浮页签，底部不必预留页签高度。 */
-  private loginBottomInset(): number {
-    return Math.max(0, this.navigationInset) + 16;
-  }
-
-  /**
-   * 登录页内容的居中基准：视口高度。内容比它矮时被居中，比它高时自动撑开并可滚动，
-   * 键盘顶起窗口后仍然成立。
-   */
-  private loginMinHeight(): number {
-    return Math.max(0, this.windowHeight - this.loginTopInset() - this.loginBottomInset());
   }
 
   private confirmLogout(): void {
@@ -1331,7 +1371,7 @@ struct Index {
   private showTitleMenuError(message: string): void {
     if (!this.pageActive) { return; }
     try { this.getUIContext().getPromptAction().showToast({ message: message,
-      systemMaterial: new uiMaterial.ImmersiveMaterial({ style: uiMaterial.ImmersiveStyle.REGULAR }) }); }
+      systemMaterial: ImmersiveMaterials.POPUP_MENU_THICK }); }
     catch { hilog.error(0x0000, 'NasWorkbench', 'operation=menu_feedback result=failed'); }
   }
 
@@ -1455,15 +1495,14 @@ struct Index {
         }.margin({ top: 24 })
       }
     }.width('100%').height('100%').justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
-      .padding({ left: WorkbenchMetrics.pageMargin * 2, right: WorkbenchMetrics.pageMargin * 2,
-        top: this.statusInset + 8, bottom: this.loginBottomInset() })
+      .padding({ left: WorkbenchMetrics.pageMargin * 2, right: WorkbenchMetrics.pageMargin * 2 })
   }
 
   /** 登录页按地址识别协议，仅保留证书校验选项。 */
   @Builder
   loginView() {
     Column() {
-      Scroll(this.homeScroller) {
+      Scroll(this.loginScroller) {
         Column({ space: 16 }) {
           Column({ space: 12 }) {
             if (this.applicationIcon !== undefined) {
@@ -1547,20 +1586,30 @@ struct Index {
             }
           }.width('100%').padding(16).borderRadius(WorkbenchMetrics.cardRadius)
             .backgroundColor($r('app.color.workbench_surface')).alignItems(HorizontalAlign.Start)
+          if (this.model.errorText.length > 0) {
+            Row({ space: 8 }) {
+              SymbolGlyph($r('sys.symbol.exclamationmark_circle')).fontSize(20)
+                .fontColor([$r('app.color.workbench_danger')]).accessibilityLevel('no')
+              Text(this.model.errorText).fontSize(14).fontColor($r('app.color.workbench_danger'))
+                .layoutWeight(1).id('login-error-message')
+            }.width('100%').alignItems(VerticalAlign.Top).padding({ left: 8, right: 8 })
+          }
           Button(this.model.busy ? '正在登录…' : '登录')
             .width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize })
             .margin({ top: 16 })
             .enabled(!this.model.busy && this.model.address.trim().length > 0 &&
               this.model.account.trim().length > 0 && this.model.password.length > 0)
             .onClick((): void => { this.submitLogin(); })
-          this.notices()
-        }.width('100%').constraintSize({ maxWidth: 560, minHeight: Math.max(0, this.loginMinHeight() - 112) })
-          .justifyContent(FlexAlign.Center)
+          if (this.model.savedSession) {
+            Button($r('app.string.connection_restore_retry')).buttonStyle(ButtonStyleMode.TEXTUAL)
+              .width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).enabled(!this.model.busy)
+              .onClick((): void => { this.model.restore(); })
+          }
+        }.width('100%').constraintSize({ maxWidth: 560 })
           .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin, top: 16, bottom: 16 })
           .alignItems(HorizontalAlign.Start)
-      }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
+      }.width('100%').layoutWeight(1).scrollBar(BarState.Auto).align(Alignment.Center)
     }.width('100%').height('100%')
-      .padding({ top: this.loginTopInset(), bottom: this.loginBottomInset() })
   }
 
   @Builder
@@ -1568,11 +1617,11 @@ struct Index {
     Button() {
       Column({ space: 8 }) {
         WorkbenchIconTile({ icon: icon, iconSize: 26, tileSize: 48, tileRadius: 12,
-          iconColor: $r('sys.color.icon_emphasize'), tileColor: $r('app.color.workbench_accent_surface') })
+          iconColor: $r('sys.color.icon_emphasize'), tileColor: $r('sys.color.comp_background_tertiary') })
         Text(label).fontSize(14).fontColor($r('sys.color.font_primary')).textAlign(TextAlign.Center)
           .width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       }.width('100%').padding({ top: 12, bottom: 12, left: 4, right: 4 })
-    }.width('20%').constraintSize({ minWidth: '64fp' }).flexGrow(1).flexShrink(0)
+    }.width('100%')
       .type(ButtonType.Normal).padding(0).backgroundColor(Color.Transparent).enabled(!this.navigationBusy())
       .onClick(action).accessibilityText(label)
   }
@@ -1580,10 +1629,15 @@ struct Index {
   /** 首页设备区：直接落在页面底色上，不用白底卡片，上下留白压到最小。 */
   @Builder
   deviceHeader() {
+    Button() {
     Row({ space: 12 }) {
       Column({ space: 2 }) {
-        Text(this.routeLabel()).fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%')
-          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        Row({ space: 8 }) {
+          Text(this.routeLabel()).fontSize(12).fontColor($r('sys.color.font_secondary'))
+            .padding({ left: 8, right: 8, top: 4, bottom: 4 }).borderRadius(8).backgroundColor($r('app.color.workbench_subtle'))
+          Text(this.model.useHttps ? 'HTTPS' : 'HTTP').fontSize(12).fontColor($r('sys.color.font_secondary'))
+            .padding({ left: 8, right: 8, top: 4, bottom: 4 }).borderRadius(8).backgroundColor($r('app.color.workbench_subtle'))
+        }.width('100%')
         Row({ space: 6 }) {
           Text(this.model.deviceTitle).fontSize(24).fontWeight(FontWeight.Bold)
             .fontColor($r('sys.color.font_primary')).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -1593,7 +1647,8 @@ struct Index {
         }.width('100%').alignItems(VerticalAlign.Center)
       }.layoutWeight(1).alignItems(HorizontalAlign.Start)
       this.deviceArtwork()
-    }.width('100%').padding({ left: 8, top: 4, bottom: 12 }).enabled(!this.model.busy)
+    }.width('100%').padding({ left: 8, top: 4, bottom: 12 })
+    }.width('100%').type(ButtonType.Normal).backgroundColor(Color.Transparent).padding(0).enabled(!this.model.busy)
       .onClick((): void => { this.showDeviceInfo(); })
       .accessibilityText(this.routeLabel() + '，' + this.model.deviceTitle + '，查看设备信息')
   }
@@ -1618,26 +1673,30 @@ struct Index {
   homeDeviceColumn() {
     Column({ space: WorkbenchMetrics.sectionGap }) {
         this.deviceHeader()
-        Flex({ wrap: FlexWrap.Wrap }) {
+        GridRow({ columns: workbenchShortcutColumns(this.contentWidth), gutter: 8 }) {
           if (driveTabs((view: DriveView): boolean => this.model.drive.supportsView(view), this.drivePinned).length > 0) {
+            GridCol() {
             this.shortcut($r('sys.symbol.folder'), $r('app.string.home_drive'), (): void => {
               this.driveTabId = 'mydrive'; this.driveMoreView = ''; this.enterModule('drive');
             })
+            }
           }
           if (this.supportsPhotos()) {
+            GridCol() {
             this.shortcut($r('sys.symbol.picture'), $r('app.string.home_photos'), (): void => {
               this.photoTabId = 'photos'; this.photoMoreShared = false; this.enterModule('photos');
             })
+            }
           }
-          if (this.model.supports('SYNO.DownloadStation.Task')) {
-            this.shortcut($r('sys.symbol.arrow_down_circle'), $r('app.string.home_downloads'),
-              (): void => { this.openNasDownloads(); })
-          }
+          GridCol() {
           this.shortcut($r('sys.symbol.square_grid_2x2'), $r('app.string.package_catalog'),
             (): void => { this.navStack.pushPathByName('packages', undefined); })
+          }
+          GridCol() {
           this.shortcut($r('sys.symbol.ellipsis_circle'), $r('app.string.more_features'),
             (): void => { this.navStack.pushPathByName('more-features', undefined); })
-        }.width('100%')
+          }
+        }.width('100%').onAreaChange((_old: Area, area: Area): void => { this.contentWidth = Number(area.width); })
     }.width('100%')
   }
 
@@ -1657,7 +1716,7 @@ struct Index {
   homeView() {
     Scroll(this.homeScroller) {
       Column({ space: WorkbenchMetrics.sectionGap }) {
-        if (this.windowWidth >= 600) {
+        if (this.windowWidth >= 840) {
           Row({ space: 16 }) {
             Column() { this.homeDeviceColumn() }.layoutWeight(1)
             Column() { this.homeMonitorColumn() }.layoutWeight(1)
@@ -1675,21 +1734,22 @@ struct Index {
 
   @Builder
   settingsDeviceHeading() {
-    WorkbenchSectionTitle({ title: this.previewText($r('app.string.settings_device_group')) })
+    Text($r('app.string.settings_device_group')).fontSize(14).fontWeight(FontWeight.Medium)
+      .fontColor($r('sys.color.font_secondary')).width('100%').padding({ left: 16, bottom: 8 })
   }
 
   @Builder
   settingsAppHeading() {
-    WorkbenchSectionTitle({ title: this.previewText($r('app.string.app_settings_title')) })
+    Text($r('app.string.app_settings_title')).fontSize(14).fontWeight(FontWeight.Medium)
+      .fontColor($r('sys.color.font_secondary')).width('100%').padding({ left: 16, top: 8, bottom: 8 })
   }
 
   @Builder
   settingsView() {
     List({ scroller: this.settingsScroller, space: WorkbenchMetrics.sectionGap }) {
-        ListItem() { this.settingsDeviceHeading() }
-        ListItemGroup({ style: ListItemGroupStyle.CARD }) {
+        ListItemGroup({ header: this.settingsDeviceHeading, style: ListItemGroupStyle.CARD }) {
           ListItem() {
-            WorkbenchActionRow({ icon: $r('sys.symbol.externaldrive'), label: '设备信息', description: this.model.account,
+            WorkbenchActionRow({ icon: $r('sys.symbol.externaldrive'), label: '设备信息', value: this.model.account,
               available: !this.model.busy, onAction: (): void => { this.showDeviceInfo(); } })
           }
           ListItem() {
@@ -1704,8 +1764,7 @@ struct Index {
           }
         }.divider({ strokeWidth: 1, color: $r('app.color.workbench_divider'), startMargin: 68, endMargin: 16 })
           .width('100%').margin({ left: 0, right: 0 })
-        ListItem() { this.settingsAppHeading() }
-        ListItemGroup({ style: ListItemGroupStyle.CARD }) {
+        ListItemGroup({ header: this.settingsAppHeading, style: ListItemGroupStyle.CARD }) {
           ListItem() {
             WorkbenchActionRow({ icon: $r('sys.symbol.rectangle_split_3x1'), label: '模块底栏',
               description: this.previewText($r('app.string.settings_module_tabs_hint')),
@@ -1720,7 +1779,7 @@ struct Index {
           }
           ListItem() {
             WorkbenchActionRow({ icon: $r('sys.symbol.trash'), label: this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.cache_title').id),
-              description: workbenchBytes(this.preferences.cacheBytes), available: !this.preferences.busy,
+              value: workbenchBytes(this.preferences.cacheBytes), available: !this.preferences.busy,
               onAction: (): void => {
                 this.getUIContext().showAlertDialog({ title: $r('app.string.cache_clear'), message: $r('app.string.cache_confirm'),
                   primaryButton: { value: $r('app.string.action_cancel'), action: (): void => {} },
@@ -2283,18 +2342,14 @@ struct Index {
 
   @Builder
   photoSelectionBar() {
-    Row({ space: 4 }) {
-      Button($r('app.string.preview_share')).layoutWeight(1).buttonStyle(ButtonStyleMode.TEXTUAL)
-        .enabled(this.photoCan('share')).onClick((): void => { this.photoAction('share'); })
-      Button($r('app.string.preview_album')).layoutWeight(1).buttonStyle(ButtonStyleMode.TEXTUAL)
-        .enabled(this.photoCan('album')).onClick((): void => { this.openPhotoDestination('album'); })
-      Button($r('app.string.preview_delete')).layoutWeight(1).buttonStyle(ButtonStyleMode.TEXTUAL)
-        .enabled(this.photoCan('delete')).onClick((): void => { this.deletePhotoSelection(); })
-      Button($r('app.string.photos_more')).layoutWeight(1).buttonStyle(ButtonStyleMode.TEXTUAL).id('photos-selection-menu')
-        .enabled(this.model.photoLibrary.selectedKeys.length > 0 && !this.model.photoLibrary.selectionBusy && !this.model.extensions.busy)
-        .onClick((): void => { this.openPhotoSelectionMenu(); })
-    }.width('100%').constraintSize({ minHeight: 56 }).padding({ left: 8, right: 8, bottom: this.navigationInset })
-      .backgroundColor($r('app.color.workbench_surface'))
+    ToolBarV2({ toolBarList: [
+      this.toolbarButton($r('app.string.preview_share'), $r('sys.symbol.share'), this.photoCan('share'), (): void => { this.photoAction('share'); }),
+      this.toolbarButton($r('app.string.preview_album'), $r('sys.symbol.picture'), this.photoCan('album'), (): void => { this.openPhotoDestination('album'); }),
+      this.toolbarButton($r('app.string.preview_delete'), $r('sys.symbol.trash'), this.photoCan('delete'), (): void => { this.deletePhotoSelection(); }),
+      this.toolbarButton($r('app.string.photos_more'), $r('sys.symbol.more'),
+        this.model.photoLibrary.selectedKeys.length > 0 && !this.model.photoLibrary.selectionBusy && !this.model.extensions.busy,
+        (): void => { this.openPhotoSelectionMenu(); })
+    ] }).id('photos-selection-menu')
   }
 
   private openPhotoDestination(mode: 'album' | 'copy' | 'move' | 'backup'): void {
@@ -2444,8 +2499,7 @@ struct Index {
           action: (): void => { if (this.driveSelecting) { this.cancelDriveSelection(); } else { this.exitDriveSearch(); } } },
           title: { mainTitle: this.driveSelecting ? this.fileSelectionTitle() : $r('app.string.drive_search_title') },
           menu: { value: this.driveSelecting ? this.pageMenu() : [] } },
-          style: { systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE,
-            materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE },
+          style: { systemMaterialEffect: this.navigationMaterial,
             scrollEffectOpts: { enableScrollEffect: true, scrollEffectType: ScrollEffectType.GRADIENT_BLUR } } })
         .bindToScrollable([this.driveSearchScroller])
         .toolbarConfiguration(this.fileSelectionToolbar, { barStyle: BarStyle.STANDARD }).hideToolBar(!this.driveSelecting)
@@ -2480,7 +2534,7 @@ struct Index {
         .backgroundColor(Color.Transparent).hideTitleBar(!this.photoControlsVisible)
         .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: this.model.driveOriginal.entry?.name || '原图' },
           menu: { value: this.previewMenus('drive'), maxCount: 2 } },
-          style: { systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE } } })
+          style: { systemMaterialEffect: this.navigationMaterial } })
         .onHidden((): void => {
           this.photoPreviewOpened = false; this.photoControlsVisible = true; this.updatePhotoPreviewWindow();
           if (!this.navStack.getAllPathName().includes('drive-original')) { this.model.driveOriginal.close(); }
@@ -2504,7 +2558,7 @@ struct Index {
       }.backgroundColor(Color.Transparent).hideTitleBar(!this.photoControlsVisible)
         .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: this.model.fileOriginal.fileEntry?.name ?? '' },
           menu: { value: this.previewMenus('file'), maxCount: 2 } },
-          style: { systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE } } })
+          style: { systemMaterialEffect: this.navigationMaterial } })
         .onShown((): void => { this.photoPreviewOpened = true; this.photoControlsVisible = true; this.updatePhotoPreviewWindow(); })
         .onHidden((): void => {
           this.photoPreviewOpened = false; this.photoControlsVisible = true; this.updatePhotoPreviewWindow();
@@ -2523,6 +2577,7 @@ struct Index {
     } else if (name === 'more-features') {
       HdsNavDestination() {
         MoreFeaturesPage({ scroller: this.moreFeaturesScroller, bottomInset: this.navigationInset + 16,
+          showDownloads: this.model.supports('SYNO.DownloadStation.Task'),
           onManagement: (): void => { this.openPackageManagement(); },
           onOpen: (destination: string): void => {
             if (destination === 'nas-downloads') { this.openNasDownloads(); }
@@ -2543,7 +2598,8 @@ struct Index {
       }
         .backgroundColor($r('app.color.workbench_background'))
         .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL },
-          title: { mainTitle: $r('app.string.more_feature_containers') } } })
+          title: { mainTitle: $r('app.string.more_feature_containers'), subTitle: this.serviceSubtitle('containers') }, menu: { value: this.serviceMenu('containers') } },
+          style: { systemMaterialEffect: this.navigationMaterial, scrollEffectOpts: { enableScrollEffect: true, scrollEffectType: ScrollEffectType.GRADIENT_BLUR } } })
         .bindToScrollable([this.containersScroller])
         .onBackPressed((): boolean => this.model.containers.back())
         .onShown((): void => { this.packageDestination = 'containers'; this.updatePackageVisibility(); this.updateTelemetryMode(); })
@@ -2555,7 +2611,8 @@ struct Index {
       }
         .backgroundColor($r('app.color.workbench_background'))
         .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL },
-          title: { mainTitle: $r('app.string.more_feature_cloud_sync') } } })
+          title: { mainTitle: $r('app.string.more_feature_cloud_sync'), subTitle: this.serviceSubtitle('cloud-sync') }, menu: { value: this.serviceMenu('cloud-sync') } },
+          style: { systemMaterialEffect: this.navigationMaterial, scrollEffectOpts: { enableScrollEffect: true, scrollEffectType: ScrollEffectType.GRADIENT_BLUR } } })
         .bindToScrollable([this.cloudSyncScroller])
         .onBackPressed((): boolean => this.model.cloudSync.back())
         .onShown((): void => { this.packageDestination = 'cloud-sync'; this.updatePackageVisibility(); this.updateTelemetryMode(); })
@@ -2567,20 +2624,23 @@ struct Index {
       }
         .backgroundColor($r('app.color.workbench_background'))
         .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL },
-          title: { mainTitle: $r('app.string.more_feature_system_logs') } } })
+          title: { mainTitle: $r('app.string.more_feature_system_logs'), subTitle: this.serviceSubtitle('system-logs') }, menu: { value: this.serviceMenu('system-logs') } },
+          style: { systemMaterialEffect: this.navigationMaterial, scrollEffectOpts: { enableScrollEffect: true, scrollEffectType: ScrollEffectType.GRADIENT_BLUR } } })
         .bindToScrollable([this.systemLogsScroller])
         .onBackPressed((): boolean => this.model.systemLogs.back())
         .onShown((): void => { this.packageDestination = 'system-logs'; this.updatePackageVisibility(); this.updateTelemetryMode(); })
         .onHidden((): void => { this.model.systemLogs.setVisible(false); if (this.packageDestination === 'system-logs') { this.packageDestination = ''; } this.updateTelemetryMode(); })
     } else if (name === 'notes') {
       HdsNavDestination() {
-        NoteStationPage({ model: this.model.notes, scroller: this.notesScroller, bottomInset: this.navigationInset + 16,
+        NoteStationPage({ model: this.model.notes, scroller: this.notesScroller, detailScroller: this.notesDetailScroller,
+          wide: this.windowWidth >= 840, bottomInset: this.navigationInset + 16,
           onManagement: (): void => { this.openPackageManagement(); } })
       }
         .backgroundColor($r('app.color.workbench_background'))
         .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL },
-          title: { mainTitle: $r('app.string.more_feature_notes') } } })
-        .bindToScrollable([this.notesScroller])
+          title: { mainTitle: $r('app.string.more_feature_notes'), subTitle: this.serviceSubtitle('notes') }, menu: { value: this.serviceMenu('notes') } },
+          style: { systemMaterialEffect: this.navigationMaterial, scrollEffectOpts: { enableScrollEffect: true, scrollEffectType: ScrollEffectType.GRADIENT_BLUR } } })
+        .bindToScrollable([this.notesScroller, this.notesDetailScroller])
         .onBackPressed((): boolean => this.model.notes.back())
         .onShown((): void => { this.packageDestination = 'notes'; this.updatePackageVisibility(); this.updateTelemetryMode(); })
         .onHidden((): void => { this.model.notes.setVisible(false); if (this.packageDestination === 'notes') { this.packageDestination = ''; } this.updateTelemetryMode(); })
@@ -2654,8 +2714,7 @@ struct Index {
         // 内容需滚入标题栏下方，供沉浸材质取样；首项让位由详情页按实际视口位置计算。
         .titleBar({ enableComponentSafeArea: false, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: '资源监控' } },
           style: { scrollEffectOpts: { enableScrollEffect: false, scrollEffectType: ScrollEffectType.GRADIENT_BLUR },
-            systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE,
-              materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE },
+            systemMaterialEffect: this.navigationMaterial,
             originalStyle: { backgroundStyle: { blurRadius: 12, maskExtraHeight: 16 },
               contentStyle: { titleStyle: { mainTitleColor: $r('sys.color.font_primary') } } } } })
         .bindToScrollable([this.telemetryScroller])
@@ -2670,8 +2729,7 @@ struct Index {
       }
         .backgroundColor($r('app.color.workbench_background'))
         .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: $r('app.string.connection_addresses') } },
-          style: { systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE,
-            materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE },
+          style: { systemMaterialEffect: this.navigationMaterial,
             scrollEffectOpts: { enableScrollEffect: true, scrollEffectType: ScrollEffectType.GRADIENT_BLUR } } })
         .bindToScrollable([this.addressBookScroller])
         .onShown((): void => { this.addressBookOpened = true; this.updateTelemetryMode(); })
@@ -2706,7 +2764,7 @@ struct Index {
         .titleBar({ enableComponentSafeArea: false, avoidLayoutSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL },
           menu: { value: this.previewMenus('photos'), maxCount: 2 } },
           style: { scrollEffectOpts: { enableScrollEffect: false, scrollEffectType: ScrollEffectType.IMMERSIVE_GRADIENT_BLUR },
-            systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE },
+            systemMaterialEffect: this.navigationMaterial,
             originalStyle: { backgroundStyle: { blurRadius: 12, maskExtraHeight: 16 },
               contentStyle: { menuStyle: { textColor: $r('sys.color.font_primary'), iconColor: $r('sys.color.font_primary') } } } } })
         .onShown((): void => {
@@ -2733,7 +2791,7 @@ struct Index {
       }.backgroundColor($r('app.color.workbench_background'))
         // 滚动内容延伸到标题材质下方，首项仅补足视口尚未让出的标题区域。
         .titleBar({ enableComponentSafeArea: false, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL }, title: { mainTitle: $r('app.string.photos_album_backup') } },
-          style: { systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE },
+          style: { systemMaterialEffect: this.navigationMaterial,
             scrollEffectOpts: { enableScrollEffect: true, scrollEffectType: ScrollEffectType.GRADIENT_BLUR } } })
         .bindToScrollable([this.photoBackupScroller])
         .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
@@ -2744,7 +2802,7 @@ struct Index {
           $r('app.string.preview_photo_task') : this.photoDestinationMode === 'album' ? $r('app.string.preview_album') :
             this.photoDestinationMode === 'backup' ? $r('app.string.photos_backup_location') :
               this.photoDestinationMode === 'move' ? $r('app.string.photos_move') : $r('app.string.preview_copy') } },
-          style: { systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE, materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE } } })
+          style: { systemMaterialEffect: this.navigationMaterial } })
     }
   }
 
@@ -2832,8 +2890,8 @@ struct Index {
           .onSelect((index: number): void => {
             this.model.setSort(this.model.fileSort as 'name' | 'size' | 'mtime', index === 1);
           })
-          .systemMaterial(uiMaterial.Material.empty)
-          .menuSystemMaterial(new uiMaterial.ImmersiveMaterial({ style: uiMaterial.ImmersiveStyle.THICK }))
+          .systemMaterial(ImmersiveMaterials.PLAIN)
+          .menuSystemMaterial(ImmersiveMaterials.POPUP_MENU_THICK)
       } else {
         Row().width(WorkbenchMetrics.touchSize).height(32)
       }
@@ -2872,8 +2930,8 @@ struct Index {
         }
       }.width('100%').padding({ left: 16, right: 16, top: WorkbenchMetrics.infoCardPadding, bottom: WorkbenchMetrics.infoCardPadding })
         .borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_subtle'))
-      Button('退出当前账号').constraintSize({ minHeight: 48 }).width('100%').buttonStyle(ButtonStyleMode.TEXTUAL)
-        .fontColor($r('app.color.workbench_danger')).enabled(!this.model.busy).onClick((): void => { this.confirmLogout(); })
+      Button($r('app.string.device_logout')).constraintSize({ minHeight: 48 }).width('100%').buttonStyle(ButtonStyleMode.NORMAL)
+        .role(ButtonRole.ERROR).enabled(!this.model.busy).onClick((): void => { this.confirmLogout(); })
     }.width('100%').alignItems(HorizontalAlign.Start)
   }
 
@@ -2984,8 +3042,7 @@ struct Index {
           }
         },
         style: {
-          systemMaterialEffect: { materialType: hdsMaterial.MaterialType.ADAPTIVE,
-            materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE }
+          systemMaterialEffect: this.navigationMaterial
         }
       })
   }
@@ -3008,20 +3065,15 @@ struct Index {
           } else {
             this.sharedInboxCard()
             if (this.model.authenticated) {
-              if (this.windowWidth >= 600 && !(this.module === 'photos' && this.model.photoLibrary.selecting)) {
+              if (this.windowWidth >= 840) {
                 ForEach([this.module + ':' + this.activeTab.toString()], (_key: string): void => {
-                HdsSideBar({ isShowSideBar: true, sideBarWidth: this.windowWidth >= 840 ? 200 : 88,
+                HdsSideBar({ isShowSideBar: !this.photoSelectionActive(), sideBarWidth: 200,
                   minSideBarWidth: 88, maxSideBarWidth: 200, minContentWidth: 360,
                   autoHide: false, scaleContentEnabled: true, sideBarContainerType: SideBarContainerType.Embed,
                   sideBarColor: $r('app.color.workbench_surface'), contentColor: $r('app.color.workbench_background'),
                   sideBarPanelBuilder: (): void => { this.sideBarPanel(); },
                   contentPanelBuilder: (): void => { this.sideBarContent(); } }).width('100%').layoutWeight(1)
                 }, (key: string): string => key)
-              } else if (this.module === 'photos' && this.model.photoLibrary.selecting) {
-                Column() {
-                  this.modulePage(this.visibleTabs()[this.activeTab])
-                }.width('100%').layoutWeight(1)
-                this.photoSelectionBar()
               } else {
                 HdsTabs({ controller: this.tabsController, index: this.activeTab }) {
                 ForEach(this.visibleTabs(), (tab: ModuleTab): void => {
@@ -3029,9 +3081,12 @@ struct Index {
                     .tabBar(new BottomTabBarStyle({ normal: new SymbolGlyphModifier(this.tabIcon(tab.id)) }, tab.label))
                 }, (tab: ModuleTab): string => this.module + ':' + tab.id)
               }.width('100%').layoutWeight(1).barPosition(BarPosition.End).scrollable(false)
-                .barHeight(this.fileSelectionActive() ? 0 : 56)
+                .barHeight(this.fileSelectionActive() || this.photoSelectionActive() ? 0 : 56)
                 .barOverlap(true).vertical(false)
                 .barFloatingStyle({ barBottomMargin: this.floatingBarBottomMargin(),
+                  adaptToHandedness: true,
+                  miniBar: this.hasTransferMiniBar() ? { miniBarBuilder: this.transferMiniBar,
+                    miniBarStyle: HdsBarStyle.EXPAND, barLayoutMode: HdsBarLayoutMode.VERTICAL } : undefined,
                   systemMaterialEffect: this.navigationMaterial, thermoCtrl: true })
                 .onContentWillChange((current: number, target: number): boolean => target === this.activeTab || !this.navigationBusy())
                 .onTabBarClick((index: number): void => {
@@ -3043,12 +3098,13 @@ struct Index {
           }
         }.width('100%').height('100%')
           .overlay(this.transferCapsule(), { align: Alignment.Top, offset: { y: this.statusInset + 56 } })
-      }.width('100%').height('100%').backgroundColor($r('app.color.workbench_background')).mode(NavigationMode.Stack)
+      }.width('100%').height('100%').backgroundColor($r('app.color.workbench_background'))
+        .mode(this.model.authenticated && this.windowWidth >= 600 && this.windowWidth < 840 ? NavigationMode.Auto : NavigationMode.Stack)
         .hideBackButton(this.module === 'root' && !this.fileSelectionActive())
         .hideTitleBar(!this.model.authenticated)
-        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], this.model.authenticated ? [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM] : [])
         .navDestination(this.destinationBuilder).bindToScrollable(this.activeScrollers())
-        .toolbarConfiguration(this.fileSelectionToolbar, { barStyle: BarStyle.STANDARD }).hideToolBar(!this.fileSelectionActive())
+        .toolbarConfiguration(this.fileSelectionToolbar, { barStyle: BarStyle.STANDARD }).hideToolBar(!this.fileSelectionActive() && !this.photoSelectionActive())
         .titleMode(HdsNavigationTitleMode.MINI).titleBar({ enableComponentSafeArea: false,
           content: { title: { mainTitle: this.pageTitle() },
             backIcon: this.module === 'root' && !this.fileSelectionActive() ? undefined : { icon: this.navigationBackSymbol(),
@@ -3057,12 +3113,13 @@ struct Index {
           style: { scrollEffectOpts: { enableScrollEffect: true, scrollEffectType: ScrollEffectType.GRADIENT_BLUR },
             systemMaterialEffect: this.navigationMaterial } })
     }.width('100%').height('100%').backgroundColor($r('app.color.workbench_background'))
+      .expandSafeArea([SafeAreaType.SYSTEM], this.model.authenticated ? [] : [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
       .onAreaChange((oldArea: Area, newArea: Area): void => {
         this.windowWidth = Number(newArea.width);
-        this.windowHeight = Number(newArea.height);
       })
       .bindSheet($$this.sheetVisible, this.fileSheet(), {
-        height: this.sheetUsesModalTitleBar() ? SheetSize.LARGE : SheetSize.FIT_CONTENT,
+        height: this.sheetKind === 'device' ? SheetSize.MEDIUM : this.sheetUsesModalTitleBar() ? SheetSize.LARGE : SheetSize.FIT_CONTENT,
+        detents: this.sheetKind === 'device' ? [SheetSize.MEDIUM, SheetSize.LARGE] : undefined,
         preferType: this.windowWidth < 600 ? SheetType.BOTTOM : SheetType.CENTER,
         // 关闭按钮由 sheetTitleBar() 自绘，系统关闭图标关闭，避免出现两个关闭入口。
         // HDS 半模态标题栏自带关闭按钮时关掉系统的那个，避免两个关闭入口。

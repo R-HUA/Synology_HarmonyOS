@@ -163,7 +163,7 @@ export struct DriveActionCard {
         Column({ space: 4 }) {
           Text(this.item.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
             .width('100%').maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-          Text(driveActionText(this.item.action) + ' · ' + driveActionStateText(this.item.state))
+          Text(driveActionText(this.item.action) + '，' + driveActionStateText(this.item.state))
             .fontSize(12).fontColor(this.item.state === 'unknown' || this.item.state === 'failed' ?
               $r('app.color.workbench_danger') : $r('sys.color.font_secondary')).width('100%')
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)

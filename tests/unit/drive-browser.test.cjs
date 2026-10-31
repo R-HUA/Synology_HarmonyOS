@@ -73,7 +73,6 @@ test('tab return preserves folder and search state and ignores a late request fr
 });
 
 for (const [relative, dataSource, view] of [
-  ['features/drive/DriveModulePage.ets', 'this.entries()', V.MyDrive],
   ['features/drive/DriveActionUi.ets', 'this.folders', V.TeamFolders],
 ]) {
   test(`${relative} refreshes row data and captured actions after metadata-only reloads`, async () => {
@@ -113,6 +112,42 @@ for (const [relative, dataSource, view] of [
     }
   });
 }
+
+test('virtual Drive rows retain identity while refreshed metadata and captured actions follow the Repeat item', async () => {
+  const page = fs.readFileSync(path.join(__dirname, '../../entry/src/main/ets/features/drive/DriveModulePage.ets'), 'utf8');
+  const props = page.match(/WorkbenchEntryRow\(([\s\S]*?)\)\.width\('100%'\)/)[1];
+  const keyExpression = page.match(/\.key\(\(entry: DriveEntry\): string => ([^\r\n]+?)\)\.virtualScroll\(\)/)[1];
+  const context = { $r: value => value, DriveEntryKind: drive.DriveEntryKind,
+    workbenchFileGridMetadata: () => '', fileUri: { getUriFromPath: value => value }, interactionFeedback() {} };
+  const compile = text => vm.runInNewContext(ts.transpileModule(text, {
+    compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None }
+  }).outputText, context);
+  const paramsOf = compile(`(function(row) { return ${props}; })`);
+  const keyOf = compile(`(function(entry) { return ${keyExpression}; })`);
+  const calls = [];
+  const ui = { grid: true, selecting: false, selectedIds: [],
+    model: { address: 'https://nas.example:5001', account: 'reader', busy: false,
+      drive: { busy: false, entries: [] }, driveThumbnails: { path: () => '' } },
+    driveRowSubtitle: item => item.name, menuForEntry: () => [], openDriveEntry: item => calls.push(item) };
+  const original = { ...entry('900000000000000001'), name: '旧目录', parent_id: '7', revisions: 1,
+    capabilities: { can_read: true, can_write: true, can_delete: true } };
+  let raw = original;
+  const f = fixture(() => ({ total: 1, items: [raw] }));
+  for (const change of [{ name: '新目录' }, { capabilities: { ...original.capabilities, can_delete: false } },
+    { parent_id: '8' }, { display_path: '另一位置/旧目录' }, { revisions: 2 }]) {
+    raw = original; await f.model.selectView(V.MyDrive); await f.model.reload();
+    const binding = { item: f.model.entries[0], index: 0 };
+    ui.model.drive.entries = f.model.entries;
+    const before = paramsOf.call(ui, binding), key = keyOf.call(ui, binding.item);
+    raw = { ...original, ...change }; await f.model.reload();
+    binding.item = f.model.entries[0]; ui.model.drive.entries = f.model.entries;
+    assert.equal(keyOf.call(ui, binding.item), key);
+    // 运行页面实际参数与回调；这里只验证绑定契约，不替代 ArkUI 设备刷新验收。
+    assert.equal(paramsOf.call(ui, binding).title, binding.item.name);
+    before.onOpen(); assert.equal(calls.at(-1), binding.item);
+    assert.equal(paramsOf.call(ui, binding).available, true);
+  }
+});
 
 test('search paging and folder return preserve the accepted query after a failed replacement', async () => {
   const f = fixture(({ method, fields }) => {

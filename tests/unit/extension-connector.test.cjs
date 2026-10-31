@@ -8,6 +8,7 @@ async function fixture(shareVersion = 3, downloadVersion = 20) {
   const calls = [];
   const responses = [ok({
     'SYNO.API.Auth': { path: 'auth.cgi', minVersion: 1, maxVersion: 6 },
+    'SYNO.DSM.Info': { path: 'entry.cgi', minVersion: 2, maxVersion: 2 },
     'SYNO.FileStation.List': { path: 'entry.cgi', minVersion: 1, maxVersion: 2 },
     'SYNO.FileStation.Sharing': { path: 'entry.cgi', minVersion: shareVersion, maxVersion: shareVersion },
     'SYNO.DownloadStation.Task': { path: 'DownloadStation/task.cgi', minVersion: 1, maxVersion: downloadVersion },
@@ -51,10 +52,10 @@ test('capability reads include schema validation rather than trusting API discov
 
 test('a suite rejection checks the primary session without replaying the operation', async () => {
   const { connector, responses, calls } = await fixture();
-  responses.push({ status: 200, text: '{"success":false,"error":{"code":107}}' }, ok({ synotoken: 'private-token' }));
+  responses.push({ status: 200, text: '{"success":false,"error":{"code":107}}' }, ok({ model: 'Synthetic NAS' }));
   await assert.rejects(connector.extensionRequest('nasDownloads', 'create', []), error => error.kind === K.Permission);
   assert.equal(connector.sessionSnapshot().sid, 'private-sid');
-  assert.deepEqual(calls.slice(1).map(([, body]) => new URLSearchParams(body).get('method')), ['create', 'token']);
+  assert.deepEqual(calls.slice(1).map(([, body]) => new URLSearchParams(body).get('method')), ['create', 'getinfo']);
   responses.push({ status: 200, text: '{"success":false,"error":{"code":119}}' }, { status: 200, text: '{"success":false,"error":{"code":119}}' });
   await assert.rejects(connector.extensionRequest('nasDownloads', 'list', []), error => error.kind === K.SessionExpired);
   assert.equal(connector.sessionSnapshot(), undefined);

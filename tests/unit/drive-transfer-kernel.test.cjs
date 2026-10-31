@@ -24,12 +24,13 @@ async function fixture(options = {}) {
   const bytes = options.bytes === undefined ? 8 : options.bytes;
   const capabilities = {
     'SYNO.API.Auth': { path: 'auth.cgi', minVersion: 1, maxVersion: 6 },
+    'SYNO.DSM.Info': { path: 'entry.cgi', minVersion: 2, maxVersion: 2 },
     'SYNO.SynologyDrive.Files': { path: 'entry.cgi', minVersion: options.minVersion || 1, maxVersion: options.maxVersion || 10 }
   };
   if (options.withoutFiles) { delete capabilities['SYNO.SynologyDrive.Files']; }
   const discovery = []; const calls = [];
   const transport = {
-    async post(address, body) { discovery.push({ address, body }); return new URLSearchParams(body).get('method') === 'token' ? errorReply(119) : ok(capabilities); },
+    async post(address, body) { discovery.push({ address, body }); return new URLSearchParams(body).get('api') === 'SYNO.DSM.Info' ? errorReply(119) : ok(capabilities); },
     close() {},
     transfers: options.withoutTransfers ? undefined : {
       async upload(request, uploadSource, filename, uploadControl) {

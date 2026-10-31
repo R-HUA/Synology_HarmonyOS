@@ -18,6 +18,7 @@ async function fixture(transfers) {
   const connector = new NasConnector(transport);
   replies.push(ok({
     'SYNO.API.Auth': { path: 'auth.cgi', minVersion: 6, maxVersion: 6 },
+    'SYNO.DSM.Info': { path: 'entry.cgi', minVersion: 2, maxVersion: 2 },
     'SYNO.FileStation.List': { path: 'entry.cgi', minVersion: 2, maxVersion: 2 },
     'SYNO.FileStation.Sharing': { path: 'entry.cgi', minVersion: 3, maxVersion: 3 },
     'SYNO.DownloadStation.Task': { path: 'task.cgi', minVersion: 1, maxVersion: 3 },
@@ -69,13 +70,13 @@ test('confirmed primary expiry cancels late successes and network failures from 
 });
 
 test('local suite rejection and failed validation preserve the primary session without replay', async () => {
-  for (const proof of [ok({ synotoken: 'primary-token' }), Promise.reject(new NasFailure(K.Network, 'offline'))]) {
+  for (const proof of [ok({ model: 'Synthetic NAS' }), Promise.reject(new NasFailure(K.Network, 'offline'))]) {
     // Attach the rejection immediately while the first suite response is processed.
     if (proof instanceof Promise) proof.catch(() => {});
     const f = await fixture(); f.replies.push(fail(119), proof);
     await assert.rejects(f.connector.extensionRequest('nasDownloads', 'create', []));
     assert.equal(f.connector.sessionSnapshot().sid, 'primary-sid');
-    assert.deepEqual(f.calls.slice(1).map(x => x.fields.get('method')), ['create', 'token']);
+    assert.deepEqual(f.calls.slice(1).map(x => x.fields.get('method')), ['create', 'getinfo']);
   }
 });
 

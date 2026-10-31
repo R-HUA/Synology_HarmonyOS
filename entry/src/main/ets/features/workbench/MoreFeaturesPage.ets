@@ -4,6 +4,7 @@ import { WorkbenchActionRow, WorkbenchMetrics } from './WorkbenchUi';
 export struct MoreFeaturesPage {
   @Param scroller: Scroller = new Scroller();
   @Param bottomInset: number = 16;
+  @Param showDownloads: boolean = false;
   @Event onManagement: () => void = (): void => {};
   @Event onOpen: (name: string) => void = (): void => {};
 
@@ -23,13 +24,17 @@ export struct MoreFeaturesPage {
           this.feature($r('app.string.more_feature_cloud_sync'), $r('sys.symbol.folder'), 'cloud-sync')
           this.feature($r('app.string.more_feature_system_logs'), $r('sys.symbol.list_bullet'), 'system-logs')
           this.feature($r('app.string.more_feature_notes'), $r('sys.symbol.doc_text'), 'notes')
+          if (this.showDownloads) { this.feature($r('app.string.nas_downloads_title'), $r('sys.symbol.arrow_down_circle'), 'nas-downloads') }
         }.divider({ strokeWidth: 1, color: $r('app.color.workbench_divider'), startMargin: 68, endMargin: 16 })
           .width('100%').margin({ left: 0, right: 0 })
           .borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
-        ListItem() {
-          Button($r('app.string.package_open_management')).buttonStyle(ButtonStyleMode.NORMAL)
-            .width('100%').constraintSize({ minHeight: WorkbenchMetrics.touchSize }).onClick(this.onManagement)
-        }
+        ListItemGroup({ style: ListItemGroupStyle.CARD }) {
+          ListItem() {
+            WorkbenchActionRow({ label: this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.package_open_management').id),
+              icon: $r('sys.symbol.arrow_up_right'), onAction: this.onManagement })
+          }
+        }.width('100%').margin({ left: 0, right: 0 })
+          .borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
       }.width('100%').constraintSize({ maxWidth: 960 }).height('100%')
         .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin })
         .contentStartOffset(12).contentEndOffset(this.bottomInset)

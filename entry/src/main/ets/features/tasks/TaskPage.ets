@@ -193,7 +193,7 @@ export struct TaskPage {
       $r('app.string.task_photo_title') : this.state.scope === 'drive' ? $r('app.string.task_drive_title') : $r('app.string.task_all_tasks');
     const filter = selectedFilter === 'all' ? $r('app.string.task_all') : selectedFilter === 'active' ?
       $r('app.string.task_active') : $r('app.string.task_finished');
-    this.clearScope = this.text(scope) + ' · ' + this.text(filter) + ' · ' + this.text(this.groupTitle(records[0].group));
+    this.clearScope = this.text(scope) + '，' + this.text(filter) + '，' + this.text(this.groupTitle(records[0].group));
     this.clearRecords = records.slice(); this.deleteLocalFiles = false; this.clearVisible = true;
   }
   /** 确认框中的标识集合冻结；每一项仍由业务模型重新检查可移除条件。 */

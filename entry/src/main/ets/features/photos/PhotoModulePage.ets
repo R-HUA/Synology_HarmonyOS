@@ -389,6 +389,7 @@ export struct PhotoModulePage {
             this.visibleAlbums().length === 0 && this.model.photoLibrary.errorText.length === 0) {
             ListItem() { this.emptyLibraryState() }
           }
+          if (this.albumRows.length > 0) {
           Repeat<PhotoAlbumRow>(this.albumRows)
             .each((row: RepeatItem<PhotoAlbumRow>): void => {
               ListItem() {
@@ -401,6 +402,7 @@ export struct PhotoModulePage {
                   .padding({ left: WorkbenchMetrics.pageMargin, right: WorkbenchMetrics.pageMargin })
               }
             }).key((row: PhotoAlbumRow): string => row.key).virtualScroll()
+          } else {
           Repeat<PhotoTimelineRow>(this.timelineRows)
             .each((row: RepeatItem<PhotoTimelineRow>): void => {
               ListItem() {
@@ -418,6 +420,7 @@ export struct PhotoModulePage {
                 }.width('100%').alignItems(HorizontalAlign.Start)
               }
             }).key((row: PhotoTimelineRow): string => row.key).virtualScroll()
+          }
           if (this.canShowLibrary() && this.model.photoLibrary.appendError.length > 0) {
             ListItem() {
               Column({ space: 4 }) {

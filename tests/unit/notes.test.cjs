@@ -34,6 +34,24 @@ const detail = p.decodeNoteDetail(note, note.object_id), attachment = detail.att
 const ok = data => ({ status: 200, text: JSON.stringify({ success: true, data }) });
 const bad = code => ({ status: 200, text: JSON.stringify({ success: false, error: { code } }) });
 
+test('note detail navigation follows selection across window changes and closes when selection is cleared', () => {
+  const page = fs.readFileSync(path.join(__dirname, '../../entry/src/main/ets/features/notes/NoteStationPage.ets'), 'utf8');
+  const body = page.match(/private selectionChanged\(\): void \{([\s\S]*?)\n  \}/)[1];
+  const sync = vm.runInNewContext(ts.transpileModule(`(function() { ${body} })`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None }
+  }).outputText);
+  const paths = [];
+  const state = { wide: false, model: { selected: { id: 'note-one' } }, detailStack: {
+    size: () => paths.length, clear: () => { paths.length = 0; }, pushPathByName: name => paths.push(name)
+  } };
+  sync.call(state); assert.deepEqual(paths, []);
+  state.wide = true; sync.call(state); assert.deepEqual(paths, ['detail']);
+  state.model.selected = { id: 'note-two' }; sync.call(state); assert.deepEqual(paths, ['detail']);
+  state.wide = false; sync.call(state); assert.deepEqual(paths, ['detail']);
+  state.wide = true; sync.call(state); assert.deepEqual(paths, ['detail']);
+  state.model.selected = undefined; sync.call(state); assert.deepEqual(paths, []);
+});
+
 test('note lists use separate notebook and tag identities and title-only filtering', () => {
   assert.equal(p.decodeNotebooks({ notebooks: [{ object_id: 'book-id', title: '笔记本' }] })[0].id, 'book-id');
   assert.equal(p.decodeNoteTags({ tags: [{ tag_name: '标签', note_count: 1 }] })[0].id, '标签');

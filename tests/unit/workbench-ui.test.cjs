@@ -59,8 +59,9 @@ test('floating navigation clearance follows the actual system navigation area', 
 });
 
 test('shortcut and album layouts adapt at content width boundaries', () => {
-  assert.equal(workbenchShortcutColumns(360), 5);
-  assert.equal(workbenchShortcutColumns(840), 5);
+  assert.equal(workbenchShortcutColumns(280), 3);
+  assert.equal(workbenchShortcutColumns(360), 4);
+  assert.equal(workbenchShortcutColumns(840), 4);
   assert.equal(photoAlbumColumns(240), 1);
   assert.equal(photoAlbumColumns(360), 2);
   assert.equal(photoAlbumColumns(600), 3);

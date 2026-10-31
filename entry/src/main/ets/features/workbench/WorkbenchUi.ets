@@ -1,4 +1,7 @@
 import { workbenchUsageLevel } from './WorkbenchPresentation';
+import { serviceErrorKind } from './ServicePresentation';
+import { LengthMetrics, ComponentAppear, ComponentDisappear } from '@kit.ArkUI';
+import { HdsSnackBar, SnackBarOperationType } from '@kit.UIDesignKit';
 
 export class WorkbenchMetrics {
   static readonly pageMargin: number = 16;
@@ -88,23 +91,88 @@ export struct WorkbenchEmptyState {
         }
       }.alignItems(HorizontalAlign.Center)
       if (this.actionLabel !== '' || this.secondaryLabel !== '') {
-        Row({ space: 12 }) {
+        Flex({ space: { main: LengthMetrics.vp(12), cross: LengthMetrics.vp(8) }, wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Center }) {
           if (this.actionLabel !== '') {
             Button(this.actionLabel).type(ButtonType.Capsule)
-              .constraintSize({ minHeight: WorkbenchMetrics.chipHeight }).fontSize(14)
+              .buttonStyle(ButtonStyleMode.EMPHASIZED)
+              .constraintSize({ minHeight: WorkbenchMetrics.touchSize }).fontSize(14)
               .padding({ left: 16, right: 16 })
               .enabled(this.actionAvailable).onClick(this.onAction)
           }
           if (this.secondaryLabel !== '') {
             Button(this.secondaryLabel).type(ButtonType.Capsule).buttonStyle(ButtonStyleMode.NORMAL)
-              .constraintSize({ minHeight: WorkbenchMetrics.chipHeight }).fontSize(14)
+              .constraintSize({ minHeight: WorkbenchMetrics.touchSize }).fontSize(14)
               .padding({ left: 16, right: 16 })
               .enabled(this.secondaryAvailable).onClick(this.onSecondaryAction)
           }
-        }.margin({ top: 4 }).justifyContent(FlexAlign.Center)
+        }.margin({ top: 4 }).width('100%')
       }
     }.width('100%').padding({ top: 40, bottom: 40, left: 24, right: 24 })
       .alignItems(HorizontalAlign.Center)
+  }
+}
+
+/** 首次读取没有旧内容时使用静态骨架，避免闪动和无意义动画。 */
+@Builder
+export function WorkbenchSkeleton() {
+    Column({ space: 12 }) {
+      ForEach([0, 1, 2, 3], (index: number): void => {
+        Row({ space: 12 }) {
+          Column().width(40).height(40).borderRadius(12).backgroundColor($r('app.color.workbench_subtle'))
+          Column({ space: 8 }) {
+            Column().width('60%').height(16).borderRadius(4).backgroundColor($r('app.color.workbench_subtle'))
+            Column().width('35%').height(12).borderRadius(4).backgroundColor($r('app.color.workbench_subtle'))
+          }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        }.width('100%').padding(16).backgroundColor($r('app.color.workbench_surface')).borderRadius(16)
+      }, (index: number): string => index.toString())
+    }.width('100%').accessibilityText($r('app.string.service_loading')).accessibilityLevel('yes')
+}
+
+/** 空白页与局部失败共用同一操作槽位，不将协议诊断直接作为产品文案。 */
+@ComponentV2
+export struct WorkbenchServiceError {
+  @Param message: string = '';
+  @Param title: ResourceStr = '';
+  @Param available: boolean = true;
+  @Param retainedContent: boolean = false;
+  @Param retryable: boolean = true;
+  @Param managementAvailable: boolean = true;
+  @Event onRetry: () => void = (): void => {};
+  @Event onManagement: () => void = (): void => {};
+  private feedback: HdsSnackBar | undefined = undefined;
+
+  @ComponentAppear
+  onFeedbackAppear(): void { this.showFeedback(); }
+
+  @ComponentDisappear
+  onFeedbackDisappear(): void { this.feedback?.dismiss(); this.feedback = undefined; }
+
+  @Monitor('message')
+  private showFeedback(): void {
+    if (!this.retainedContent || this.message.length === 0) { return; }
+    this.feedback?.dismiss();
+    this.feedback = new HdsSnackBar(this.getUIContext());
+    this.feedback.show({}, { content: $r('app.string.service_refresh_failed') }, {
+      operationType: SnackBarOperationType.TEXT_ONLY, content: $r('app.string.task_retry'), onContentClick: this.onRetry
+    });
+  }
+
+  private description(): Resource {
+    switch (serviceErrorKind(this.message)) {
+      case 'permission': return $r('app.string.service_error_permission');
+      case 'session': return $r('app.string.service_error_session');
+      case 'network': return $r('app.string.service_error_network');
+      case 'protocol': return $r('app.string.service_error_protocol');
+      default: return $r('app.string.service_error_unavailable');
+    }
+  }
+
+  build() {
+    if (!this.retainedContent) {
+    WorkbenchEmptyState({ icon: $r('sys.symbol.exclamationmark_circle'), title: this.title, description: this.description(),
+      actionLabel: this.retryable ? $r('app.string.task_retry') : '', actionAvailable: this.available, onAction: this.onRetry,
+      secondaryLabel: this.managementAvailable ? $r('app.string.package_open_management') : '', onSecondaryAction: this.onManagement })
+    }
   }
 }
 

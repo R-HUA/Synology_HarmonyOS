@@ -89,6 +89,7 @@ export struct PackageCatalogPage {
         ListItem() {
           Column({ space: 12 }) {
             Search({ value: this.model.query, placeholder: $r('app.string.package_search') })
+              .defaultFocus(false)
               .onChange((value: string): void => { this.model.query = value; })
             Row({ space: 8 }) {
               Button($r('app.string.package_all')).buttonStyle(this.model.supportedOnly ? ButtonStyleMode.NORMAL : ButtonStyleMode.EMPHASIZED)

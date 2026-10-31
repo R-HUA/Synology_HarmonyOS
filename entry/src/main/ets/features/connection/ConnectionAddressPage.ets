@@ -2,6 +2,8 @@ import { ConnectionViewModel } from './ConnectionViewModel';
 import { common } from '@kit.AbilityKit';
 import { NasLanDiscovery } from './NasLanDiscovery';
 import { NasConnectionAddress } from '../../core/domain/ConnectionRoutes';
+import { nasOriginHost, nasOriginScheme } from '../../core/domain/DsmProtocol';
+import { SegmentButtonV2Items, TabSegmentButtonV2 } from '@ohos.arkui.advanced.SegmentButtonV2';
 import { telemetryTimestamp } from '../../core/domain/TelemetryProtocol';
 import { connectionRouteLabel } from '../workbench/WorkbenchPresentation';
 import { WorkbenchMetrics, WorkbenchEmptyState, WorkbenchIconTile, WorkbenchNotice } from '../workbench/WorkbenchUi';
@@ -15,6 +17,7 @@ export struct NasConnectionAddressPage {
   @Local private swipedOrigin: string = '';
   @Local private discovery: NasLanDiscovery = new NasLanDiscovery();
   private editorScroller: Scroller = new Scroller();
+  private routeItems: SegmentButtonV2Items = new SegmentButtonV2Items([{ text: '局域网' }, { text: '远程' }, { text: '私有网络' }]);
 
   aboutToDisappear(): void { this.discovery.stop(); }
 
@@ -32,14 +35,9 @@ export struct NasConnectionAddressPage {
           .maxLength(40).height(48).onChange((text: string): void => { this.model.addressBook.draftName = text; })
         TextInput({ text: this.model.addressBook.draftOrigin, placeholder: $r('app.string.connection_origin') })
           .height(48).onChange((text: string): void => { this.model.addressBook.setDraftOrigin(text); })
-        Row({ space: 8 }) {
-          ForEach(['lan', 'remote', 'private'], (kind: string): void => {
-            Button(kind === 'lan' ? '局域网' : kind === 'remote' ? '远程' : '私有网络')
-              .buttonStyle(ButtonStyleMode.TEXTUAL).height(48)
-              .backgroundColor(this.model.addressBook.draftKind === kind ? $r('app.color.workbench_accent_surface') : Color.Transparent)
-              .onClick((): void => { this.model.addressBook.draftKind = kind as 'lan' | 'remote' | 'private'; })
-          })
-        }.width('100%')
+        TabSegmentButtonV2({ items: this.routeItems,
+          selectedIndex: this.model.addressBook.draftKind === 'remote' ? 1 : this.model.addressBook.draftKind === 'private' ? 2 : 0,
+          $selectedIndex: (index: number): void => { this.model.addressBook.draftKind = index === 1 ? 'remote' : index === 2 ? 'private' : 'lan'; } }).width('100%')
         Row() {
           Text($r('app.string.connection_ignore_certificate')).layoutWeight(1)
           Toggle({ type: ToggleType.Switch, isOn: this.model.addressBook.draftInsecureTls })
@@ -89,10 +87,14 @@ export struct NasConnectionAddressPage {
                   .padding({ left: 6, right: 6, top: 2, bottom: 2 }).borderRadius(6)
                   .backgroundColor($r('app.color.workbench_accent_surface'))
               }.width('100%').alignItems(VerticalAlign.Center)
-              if (address.insecureTls === true || this.model.authenticated && this.model.address === address.origin) {
-                Text(this.model.authenticated && this.model.address === address.origin ?
-                  (address.insecureTls === true ? '当前连接 · 忽略证书校验' : '当前连接') : '忽略证书校验')
-                  .fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
+              Flex({ wrap: FlexWrap.Wrap }) {
+                if (this.model.authenticated && this.model.address === address.origin) {
+                  Text($r('app.string.connection_current')).fontSize(12).fontColor($r('app.color.workbench_success')).margin({ right: 8 })
+                }
+                Text(nasOriginScheme(address.origin) === 'https' ? 'HTTPS' : 'HTTP').fontSize(12).fontColor($r('sys.color.font_secondary'))
+              }.width('100%')
+              if (address.insecureTls === true) {
+                Text($r('app.string.connection_certificate_unverified')).fontSize(13).fontColor($r('sys.color.font_secondary'))
               }
             }.layoutWeight(1).alignItems(HorizontalAlign.Start)
             if (!this.model.authenticated || this.model.address !== address.origin) {
@@ -110,10 +112,12 @@ export struct NasConnectionAddressPage {
           .width(48).constraintSize({ minHeight: 48 }).type(ButtonType.Normal).padding(0).backgroundColor(Color.Transparent)
           .enabled(!this.disabled()).bindMenu(this.addressMenu(address)).accessibilityText(address.name + '，更多操作')
       }.width('100%')
-      Text(address.origin).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%').copyOption(CopyOptions.InApp)
-        .padding({ left: 52, right: 8 })
+      if (address.name !== nasOriginHost(address.origin) && address.name !== address.origin) {
+        Text(address.origin).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%').copyOption(CopyOptions.InApp)
+          .padding({ left: 52, right: 8 })
+      }
       if (address.device !== undefined) {
-        Text(address.device.model + ' · ' + address.device.account)
+        Text(address.device.model + '，' + address.device.account)
           .fontSize(12).fontColor($r('sys.color.font_tertiary')).width('100%').padding({ left: 52, right: 8 })
       }
       if (address.lastLoginAt !== undefined) {
@@ -146,10 +150,10 @@ export struct NasConnectionAddressPage {
     Scroll(this.scroller) {
       Column({ space: 12 }) {
         Row({ space: 12 }) {
-          Button($r('app.string.connection_add')).height(48).layoutWeight(1).enabled(!this.disabled() && this.model.addressBook.ready)
+          Button($r('app.string.connection_add')).buttonStyle(ButtonStyleMode.EMPHASIZED).height(48).layoutWeight(1).enabled(!this.disabled() && this.model.addressBook.ready)
             .onClick((): void => { this.edit(); })
           Button(this.discovery.searching ? $r('app.string.connection_searching') : $r('app.string.connection_discover'))
-            .height(48).layoutWeight(1).enabled(!this.discovery.searching)
+            .buttonStyle(ButtonStyleMode.NORMAL).height(48).layoutWeight(1).enabled(!this.discovery.searching)
             .onClick((): void => { this.discovery.start(this.getUIContext().getHostContext() as common.UIAbilityContext); })
         }.width('100%')
         WorkbenchNotice({ text: this.discovery.errorText, warning: true })
@@ -157,9 +161,9 @@ export struct NasConnectionAddressPage {
           Text($r('app.string.connection_discovery_empty')).fontSize(14).fontColor($r('sys.color.font_secondary'))
         }
         ForEach(this.discovery.results, (address: NasConnectionAddress): void => {
-          Button(address.name + ' · ' + address.origin).height(56).width('100%').buttonStyle(ButtonStyleMode.TEXTUAL)
+          Button(address.name + '，' + address.origin).height(56).width('100%').buttonStyle(ButtonStyleMode.TEXTUAL)
             .onClick((): void => { this.discovery.stop(); this.edit(address); })
-        })
+        }, (address: NasConnectionAddress): string => address.origin)
         if (!this.model.addressBook.ready) {
           Text(this.model.addressBook.errorText.length > 0 ? this.model.addressBook.errorText : '连接地址配置尚未读取成功。')
             .fontSize(14).fontColor($r('sys.color.font_primary')).width('100%')

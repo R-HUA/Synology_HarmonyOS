@@ -58,7 +58,7 @@ export struct TaskRecordRow {
             if (this.record.state === 'running' && this.record.bytesPerSecond !== undefined) {
               Text(workbenchBytes(this.record.bytesPerSecond) + '/s' +
                 (transferRemainingSeconds(this.record.bytes, this.record.processed, this.record.bytesPerSecond) === undefined ? '' :
-                  ' · ' + Math.ceil(transferRemainingSeconds(this.record.bytes, this.record.processed, this.record.bytesPerSecond)! / 60).toString() + ' 分钟'))
+                  '，' + Math.ceil(transferRemainingSeconds(this.record.bytes, this.record.processed, this.record.bytesPerSecond)! / 60).toString() + ' 分钟'))
                 .fontSize(12).fontColor($r('sys.color.font_emphasize'))
             }
             if (this.record.state === 'failed' && this.record.errorText.length > 0) {

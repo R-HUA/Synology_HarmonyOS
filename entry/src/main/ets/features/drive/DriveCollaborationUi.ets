@@ -86,7 +86,7 @@ struct DriveLinkCard {
         Column({ space: 4 }) {
           Text(this.item.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
             .width('100%').maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-          Text(driveLinkStateText(this.item.state) + ' · ' + driveCollaborationTime(this.item.createdAt / 1000))
+          Text(driveLinkStateText(this.item.state) + '，' + driveCollaborationTime(this.item.createdAt / 1000))
             .fontSize(12).fontColor(this.item.state === 'unknown' ? $r('app.color.workbench_danger') :
               $r('sys.color.font_secondary')).width('100%')
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
@@ -160,7 +160,7 @@ export struct DriveNotificationsPage {
             if (item.name.length > 0) {
               Text(item.name).fontSize(14).fontColor($r('sys.color.font_primary')).width('100%')
             }
-            Text((item.senderName.length > 0 ? item.senderName + ' · ' : '') + driveCollaborationTime(item.time))
+            Text((item.senderName.length > 0 ? item.senderName + '，' : '') + driveCollaborationTime(item.time))
               .fontSize(12).fontColor($r('sys.color.font_secondary')).width('100%')
             if (!item.known) {
               Text('请前往 Drive 网页查看详情。').fontSize(12).fontColor($r('sys.color.font_secondary')).width('100%')

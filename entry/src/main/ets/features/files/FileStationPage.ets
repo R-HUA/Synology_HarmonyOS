@@ -4,7 +4,7 @@ import { WorkbenchBreadcrumb, workbenchBreadcrumbs, workbenchBytes, workbenchRel
   workbenchFileGridColumns, workbenchFileGridMetadata } from '../workbench/WorkbenchPresentation';
 import { interactionFeedback } from '../../platform/InteractionFeedback';
 import { ImagePreview } from '../workbench/ImagePreview';
-import { WorkbenchMetrics, WorkbenchEmptyState, WorkbenchEntryRow, WorkbenchNotice, WorkbenchInfoRow } from '../workbench/WorkbenchUi';
+import { WorkbenchMetrics, WorkbenchEmptyState, WorkbenchEntryRow, WorkbenchNotice, WorkbenchInfoRow, WorkbenchServiceError } from '../workbench/WorkbenchUi';
 
 /** File Station 列表复用于文件页和独立的目录选择页，页面级工具由宿主标题栏承载。 */
 @ComponentV2
@@ -182,9 +182,25 @@ export struct FileStationPage {
       }
       this.destinationBar()
       this.pickerBar()
-      WorkbenchNotice({ text: this.errorText, warning: true })
+      if (this.active && this.model.directoryErrorText.length > 0) {
+        WorkbenchServiceError({ message: this.model.directoryErrorText, title: $r('app.string.file_list_unavailable'),
+          retainedContent: this.visibleEntries().length > 0, managementAvailable: false,
+          available: !this.model.busy && !this.pickerBusy, onRetry: (): void => { this.refreshFiles(); } })
+      }
+      if (this.errorText !== this.model.directoryErrorText) { WorkbenchNotice({ text: this.errorText, warning: true }) }
       if (this.errorText.length === 0) { WorkbenchNotice({ text: this.model.actionNotice }) }
     }.width('100%').padding({ top: 4, bottom: 8 }).alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  listFooter() {
+    if (this.model.listLoading === 'more') {
+      Row() { LoadingProgress().width(24).height(24).accessibilityText($r('app.string.file_list_loading')) }
+        .width('100%').height(50).justifyContent(FlexAlign.Center)
+    } else if (!this.model.filesMore && this.errorText.length === 0 && this.visibleEntries().length > 0) {
+      Text($r('app.string.file_total_count', this.pickerMode.length > 0 ? this.visibleEntries().length : this.model.total))
+        .fontSize(12).fontColor($r('sys.color.font_secondary')).width('100%').height(40).textAlign(TextAlign.Center)
+    }
   }
 
   @Builder
@@ -193,56 +209,43 @@ export struct FileStationPage {
     Stack({ alignContent: Alignment.Bottom }) {
       Refresh({ refreshing: $$this.refreshing }) {
       List({ space: 0, scroller: this.scroller }) {
-        ListItemGroup({ header: this.listHeader, space: this.grid && this.pickerMode.length === 0 ? 12 : 0 }) {
+        ListItemGroup({ header: this.listHeader, footer: this.listFooter, space: this.grid && this.pickerMode.length === 0 ? 12 : 0 }) {
         if (!this.model.busy && this.visibleEntries().length === 0 && this.model.errorText.length === 0 && this.errorText.length === 0) {
           ListItem() {
             this.emptyState($r('sys.symbol.folder'), this.pickerMode.length > 0 ? '没有可浏览的文件夹' : '此位置为空',
               this.pickerMode.length > 0 ? '当前目录下没有可选择的子文件夹。' : '当前目录没有可显示的文件或文件夹。')
           }
         }
-        ForEach(this.visibleEntries(), (entry: NasFileEntry, index: number): void => {
+        Repeat<NasFileEntry>(this.visibleEntries()).each((row: RepeatItem<NasFileEntry>): void => {
           ListItem() {
-              WorkbenchEntryRow({ title: entry.name, grid: this.grid && this.pickerMode.length === 0,
-                gridMetadata: workbenchFileGridMetadata(entry.isDirectory,
-                  entry.modifiedAt === undefined ? undefined : entry.modifiedAt / 1000, entry.bytes),
-                selecting: this.selecting, selected: this.selectedPaths.includes(entry.path), selectionAvailable: !this.model.busy,
-                onSelect: (): void => { this.onToggleSelection(entry); },
-                subtitle: (entry.isDirectory ? '文件夹' : workbenchBytes(entry.bytes)) +
-                  (entry.modifiedAt === undefined ? '' : ' · ' + workbenchRelativeDate(entry.modifiedAt / 1000)),
-                icon: entry.isDirectory ? $r('sys.symbol.folder') : $r('sys.symbol.doc'),
-                iconColor: entry.isDirectory ? $r('sys.color.icon_emphasize') : $r('sys.color.font_secondary'),
+              WorkbenchEntryRow({ title: row.item.name, grid: this.grid && this.pickerMode.length === 0,
+                gridMetadata: workbenchFileGridMetadata(row.item.isDirectory,
+                  row.item.modifiedAt === undefined ? undefined : row.item.modifiedAt / 1000, row.item.bytes),
+                selecting: this.selecting, selected: this.selectedPaths.includes(row.item.path), selectionAvailable: !this.model.busy,
+                onSelect: (): void => { this.onToggleSelection(row.item); },
+                subtitle: (row.item.isDirectory ? '文件夹' : workbenchBytes(row.item.bytes)) +
+                  (row.item.modifiedAt === undefined ? '' : '，' + workbenchRelativeDate(row.item.modifiedAt / 1000)),
+                icon: row.item.isDirectory ? $r('sys.symbol.folder') : $r('sys.symbol.doc'),
+                iconColor: row.item.isDirectory ? $r('sys.color.icon_emphasize') : $r('sys.color.font_secondary'),
                 available: !this.model.busy, menuAvailable: !this.model.busy,
-                contentInset: this.selecting ? 12 : 16, showDivider: index < this.visibleEntries().length - 1,
-                menu: this.pickerMode.length === 0 && !this.selecting ? this.menuForEntry(entry) : [],
+                contentInset: this.selecting ? 12 : 16, showDivider: row.index < this.visibleEntries().length - 1,
+                menu: this.pickerMode.length === 0 && !this.selecting ? this.menuForEntry(row.item) : [],
                 onLongPress: (): void => {
-                  if (this.pickerMode.length === 0 && !this.selecting) { interactionFeedback(); this.onBeginSelection(entry); }
+                  if (this.pickerMode.length === 0 && !this.selecting) { interactionFeedback(); this.onBeginSelection(row.item); }
                 },
                 onOpen: (): void => {
-                  if (this.selecting) { this.onToggleSelection(entry); }
-                  else if (entry.isDirectory) { this.model.openDirectory(entry); }
+                  if (this.selecting) { this.onToggleSelection(row.item); }
+                  else if (row.item.isDirectory) { this.model.openDirectory(row.item); }
                   else if (this.wide && this.pickerMode.length === 0) {
-                    this.inspected = entry;
+                    this.inspected = row.item;
                     this.detailStack.replacePathByName('detail', undefined);
-                    if (/\.(?:jpe?g|png|gif|webp|bmp|heic|heif|tiff?|dng|avif|avis)$/i.test(entry.name)) { this.model.fileOriginal.openFile(entry); }
+                    if (/\.(?:jpe?g|png|gif|webp|bmp|heic|heif|tiff?|dng|avif|avis)$/i.test(row.item.name)) { this.model.fileOriginal.openFile(row.item); }
                   }
-                  else if (/\.(?:jpe?g|png|gif|webp|bmp|heic|heif|tiff?|dng|avif|avis)$/i.test(entry.name)) { this.onOpenImage(entry); }
-                  else { this.onOpenForm('detail', entry); }
+                  else if (/\.(?:jpe?g|png|gif|webp|bmp|heic|heif|tiff?|dng|avif|avis)$/i.test(row.item.name)) { this.onOpenImage(row.item); }
+                  else { this.onOpenForm('detail', row.item); }
                 } }).width('100%')
           }
-        }, (entry: NasFileEntry): string => this.model.address + ':' + this.model.account + ':' + entry.path)
-        if (this.model.listLoading === 'more') {
-          ListItem() {
-            Row({ space: 8 }) {
-              LoadingProgress().width(24).height(24).accessibilityText($r('app.string.file_list_loading'))
-            }.width('100%').height(50).justifyContent(FlexAlign.Center)
-          }
-        }
-        if (!this.model.filesMore && this.errorText.length === 0 && this.visibleEntries().length > 0) {
-          ListItem() {
-            Text($r('app.string.file_total_count', this.pickerMode.length > 0 ? this.visibleEntries().length : this.model.total))
-              .fontSize(12).fontColor($r('sys.color.font_secondary')).width('100%').height(40).textAlign(TextAlign.Center)
-          }
-        }
+        }).key((entry: NasFileEntry): string => this.model.address + ':' + this.model.account + ':' + entry.path).virtualScroll()
         }
       }.width('100%').height('100%').scrollBar(BarState.Auto)
         .contentStartOffset(this.topInset).contentEndOffset(this.bottomInset)
@@ -298,7 +301,7 @@ export struct FileStationPage {
 
   build() {
     if (this.wide && this.pickerMode.length === 0) {
-      Navigation(this.detailStack) { this.fileList() }.mode(NavigationMode.Split).navBarWidth('40%')
+      Navigation(this.detailStack) { this.fileList() }.mode(NavigationMode.Auto).navBarWidth('40%')
         .hideTitleBar(true).hideToolBar(true).navDestination(this.fileDetail).width('100%').height('100%')
     } else { this.fileList() }
   }

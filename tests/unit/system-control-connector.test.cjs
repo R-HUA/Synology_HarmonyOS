@@ -16,10 +16,11 @@ function fixture(category = 'NasControl') {
       calls.push({ url, fields, credentials });
       if (fields.api === 'SYNO.API.Info') return ok({
         'SYNO.API.Auth': { path: 'auth.cgi', minVersion: 6, maxVersion: 6 },
+        'SYNO.DSM.Info': { path: 'entry.cgi', minVersion: 2, maxVersion: 2 },
         'SYNO.FileStation.List': { path: 'entry.cgi', minVersion: 2, maxVersion: 2 },
         'SYNO.Core.System': { path: 'core/system.cgi', minVersion: 1, maxVersion: 1 },
       });
-      if (fields.api === 'SYNO.API.Auth') return fields.method === 'login' ? ok({ sid: session.sid, synotoken: session.synoToken }) : fields.method === 'token' ? state.reply : ok(undefined);
+      if (fields.api === 'SYNO.API.Auth') return fields.method === 'login' ? ok({ sid: session.sid, synotoken: session.synoToken }) : ok(undefined);
       if (state.gate) await state.gate;
       if (state.error) throw state.error;
       return state.reply;

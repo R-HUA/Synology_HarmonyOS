@@ -173,6 +173,19 @@ test('saved sessions require a successful protected read before authentication a
     assert.equal(model.savedSession, kind === K.Network);
   }
 });
+
+test('a validation error retains the saved session and retry restores it without submitting credentials', async () => {
+  const { model, state, count } = await fixture({ bound: false });
+  state.validationError = new NasFailure(K.Protocol, '无法校验保存的登录状态，请重试连接。', 400);
+  model.password = ''; model.otp = '';
+  await model.restore(context);
+  assert.equal(model.authenticated, false); assert.equal(model.savedSession, true);
+  assert.equal(count('session.clear'), 0); assert.equal(count('login'), 0);
+  state.validationError = undefined;
+  await model.restore();
+  assert.equal(model.authenticated, true); assert.equal(count('validateSession'), 2);
+  assert.equal(count('login'), 0); assert.equal(model.password, '');
+});
 class SessionStoreFailure extends Error {}
 
 async function fixture(options = {}) {
@@ -208,6 +221,7 @@ async function fixture(options = {}) {
     }
     async save(input) {
       record('session.save', { session: plain(input) });
+      if (state.sessionSaveGate) { await state.sessionSaveGate.promise; }
       if (state.sessionSaveError) { throw state.sessionSaveError; }
       state.session = plain(input);
     }
@@ -310,7 +324,14 @@ async function fixture(options = {}) {
     '../telemetry/TelemetryMonitor': { TelemetryMonitor: MockTelemetry },
     './ConnectionAddressBook': { ConnectionAddressBook },
     '../control/SystemControlModel': { SystemControlModel: class { deactivate() {} } },
-    '../extensions/NasExtensionsModel': { NasExtensionsModel: class { recordsReady = true; busy = false; pending = []; async attach() {} reset() {} } },
+    '../extensions/NasExtensionsModel': { NasExtensionsModel: class {
+      recordsReady = true; busy = false; pending = [];
+      async attach() {
+        if (state.extensionsAttachGate) { await state.extensionsAttachGate.promise; }
+        if (state.extensionsAttachError) { throw state.extensionsAttachError; }
+      }
+      reset() {}
+    } },
     '../packages/PackageCatalogModel': { PackageCatalogModel: class { attach() {} reset() {} } },
     '../packages/OfficialWebModel': { OfficialWebModel: class { attach() {} reset() {} close() {} } },
     '../containers/ContainerModel': { ContainerModel: class { attach() {} reset() {} } },
@@ -375,7 +396,7 @@ for (const operation of ['restore', 'login']) {
     assert.equal(queue.account, 'alice');
     assert.equal(count('session.save'), operation === 'login' ? 1 : 0);
     if (operation === 'login') {
-      assert.ok(calls.findIndex(call => call.method === 'session.save') > calls.findIndex(call => call.method === 'queue.attach'));
+      assert.ok(calls.findIndex(call => call.method === 'session.save') < calls.findIndex(call => call.method === 'queue.attach'));
       assert.deepEqual(state.session, { origin: oldOrigin, account: 'alice', insecureTls: false, session: newSession });
     } else {
       assert.deepEqual(calls.find(call => call.method === 'restoreSession').args, [savedSession.session]);
@@ -434,6 +455,37 @@ for (const operation of ['restore', 'login']) {
     assert.equal(model.busy, false);
   });
 }
+
+test('login does not publish authenticated state until the session save finishes', async () => {
+  const { model, state, count } = await fixture({ bound: false });
+  await model.connect(); state.session = undefined; state.sessionSaveGate = deferred();
+  const pending = model.login();
+  try {
+    await flush();
+    assert.equal(count('session.save'), 1);
+    assert.equal(model.authenticated, false);
+    assert.equal(model.busy, true);
+    assert.equal(count('queue.attach'), 0);
+  } finally { state.sessionSaveGate.resolve(); await pending; }
+  assert.equal(model.authenticated, true); assert.equal(model.savedSession, true);
+  assert.deepEqual(state.session.session, newSession);
+});
+
+test('slow or failed module initialization cannot prevent the primary session being saved', async () => {
+  for (const failed of [false, true]) {
+    const { model, state } = await fixture({ bound: false });
+    await model.connect(); state.session = undefined; state.extensionsAttachGate = deferred();
+    if (failed) { state.extensionsAttachError = failure(K.Protocol); }
+    const pending = model.login();
+    try {
+      await flush();
+      assert.deepEqual(state.session?.session, newSession);
+      assert.equal(model.savedSession, true);
+    } finally { state.extensionsAttachGate.resolve(); await pending; }
+    assert.deepEqual(state.session.session, newSession);
+    if (failed) { assert.ok(model.errorText.length > 0); }
+  }
+});
 
 test('an explicitly unbound login is allowed but cannot claim that the device was verified', async () => {
   const { model, count } = await fixture({ bound: false });

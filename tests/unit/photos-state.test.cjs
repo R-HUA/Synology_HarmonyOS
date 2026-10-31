@@ -62,7 +62,7 @@ async function connected(albumVersion = 1) {
   const replies = [];
   const capabilities = {};
   for (const name of connectorModule.NAS_DISCOVERY_QUERY.split(',')) capabilities[name] = {
-    path: 'entry.cgi', minVersion: 1, maxVersion: name === 'SYNO.API.Auth' ? 6 : name === 'SYNO.FileStation.List' ? 2 :
+    path: 'entry.cgi', minVersion: 1, maxVersion: name === 'SYNO.API.Auth' ? 6 : ['SYNO.FileStation.List', 'SYNO.DSM.Info'].includes(name) ? 2 :
       name === 'SYNO.Foto.Browse.Album' ? albumVersion : 1,
     requestFormat: 'JSON',
   };
@@ -482,10 +482,10 @@ test('shared media credential strings follow discovered scalar format without ch
 test('shared media HTTP401 and package119 recheck base login; permission refusal keeps the verified base session', async () => {
   const { connector, replies, calls } = await connected();
   for (const error of [new NasFailure(K.Http, 'shared HTTP401', 401), new NasFailure(K.SessionExpired, 'shared119', 119)]) {
-    replies.push(ok({ shares: [], offset: 0, total: 0 }));
+    replies.push(ok({ model: 'Synthetic NAS' }));
     await assert.rejects(connector.photoMediaFailure(error), isKind(error.kind === K.Http ? K.Permission : K.Unsupported));
-    assert.equal(calls.at(-1).body.get('api'), 'SYNO.API.Auth');
-    assert.equal(calls.at(-1).body.get('method'), 'token');
+    assert.equal(calls.at(-1).body.get('api'), 'SYNO.DSM.Info');
+    assert.equal(calls.at(-1).body.get('method'), 'getinfo');
     assert.equal(connector.sessionSnapshot().sid, 'private-sid');
   }
   const count = calls.length;

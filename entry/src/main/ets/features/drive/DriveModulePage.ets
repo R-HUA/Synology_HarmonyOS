@@ -1,6 +1,7 @@
 import { fileUri } from '@kit.CoreFileKit';
 import { uiMaterial } from '@kit.ArkUI';
-import { DriveEntry, DriveEntryKind, DriveView, driveViewLabel, driveEntryRenderKey, DriveSortBy } from '../../core/domain/DriveProtocol';
+import { ImmersiveMaterials } from '../../platform/ImmersiveMaterials';
+import { DriveEntry, DriveEntryKind, DriveView, driveViewLabel, DriveSortBy } from '../../core/domain/DriveProtocol';
 import { interactionFeedback } from '../../platform/InteractionFeedback';
 import { DriveOriginalPage } from './DriveOriginalUi';
 import { canPreviewDriveMedia } from '../../core/domain/DriveOriginalProtocol';
@@ -91,9 +92,8 @@ export struct DriveModulePage {
       this.sizeSort = false; this.model.drive.sort(DriveSortBy.ModifiedTime, true);
     } }, { value: this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.sort_size_loaded').id), action: (): void => { this.sizeSort = true; } }];
   }
-  private sheetMaterial: uiMaterial.Material =
-    new uiMaterial.ImmersiveMaterial({ style: uiMaterial.ImmersiveStyle.ULTRA_THICK });
-  private sheetMaterialAvailable: boolean = uiMaterial.isImmersiveMaterialSupported();
+  private sheetMaterial: uiMaterial.Material | undefined = ImmersiveMaterials.SHEET_ULTRA_THICK;
+  private sheetMaterialAvailable: boolean = ImmersiveMaterials.supported;
   private driveSearchController: SearchController = new SearchController();
 
   private canRenderEntries(): boolean {
@@ -136,7 +136,7 @@ export struct DriveModulePage {
     Row({ space: 8 }) {
       Search({ value: this.model.drive.searchText, placeholder: this.model.drive.searchPlaceholder(),
         controller: this.driveSearchController })
-        .searchButton('搜索').maxLength(256).layoutWeight(1).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
+        .defaultFocus(false).searchButton('搜索').maxLength(256).layoutWeight(1).constraintSize({ minHeight: WorkbenchMetrics.touchSize })
         .enabled(!this.model.busy && !this.model.drive.busy && this.model.drive.supportsView(DriveView.Search))
         .onChange((value: string): void => { this.model.drive.searchText = value; })
         .onSubmit((value: string): void => {
@@ -155,7 +155,7 @@ export struct DriveModulePage {
       Row({ space: 4 }) {
         ForEach(this.model.drive.trail, (item: DriveTrailItem, index: number): void => {
           Button(index === 0 && this.model.drive.view === DriveView.Search ?
-            this.model.drive.searchScopeName + ' · “' + this.model.drive.searchKeyword + '”' : item.name)
+            this.model.drive.searchScopeName + '，“' + this.model.drive.searchKeyword + '”' : item.name)
             .type(ButtonType.Normal).constraintSize({ minHeight: 40 }).fontSize(14)
             .padding({ left: 0, right: 0, top: 8, bottom: 8 }).backgroundColor(Color.Transparent)
             .fontColor(index === this.model.drive.trail.length - 1 ? $r('sys.color.font_primary') : $r('sys.color.font_secondary'))
@@ -217,12 +217,25 @@ export struct DriveModulePage {
   }
 
   @Builder
+  listFooter() {
+    if (this.canRenderEntries()) {
+      if (this.model.drive.listLoading === 'more') {
+        Row() { LoadingProgress().width(24).height(24).accessibilityText($r('app.string.file_list_loading')) }
+          .width('100%').height(50).justifyContent(FlexAlign.Center)
+      } else if (!this.model.drive.hasMore && this.model.drive.errorText.length === 0 && this.model.drive.entries.length > 0) {
+        Text($r('app.string.file_total_count', this.model.drive.total ?? this.model.drive.entries.length))
+          .fontSize(12).fontColor($r('sys.color.font_secondary')).width('100%').height(40).textAlign(TextAlign.Center)
+      }
+    }
+  }
+
+  @Builder
   driveFileList() {
     Column() {
     Stack({ alignContent: Alignment.Bottom }) {
       Refresh({ refreshing: $$this.refreshing }) {
       List({ space: 0, scroller: this.scroller }) {
-        ListItemGroup({ header: this.listHeader, space: this.grid ? 12 : 0 }) {
+        ListItemGroup({ header: this.listHeader, footer: this.listFooter, space: this.grid ? 12 : 0 }) {
         if (this.canRenderEntries()) {
           if (!this.model.drive.busy && this.model.drive.entries.length === 0) {
             ListItem() {
@@ -235,43 +248,30 @@ export struct DriveModulePage {
               }
             }
           }
-          ForEach(this.entries(), (entry: DriveEntry, index: number): void => {
+          Repeat<DriveEntry>(this.entries()).each((row: RepeatItem<DriveEntry>): void => {
             ListItem() {
-              WorkbenchEntryRow({ title: entry.name, subtitle: this.driveRowSubtitle(entry), grid: this.grid,
-                  gridMetadata: workbenchFileGridMetadata(entry.kind === DriveEntryKind.Folder, entry.modifiedAt, entry.sizeBytes),
-                  selecting: this.selecting, selected: this.selectedIds.includes(entry.fileId),
+              WorkbenchEntryRow({ title: row.item.name, subtitle: this.driveRowSubtitle(row.item), grid: this.grid,
+                  gridMetadata: workbenchFileGridMetadata(row.item.kind === DriveEntryKind.Folder, row.item.modifiedAt, row.item.sizeBytes),
+                  selecting: this.selecting, selected: this.selectedIds.includes(row.item.fileId),
                   selectionAvailable: !this.model.busy && !this.model.drive.busy,
-                  onSelect: (): void => { this.toggleSelection(entry); }, contentInset: this.selecting ? 12 : 16,
-                  transitionId: 'drive-' + entry.fileId,
-                  thumbnail: this.model.driveThumbnails.path(entry).length > 0 ?
-                    fileUri.getUriFromPath(this.model.driveThumbnails.path(entry)) : '',
-                  icon: entry.kind === DriveEntryKind.Folder ? $r('sys.symbol.folder') : $r('sys.symbol.doc'),
-                  iconColor: entry.kind === DriveEntryKind.Folder ? $r('sys.color.icon_emphasize') : $r('sys.color.font_secondary'),
-                  available: !this.model.busy && !this.model.drive.busy && (this.selecting || entry.capabilities.canRead),
-                  menu: this.selecting ? [] : this.menuForEntry(entry), menuAvailable: !this.model.busy && !this.model.drive.busy,
-                  showDivider: index < this.model.drive.entries.length - 1,
-                  onLongPress: (): void => { interactionFeedback(); this.onSelectionChange(true, [entry.fileId]); },
-                  onOpen: (): void => { if (this.selecting) { this.toggleSelection(entry); } else { this.openDriveEntry(entry); } } }).width('100%')
+                  onSelect: (): void => { this.toggleSelection(row.item); }, contentInset: this.selecting ? 12 : 16,
+                  transitionId: 'drive-' + row.item.fileId,
+                  thumbnail: this.model.driveThumbnails.path(row.item).length > 0 ?
+                    fileUri.getUriFromPath(this.model.driveThumbnails.path(row.item)) : '',
+                  icon: row.item.kind === DriveEntryKind.Folder ? $r('sys.symbol.folder') : $r('sys.symbol.doc'),
+                  iconColor: row.item.kind === DriveEntryKind.Folder ? $r('sys.color.icon_emphasize') : $r('sys.color.font_secondary'),
+                  available: !this.model.busy && !this.model.drive.busy && (this.selecting || row.item.capabilities.canRead),
+                  menu: this.selecting ? [] : this.menuForEntry(row.item), menuAvailable: !this.model.busy && !this.model.drive.busy,
+                  showDivider: row.index < this.model.drive.entries.length - 1,
+                  onLongPress: (): void => { interactionFeedback(); this.onSelectionChange(true, [row.item.fileId]); },
+                  onOpen: (): void => { if (this.selecting) { this.toggleSelection(row.item); } else { this.openDriveEntry(row.item); } } }).width('100%')
             }
             .onVisibleAreaChange([0], (visible: boolean, ratio: number): void => {
-              this.model.driveThumbnails.setVisible(entry, visible && ratio > 0 && this.canRenderEntries() &&
+              this.model.driveThumbnails.setVisible(row.item, visible && ratio > 0 && this.canRenderEntries() &&
                 this.model.drive.view !== DriveView.Trash);
             })
-            .onDisAppear((): void => { this.model.driveThumbnails.setVisible(entry, false); })
-          }, (entry: DriveEntry): string => driveEntryRenderKey(entry))
-          if (this.model.drive.listLoading === 'more') {
-            ListItem() {
-              Row({ space: 8 }) {
-                LoadingProgress().width(24).height(24).accessibilityText($r('app.string.file_list_loading'))
-              }.width('100%').height(50).justifyContent(FlexAlign.Center)
-            }
-          }
-          if (!this.model.drive.hasMore && this.model.drive.errorText.length === 0 && this.model.drive.entries.length > 0) {
-            ListItem() {
-              Text($r('app.string.file_total_count', this.model.drive.total ?? this.model.drive.entries.length))
-                .fontSize(12).fontColor($r('sys.color.font_secondary')).width('100%').height(40).textAlign(TextAlign.Center)
-            }
-          }
+            .onDisAppear((): void => { this.model.driveThumbnails.setVisible(row.item, false); })
+          }).key((entry: DriveEntry): string => this.model.address + ':' + this.model.account + ':' + entry.fileId).virtualScroll()
         } else if (!this.model.drive.busy && !this.searchPage) {
           ListItem() {
             Column({ space: 8 }) {
@@ -346,10 +346,10 @@ export struct DriveModulePage {
   private driveRowSubtitle(entry: DriveEntry): string {
     const modified = workbenchRelativeDate(entry.modifiedAt);
     if (entry.kind === DriveEntryKind.Folder) {
-      return modified.length > 0 ? '文件夹 · ' + modified : '文件夹';
+      return modified.length > 0 ? '文件夹，' + modified : '文件夹';
     }
     const size = workbenchBytes(entry.sizeBytes);
-    return modified.length > 0 && size.length > 0 ? modified + ' · ' + size :
+    return modified.length > 0 && size.length > 0 ? modified + '，' + size :
       modified.length > 0 ? modified : size;
   }
 
@@ -437,7 +437,7 @@ export struct DriveModulePage {
         this.driveMore()
       } else {
         if (this.wide) {
-          Navigation(this.detailStack) { this.driveFileList() }.mode(NavigationMode.Split).navBarWidth('40%')
+          Navigation(this.detailStack) { this.driveFileList() }.mode(NavigationMode.Auto).navBarWidth('40%')
             .hideTitleBar(true).hideToolBar(true).navDestination(this.wideDetails).width('100%').height('100%')
         } else { this.driveFileList() }
       }

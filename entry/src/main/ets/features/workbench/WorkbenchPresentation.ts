@@ -83,12 +83,9 @@ export function workbenchBottomInset(navigationInset: number, barHeight: number 
   return Math.max(0, navigationInset) + barHeight + 16;
 }
 
-/**
- * 快捷入口列数：固定一行五个。width 预留给将来的宽屏分档；目前不按宽度分档，
- * 免得同一台设备换个窗口就改分组、让第二行只落一项。
- */
+/** 常用入口按实际内容宽度分配，极窄窗口减少一列以保留文字空间。 */
 export function workbenchShortcutColumns(width: number): number {
-  return 5;
+  return width < 320 ? 3 : 4;
 }
 
 /** 列宽按列表内容区域计算，窄窗口仍保留三列。 */

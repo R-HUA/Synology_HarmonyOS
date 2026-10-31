@@ -332,6 +332,7 @@ export class ConnectionViewModel {
     this.busy = true;
     this.errorText = '';
     let authorized = false;
+    let sessionSaved = false;
     try {
       const deviceId = await this.trustedDevice.load(this.address, this.account.trim());
       const trustedId = await connector.login(this.account, this.password, this.otp,
@@ -344,6 +345,20 @@ export class ConnectionViewModel {
       await this.verifyDevice(connector, this.address, this.account);
       if (ticket !== this.generation) { return; }
       if (this.trustDevice && trustedId.length > 0) { await this.trustedDevice.save(this.address, this.account.trim(), trustedId); }
+      if (ticket !== this.generation) { return; }
+      const session = connector.sessionSnapshot();
+      if (session === undefined) { return; }
+      // 登录状态先落盘，任务模块的初始化不能决定下次启动能否恢复账号。
+      try {
+        await this.store.save({ origin: this.address, account: this.account.trim(), session: session,
+          insecureTls: this.insecureTls });
+        sessionSaved = true;
+        if (ticket === this.generation) {
+          this.savedSession = true;
+          hilog.info(0x0000, 'NasConnection', 'operation=save-session result=success');
+        }
+      } catch (error) { if (ticket === this.generation) { await this.showFailure(error as Error, 'save-session'); } }
+      if (ticket !== this.generation) { return; }
       this.authenticated = true;
       hilog.info(0x0000, 'NasConnection', 'operation=login result=success');
     } catch (error) {
@@ -360,28 +375,19 @@ export class ConnectionViewModel {
     }
     finally { if (ticket === this.generation) { this.busy = false; } }
     if (this.authenticated && ticket === this.generation) {
+      const persistenceError = sessionSaved ? '' : this.errorText;
       const historySaved = await this.saveLoginHistory(ticket);
       const historyError = historySaved ? '' : this.errorText;
       if (ticket !== this.generation) { return; }
-      await this.attachQueue(connector);
-      if (ticket !== this.generation) { return; }
-      const session = connector.sessionSnapshot();
-      if (session === undefined || ticket !== this.generation) { return; }
-      this.busy = true;
-      let sessionSaved = false;
+      let modulesAttached = false;
       try {
-        await this.store.save({ origin: this.address, account: this.account.trim(), session: session,
-          insecureTls: this.insecureTls });
-        sessionSaved = true;
-        if (ticket === this.generation) {
-          this.savedSession = true;
-          hilog.info(0x0000, 'NasConnection', 'operation=save-session result=success');
-        }
-      } catch (error) { if (ticket === this.generation) { await this.showFailure(error as Error, 'save-session'); } }
-      finally { if (ticket === this.generation) { this.busy = false; } }
+        await this.attachQueue(connector);
+        modulesAttached = true;
+      } catch (error) { if (ticket === this.generation) { await this.showFailure(error as Error, 'attach-session'); } }
       // 保存失败时保留错误提示：目录加载会重置横幅，保存失败比目录不可用更值得先展示。
-      if (sessionSaved && ticket === this.generation) { await this.loadInitialDirectory(); }
+      if (sessionSaved && modulesAttached && ticket === this.generation) { await this.loadInitialDirectory(); }
       if (historyError.length > 0 && ticket === this.generation) { this.errorText = historyError; }
+      if (persistenceError.length > 0 && ticket === this.generation) { this.errorText = persistenceError; }
     }
   }
 
@@ -481,7 +487,7 @@ export class ConnectionViewModel {
     const model = await this.addressBook.verifyExpectedDevice(connector, origin, account);
     if (ticket !== this.generation) { return; }
     this.deviceCheckText = model === undefined ? '当前账号未登记设备身份；地址间不合并登录和任务。' :
-      '设备身份已核验 · ' + model;
+      '设备身份已核验，' + model;
     await this.loadDeviceIdentity(connector);
   }
 
@@ -1110,6 +1116,7 @@ export class ConnectionViewModel {
     try {
       const info = await connector.environment();
       if (ticket !== this.generation) { return ''; }
+      if (this.deviceModel.length === 0) { this.deviceModel = info.model; }
       hilog.info(0x0000, 'NasEnvironment', 'model=%{public}s dsm=%{public}s fileStation=%{public}s photos=%{public}s administrator=%{public}d',
         info.model, info.dsmVersion, info.fileStationVersion, info.photosVersion, info.administrator ? 1 : 0);
       return info.model + '\n' + info.dsmVersion +

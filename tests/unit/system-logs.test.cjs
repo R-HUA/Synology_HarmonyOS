@@ -69,5 +69,7 @@ test('hiding, reconnecting and switching accounts discard pending system log res
   assert.equal(model.items.length, 0); assert.equal(model.loading, false);
   model.setVisible(true); model.reset(); complete({ items: [row], more: false, received: 1 }); await tick();
   assert.equal(model.items.length, 0); assert.equal(model.checkedAt, 0);
-  assert.match(fs.readFileSync(path.join(__dirname, '../../entry/src/main/ets/features/systemlogs/SystemLogPage.ets'), 'utf8'), /搜索与筛选仅限已加载记录/);
+  const page = fs.readFileSync(path.join(__dirname, '../../entry/src/main/ets/features/systemlogs/SystemLogPage.ets'), 'utf8');
+  assert.match(page, /defaultFocus\(false\)/);
+  assert.doesNotMatch(page, /搜索与筛选仅限已加载记录/);
 });

@@ -1,5 +1,7 @@
 {
   "color": [
+    { "name": "workbench_media_overlay", "value": "#99000000" },
+    { "name": "workbench_shadow", "value": "#1F000000" },
     {
       "name": "start_window_background",
       "value": "#FFFFFF"

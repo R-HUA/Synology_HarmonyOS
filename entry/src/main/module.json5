@@ -23,7 +23,7 @@
         "startWindowIcon": "$media:startIcon",
         "startWindowBackground": "$color:start_window_background",
         "exported": true,
-        "orientation": "auto_rotation",
+        "orientation": "auto_rotation_restricted",
         "supportWindowMode": ["fullscreen", "split", "floating"],
         "backgroundModes": ["dataTransfer"],
         "skills": [

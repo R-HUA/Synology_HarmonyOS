@@ -304,6 +304,7 @@ test('photo transfer entry stays in photo scope and locating one task preserves 
 
 test('Drive operation polling follows visible task pages, overlays and foreground state', () => {
   const state = page(); let polling;
+  state.packageDestination = '';
   state.foreground = true; state.module = 'root'; state.activeTab = 2; state.taskDestination = ''; state.taskOverlayVisible = false;
   state.rootTasks = new globals.TaskPageState('root');
   state.model.driveActions = { setPolling: value => { polling = value; } }; state.model.telemetry = { setMode() {} };
@@ -449,8 +450,8 @@ test('Drive file menu keeps metadata details available without granting unavaila
 test('one floating HdsTabs owns every module and file tools remain in the title bar', () => {
   assert.equal((index.match(/HdsTabs\(/g) || []).length, 1);
   assert.doesNotMatch(drivePage + photoPage + filePage, /HdsTabs|HdsNavigation/);
-  assert.match(drivePage, /NavigationMode.Split/);
-  assert.match(filePage, /NavigationMode.Split/);
+  assert.match(drivePage, /NavigationMode.Auto/);
+  assert.match(filePage, /NavigationMode.Auto/);
   assert.match(index, /barPosition\(BarPosition.End\).*scrollable\(false\)/);
   assert.match(index, /barOverlap\(true\).vertical\(false\)/);
   assert.match(index, /barFloatingStyle\(\{ barBottomMargin: this.floatingBarBottomMargin\(\)/);
@@ -489,7 +490,7 @@ test('unreadable entries cannot enter through either UI or model', async () => {
   await openFolder.call(model, entry);
   assert.equal(loads, 1);
   assert.equal(model.trail[0].fileId, '123');
-  assert.match(drivePage, /available: !this\.model\.busy && !this\.model\.drive\.busy && \(this\.selecting \|\| entry\.capabilities\.canRead/);
+  assert.match(drivePage, /available: !this\.model\.busy && !this\.model\.drive\.busy && \(this\.selecting \|\| row\.item\.capabilities\.canRead/);
 });
 
 test('Drive file action prepares supported files for preview without navigating to transfers', () => {

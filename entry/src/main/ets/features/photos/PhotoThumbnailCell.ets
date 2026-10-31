@@ -47,18 +47,18 @@ export struct PhotoThumbnailCell {
           if (this.item.favorite === true) {
             Stack() {
               SymbolGlyph($r('sys.symbol.heart_fill')).fontSize(12).fontColor([$r('app.color.workbench_danger')])
-            }.width(22).height(22).borderRadius(11).backgroundColor('#99000000')
+            }.width(22).height(22).borderRadius(11).backgroundColor($r('app.color.workbench_media_overlay'))
           }
           Blank()
           if (this.item.mediaType === 'live') {
             SymbolGlyph($r('sys.symbol.livephoto')).fontSize(16).fontColor([Color.White])
-              .padding(4).backgroundColor('#99000000').borderRadius(6).accessibilityLevel('no')
+              .padding(4).backgroundColor($r('app.color.workbench_media_overlay')).borderRadius(6).accessibilityLevel('no')
           } else if (this.item.mediaType === 'video') {
             Text(this.item.mediaType === 'video' && this.item.durationMs !== undefined ?
               Math.floor(this.item.durationMs / 60000).toString().padStart(2, '0') + ':' +
                 Math.floor(this.item.durationMs / 1000 % 60).toString().padStart(2, '0') : photoMediaLabel(this.item)).fontSize(11).fontColor(Color.White)
               .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-              .backgroundColor('#99000000').borderRadius(6)
+              .backgroundColor($r('app.color.workbench_media_overlay')).borderRadius(6)
           }
         }.width('100%').padding(6).alignItems(VerticalAlign.Center).hitTestBehavior(HitTestMode.None)
       }

@@ -176,12 +176,14 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     return fields;
   }
 
-  /** 认证接口核对主会话，不以任何套件权限作为登录有效性的依据。 */
+  /** 受保护的 DSM 基础读取核对主会话，不依赖网页令牌查询或套件权限。 */
   async validateSession(): Promise<void> {
-    const data = await this.call('SYNO.API.Auth', 6, 'token', []);
-    const current = this.requireSession();
-    const verified = decodeNasSession({ sid: current.sid, synotoken: data['synotoken'] });
-    if (current.synoToken !== verified.synoToken) { this.sessions.register(verified); }
+    try { await this.call('SYNO.DSM.Info', 2, 'getinfo', [], false); }
+    catch (error) {
+      // 基础校验不能再次触发套件校验；只有 NAS 明确拒绝主会话时才结束登录。
+      if (error instanceof NasFailure && error.kind === NasErrorKind.SessionExpired) { this.invalidateSession(); }
+      throw error;
+    }
   }
 
   async list(path: string, offset: number = 0, sortBy: NasFileSortBy = NasFileSortBy.Name,

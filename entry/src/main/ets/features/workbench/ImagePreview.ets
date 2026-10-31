@@ -1,6 +1,7 @@
 import { image } from '@kit.ImageKit';
 import { curves, display, uiMaterial } from '@kit.ArkUI';
 import { interactionFeedback } from '../../platform/InteractionFeedback';
+import { ImmersiveMaterials } from '../../platform/ImmersiveMaterials';
 import { ActionBarButton } from '@kit.UIDesignKit';
 import { WorkbenchInfoRow, WorkbenchNotice } from './WorkbenchUi';
 
@@ -17,7 +18,7 @@ struct PreviewToolbarButton {
     Button({ type: ButtonType.Circle }) {
       SymbolGlyph(this.action.baseIcon as Resource).fontSize(22).fontColor([this.iconColor])
     }.width(48).height(48).backgroundColor(Color.Transparent)
-      .systemMaterial(uiMaterial.Material.empty)
+      .systemMaterial(ImmersiveMaterials.PLAIN)
       .enabled(this.action.enabled !== false).opacity(this.action.enabled === false ? 0.4 : 1)
       .accessibilityText(this.action.accessibilityText as Resource)
       .onClick((): void => { this.onAction(); })
@@ -72,9 +73,8 @@ export struct ImagePreview {
   private foldChanged = (status: display.FoldStatus): void => {
     this.halfFolded = status === display.FoldStatus.FOLD_STATUS_HALF_FOLDED;
   };
-  private material: uiMaterial.Material = new uiMaterial.ImmersiveMaterial({ style: uiMaterial.ImmersiveStyle.ULTRA_THICK });
-  private capsuleMaterial: uiMaterial.Material = new uiMaterial.ImmersiveMaterial({ style: uiMaterial.ImmersiveStyle.REGULAR });
-  private materialAvailable: boolean = uiMaterial.isImmersiveMaterialSupported();
+  private material: uiMaterial.Material | undefined = ImmersiveMaterials.SHEET_ULTRA_THICK;
+  private materialAvailable: boolean = ImmersiveMaterials.supported;
   @Local private shareAction: ActionBarButton = new ActionBarButton({ baseIcon: $r('sys.symbol.share'),
     accessibilityText: $r('app.string.preview_share') });
   @Local private favoriteAction: ActionBarButton = new ActionBarButton({ baseIcon: $r('sys.symbol.heart'),
@@ -236,9 +236,9 @@ export struct ImagePreview {
       }
     }.padding({ left: 8, right: 8 }).height(56).borderRadius(28)
       .justifyContent(FlexAlign.Center)
-      .backgroundColor(this.materialAvailable ? Color.Transparent : $r('app.color.workbench_surface_elevated'))
-      .systemMaterial(this.capsuleMaterial)
-      .shadow({ radius: 16, color: '#1F000000', offsetY: 4 })
+      .backgroundColor($r('app.color.workbench_surface_elevated'))
+      .systemMaterial(ImmersiveMaterials.PLAIN)
+      .shadow({ radius: 16, color: $r('app.color.workbench_shadow'), offsetY: 4 })
       .margin({ bottom: (this.photos || this.fullscreen ? this.navigationInset : 0) + 12 })
   }
 

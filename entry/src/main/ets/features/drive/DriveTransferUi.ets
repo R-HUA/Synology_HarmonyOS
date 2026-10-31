@@ -1,4 +1,5 @@
 import { uiMaterial } from '@kit.ArkUI';
+import { ImmersiveMaterials } from '../../platform/ImmersiveMaterials';
 import { DriveTransferRecord, driveTransferStateText } from '../../core/domain/DriveTransferState';
 import { DriveTransferModel } from './DriveTransferModel';
 import { workbenchBytes } from '../workbench/WorkbenchPresentation';
@@ -90,21 +91,20 @@ export struct DriveTransferCard {
   @Require @Param item: DriveTransferRecord;
   @Param detailsOnly: boolean = false;
   @Local private detailsVisible: boolean = false;
-  private sheetMaterial: uiMaterial.Material =
-    new uiMaterial.ImmersiveMaterial({ style: uiMaterial.ImmersiveStyle.ULTRA_THICK });
-  private sheetMaterialAvailable: boolean = uiMaterial.isImmersiveMaterialSupported();
+  private sheetMaterial: uiMaterial.Material | undefined = ImmersiveMaterials.SHEET_ULTRA_THICK;
+  private sheetMaterialAvailable: boolean = ImmersiveMaterials.supported;
 
   private confirmClose(): void {
     this.getUIContext().getPromptAction().showDialog({ title: '已核对上传结果',
       message: '请先在 NAS 核对“' + this.item.locationName + '”中的“' + this.item.name + '”。关闭记录后可重新选择上传。',
-      buttons: [{ text: '取消', color: '#666666' }, { text: '已核对，关闭记录', color: '#0A59F7' }] })
+      buttons: [{ text: '取消', color: $r('sys.color.font_secondary') }, { text: '已核对，关闭记录', color: $r('sys.color.font_emphasize') }] })
       .then((result): void => { if (result.index === 1) { this.detailsVisible = false; this.model.closeUnknown(this.item.id); } })
       .catch((): void => { this.model.errorText = '无法显示核对确认，请重试。'; });
   }
   private confirmResume(): void {
     this.getUIContext().getPromptAction().showDialog({ title: '继续原上传',
       message: '请先确认目标文件尚未完成上传。将检查原上传进度，再发送剩余内容；原上传已结束或失效时，请核对结果后关闭记录。',
-      buttons: [{ text: '取消', color: '#666666' }, { text: '确认继续', color: '#0A59F7' }] })
+      buttons: [{ text: '取消', color: $r('sys.color.font_secondary') }, { text: '确认继续', color: $r('sys.color.font_emphasize') }] })
       .then((result): void => { if (result.index === 1) { this.model.resume(this.item.id); } })
       .catch((): void => { this.model.errorText = '无法显示继续上传确认，请重试。'; });
   }
@@ -112,7 +112,7 @@ export struct DriveTransferCard {
   private confirmVerify(): void {
     this.getUIContext().getPromptAction().showDialog({ title: '校验已下载文件',
       message: '将使用非计费 Wi-Fi 再次读取完整文件并比较内容，可能产生与文件大小相当的传输量。校验完成后才能保存到本机。',
-      buttons: [{ text: '取消', color: '#666666' }, { text: '开始校验', color: '#0A59F7' }] })
+      buttons: [{ text: '取消', color: $r('sys.color.font_secondary') }, { text: '开始校验', color: $r('sys.color.font_emphasize') }] })
       .then((result): void => { if (result.index === 1) { this.model.verifyDownload(this.item.id); } })
       .catch((): void => { this.model.errorText = '无法显示校验确认，请重试。'; });
   }
@@ -182,10 +182,10 @@ export struct DriveTransferCard {
     Scroll() {
       Column({ space: 12 }) {
         Text(this.item.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary')).width('100%')
-        Text((this.item.direction === 'upload' ? '上传 · ' : '下载 · ') + workbenchBytes(this.item.bytes) +
-          ' · ' + driveTransferStateText(this.item.state))
+        Text((this.item.direction === 'upload' ? '上传，' : '下载，') + workbenchBytes(this.item.bytes) +
+          '，' + driveTransferStateText(this.item.state))
           .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
-        Text(this.item.executor === 'rcpBackground' ? '应用后台传输 · 进程终止后会中断' :
+        Text(this.item.executor === 'rcpBackground' ? '应用后台传输，进程终止后会中断' :
           this.item.background !== undefined ? '系统后台传输' : '前台传输')
           .fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
         Text((this.item.direction === 'upload' ? '目标：' : '本地路径：') + (this.item.direction === 'upload' ?
@@ -217,7 +217,7 @@ export struct DriveTransferCard {
           Column({ space: 4 }) {
             Text(this.item.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
               .width('100%').maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-            Text(workbenchBytes(this.item.bytes) + ' · ' + driveTransferStateText(this.item.state))
+            Text(workbenchBytes(this.item.bytes) + '，' + driveTransferStateText(this.item.state))
               .fontSize(12).fontColor(this.item.state === 'unknown' || this.item.state === 'failed' ?
                 $r('app.color.workbench_danger') : $r('sys.color.font_secondary')).width('100%')
           }.layoutWeight(1).alignItems(HorizontalAlign.Start)

@@ -110,7 +110,7 @@ export class SdkBackgroundTransfer {
     await notificationManager.publish({ id: notification.notificationId,
       notificationSlotType: notificationManager.SlotType.LIVE_VIEW,
       content: { notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_SYSTEM_LIVE_VIEW,
-        systemLiveView: { typeCode: 8, title: this.title, text: '非计费 Wi-Fi · 进程终止后传输会中断' } },
+        systemLiveView: { typeCode: 8, title: this.title, text: '非计费 Wi-Fi，进程终止后传输会中断' } },
       template: { name: 'downloadTemplate', data: { title: this.title, fileName: 'Drive 文件传输', progressValue: value } } });
   }
 }

@@ -1,7 +1,9 @@
 import { ContainerModel } from './ContainerModel';
 import { ContainerItem, ContainerState, filterContainers } from './ContainerProtocol';
-import { WorkbenchEmptyState, WorkbenchInfoRow, WorkbenchMetrics } from '../workbench/WorkbenchUi';
+import { SegmentButtonV2Items, TabSegmentButtonV2 } from '@ohos.arkui.advanced.SegmentButtonV2';
+import { WorkbenchEmptyState, WorkbenchInfoRow, WorkbenchMetrics, WorkbenchServiceError, WorkbenchSkeleton } from '../workbench/WorkbenchUi';
 import { workbenchBytes } from '../workbench/WorkbenchPresentation';
+import { telemetryTimestamp } from '../../core/domain/TelemetryProtocol';
 
 function stateLabel(state: ContainerState): string {
   switch (state) {
@@ -19,31 +21,31 @@ export struct ContainerPage {
   @Param scroller: Scroller = new Scroller();
   @Param bottomInset: number = 16;
   @Event onManagement: () => void = (): void => {};
+  private filterItems: SegmentButtonV2Items = new SegmentButtonV2Items([
+    { text: $r('app.string.containers_all') }, { text: $r('app.string.containers_running') }, { text: $r('app.string.containers_stopped') }
+  ]);
 
   @Builder
   filters() {
-    Search({ value: this.model.query, placeholder: '搜索容器名称' }).onChange((value: string): void => { this.model.query = value; })
-    Row({ space: 8 }) {
-      Button('全部').buttonStyle(this.model.filter === 'all' ? ButtonStyleMode.EMPHASIZED : ButtonStyleMode.NORMAL)
-        .onClick((): void => { this.model.filter = 'all'; })
-      Button('运行中').buttonStyle(this.model.filter === 'running' ? ButtonStyleMode.EMPHASIZED : ButtonStyleMode.NORMAL)
-        .onClick((): void => { this.model.filter = 'running'; })
-      Button('已停止').buttonStyle(this.model.filter === 'stopped' ? ButtonStyleMode.EMPHASIZED : ButtonStyleMode.NORMAL)
-        .onClick((): void => { this.model.filter = 'stopped'; })
-      Blank()
-      Button('刷新').enabled(!this.model.loading).onClick((): void => { this.model.refresh(); })
-    }.width('100%')
+    Search({ value: this.model.query, placeholder: $r('app.string.containers_search') }).defaultFocus(false)
+      .onChange((value: string): void => { this.model.query = value; })
+    TabSegmentButtonV2({ items: this.filterItems, selectedIndex: this.model.filter === 'running' ? 1 : this.model.filter === 'stopped' ? 2 : 0,
+      $selectedIndex: (index: number): void => { this.model.filter = index === 1 ? 'running' : index === 2 ? 'stopped' : 'all'; } }).width('100%')
   }
 
   @Builder
   list() {
     this.filters()
-    if (this.model.loading) { LoadingProgress().width(32).height(32) }
-    if (this.model.checkedAt > 0) { Text('读取时间：' + new Date(this.model.checkedAt).toLocaleString()).fontSize(14).fontColor($r('sys.color.font_secondary')) }
-    if (this.model.errorText.length > 0) { Text(this.model.errorText).fontSize(14).fontColor($r('app.color.workbench_danger')) }
-    if (this.model.loaded && this.model.items.length === 0) { WorkbenchEmptyState({ title: '暂无容器' }) }
-    else if (this.model.loaded && filterContainers(this.model.items, this.model.query, this.model.filter).length === 0) {
-      WorkbenchEmptyState({ title: '没有符合条件的容器' })
+    if (this.model.loading && this.model.items.length === 0) { WorkbenchSkeleton() }
+    else if (this.model.errorText.length > 0) {
+      WorkbenchServiceError({ message: this.model.errorText, title: $r('app.string.containers_unavailable'),
+        retainedContent: this.model.items.length > 0,
+        available: !this.model.loading, onRetry: (): void => { this.model.refresh(); }, onManagement: this.onManagement })
+    } else if (this.model.loaded && this.model.items.length === 0) {
+      WorkbenchEmptyState({ title: $r('app.string.containers_empty'), secondaryLabel: $r('app.string.package_open_management'), onSecondaryAction: this.onManagement })
+    }
+    if (this.model.loaded && this.model.items.length > 0 && filterContainers(this.model.items, this.model.query, this.model.filter).length === 0) {
+      WorkbenchEmptyState({ title: $r('app.string.containers_no_matches') })
     }
     ForEach(filterContainers(this.model.items, this.model.query, this.model.filter), (item: ContainerItem): void => {
       Button() {
@@ -53,7 +55,7 @@ export struct ContainerPage {
         }.padding(16).width('100%')
       }.type(ButtonType.Normal).width('100%').borderRadius(WorkbenchMetrics.cardRadius)
         .backgroundColor($r('app.color.workbench_surface')).onClick((): void => { this.model.select(item); })
-    }, (item: ContainerItem): string => JSON.stringify(item))
+    }, (item: ContainerItem): string => item.id)
   }
 
   @Builder
@@ -65,7 +67,9 @@ export struct ContainerPage {
     }.width('100%')
     Text(this.model.selected!.name).fontSize(24).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
     if (this.model.detailLoading) { LoadingProgress().width(32).height(32) }
-    if (this.model.detailError.length > 0) { Text(this.model.detailError).fontColor($r('app.color.workbench_danger')) }
+    if (this.model.detailError.length > 0) { WorkbenchServiceError({ message: this.model.detailError,
+      title: $r('app.string.containers_unavailable'), available: !this.model.detailLoading,
+      onRetry: (): void => { this.model.refreshDetail(); }, onManagement: this.onManagement }) }
     if (this.model.detail !== undefined) {
       Column() {
         WorkbenchInfoRow({ label: '状态', value: stateLabel(this.model.detail.item.state) })
@@ -78,10 +82,11 @@ export struct ContainerPage {
         WorkbenchInfoRow({ label: '处理器', value: this.model.resource?.cpu === undefined ? '未提供' : this.model.resource.cpu.toFixed(2) + '%' })
         WorkbenchInfoRow({ label: '内存', value: this.model.resource?.memory === undefined ? '未提供' : workbenchBytes(this.model.resource.memory) })
         if (this.model.resource !== undefined) {
-          WorkbenchInfoRow({ label: '采样时间', value: new Date(this.model.resource.sampledAt).toLocaleString() })
+          WorkbenchInfoRow({ label: '采样时间', value: telemetryTimestamp(this.model.resource.sampledAt) })
         }
       }.width('100%').padding(16).borderRadius(16).backgroundColor($r('app.color.workbench_surface'))
-      if (this.model.resourceError.length > 0) { Text(this.model.resourceError).fontColor($r('app.color.workbench_danger')) }
+      if (this.model.resourceError.length > 0) { WorkbenchServiceError({ message: this.model.resourceError,
+        title: $r('app.string.containers_unavailable'), onRetry: (): void => { this.model.refreshDetail(); }, onManagement: this.onManagement }) }
       Text('挂载').fontSize(18).fontWeight(FontWeight.Medium)
       Text(this.model.detail.mounts.length === 0 ? '未提供' : this.model.detail.mounts.join('\n')).width('100%').copyOption(CopyOptions.InApp)
       Text('端口').fontSize(18).fontWeight(FontWeight.Medium)
@@ -94,8 +99,9 @@ export struct ContainerPage {
         .onClick((): void => { if (this.model.following) { this.model.stopFollowing(); } else { this.model.startFollowing(); } })
     }
     if (this.model.logsLoading) { LoadingProgress().width(24).height(24) }
-    if (this.model.logsCheckedAt > 0) { Text('读取时间：' + new Date(this.model.logsCheckedAt).toLocaleString()).fontSize(14).fontColor($r('sys.color.font_secondary')) }
-    if (this.model.logsError.length > 0) { Text(this.model.logsError).fontColor($r('app.color.workbench_danger')) }
+    if (this.model.logsCheckedAt > 0) { Text(telemetryTimestamp(this.model.logsCheckedAt)).fontSize(14).fontColor($r('sys.color.font_secondary')) }
+    if (this.model.logsError.length > 0) { WorkbenchServiceError({ message: this.model.logsError,
+      title: $r('app.string.containers_unavailable'), onRetry: (): void => { this.model.refreshLogs(); }, onManagement: this.onManagement }) }
     if (this.model.logsTruncated) { Text('仅显示最新 500 行或 512 KiB，超出部分已截断。').fontSize(14).fontColor($r('sys.color.font_secondary')) }
     if (this.model.logsLoaded) {
       Text(this.model.logs.length > 0 ? this.model.logs : '暂无日志').fontFamily('monospace').fontSize(14)
@@ -105,13 +111,19 @@ export struct ContainerPage {
 
   build() {
     Row() {
+      Refresh({ refreshing: this.model.loading || this.model.detailLoading }) {
       Scroll(this.scroller) {
         Column({ space: 12 }) {
           if (this.model.selected === undefined) { this.list() } else { this.detail() }
-          Button($r('app.string.package_open_management')).buttonStyle(ButtonStyleMode.NORMAL).onClick(this.onManagement)
+          if (this.model.items.length > 0 || this.model.selected !== undefined) {
+            Button($r('app.string.package_open_management')).buttonStyle(ButtonStyleMode.NORMAL).onClick(this.onManagement)
+          }
         }.width('100%').alignItems(HorizontalAlign.Start).padding({ top: 12, left: 16, right: 16, bottom: this.bottomInset })
       }.width('100%').height('100%').constraintSize({ maxWidth: 960 }).align(Alignment.Top)
         .onScrollStart((): void => { this.model.stopFollowing(); })
+      }.width('100%').height('100%').onRefreshing((): void => {
+        if (this.model.selected === undefined) { this.model.refresh(); } else { this.model.refreshDetail(); }
+      })
     }.width('100%').height('100%').justifyContent(FlexAlign.Center)
   }
 }
