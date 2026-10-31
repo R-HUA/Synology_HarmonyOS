@@ -2524,7 +2524,10 @@ struct Index {
       HdsNavDestination() {
         MoreFeaturesPage({ scroller: this.moreFeaturesScroller, bottomInset: this.navigationInset + 16,
           onManagement: (): void => { this.openPackageManagement(); },
-          onOpen: (destination: string): void => { if (['containers', 'cloud-sync', 'system-logs', 'notes'].includes(destination)) { this.navStack.pushPathByName(destination, undefined); } } })
+          onOpen: (destination: string): void => {
+            if (destination === 'nas-downloads') { this.openNasDownloads(); }
+            else if (['containers', 'cloud-sync', 'system-logs', 'notes'].includes(destination)) { this.navStack.pushPathByName(destination, undefined); }
+          } })
       }
         .backgroundColor($r('app.color.workbench_background'))
         .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL },
