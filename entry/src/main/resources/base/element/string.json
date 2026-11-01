@@ -345,6 +345,8 @@
     { "name": "notes_all_notebooks", "value": "全部笔记本" },
     { "name": "notes_all_tags", "value": "全部标签" },
     { "name": "notes_unavailable", "value": "无法读取笔记" },
+    { "name": "notes_notebooks_unavailable", "value": "无法读取笔记本" },
+    { "name": "notes_tags_unavailable", "value": "无法读取标签" },
     { "name": "notes_empty", "value": "暂无笔记" },
     { "name": "notes_attachment_unavailable", "value": "附件操作未完成" },
     { "name": "system_logs_unavailable", "value": "无法读取系统日志" },

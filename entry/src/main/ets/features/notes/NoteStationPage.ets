@@ -57,7 +57,8 @@ export struct NoteStationPage {
     if (this.model.moreNotebooks) { Button('加载更多笔记本').enabled(!this.model.loading).onClick((): void => { this.model.loadFolders('notebooks'); }) }
     if (this.model.moreTags) { Button('加载更多标签').enabled(!this.model.loading).onClick((): void => { this.model.loadFolders('tags'); }) }
     if (this.model.notebookError.length > 0 || this.model.tagError.length > 0) {
-      WorkbenchServiceError({ message: this.model.notebookError || this.model.tagError, title: $r('app.string.notes_unavailable'),
+      WorkbenchServiceError({ message: this.model.notebookError || this.model.tagError,
+        title: this.model.notebookError.length > 0 ? $r('app.string.notes_notebooks_unavailable') : $r('app.string.notes_tags_unavailable'),
         retainedContent: this.model.items.length > 0, available: !this.model.loading,
         onRetry: (): void => { this.model.refresh(); }, onManagement: this.onManagement })
     }
@@ -68,10 +69,10 @@ export struct NoteStationPage {
     } else if (this.model.loaded && this.model.items.length === 0) {
       WorkbenchEmptyState({ title: $r('app.string.notes_empty'), secondaryLabel: $r('app.string.package_open_management'), onSecondaryAction: this.onManagement })
     }
-    if (this.model.loaded && this.model.items.length > 0 && filterNotes(this.model.items, this.model.notebook, this.model.tag, this.model.query).length === 0) {
+    if (this.model.loaded && this.model.items.length > 0 && filterNotes(this.model.items, this.model.notebook, this.model.tag, this.model.query, this.model.tags).length === 0) {
       WorkbenchEmptyState({ title: $r('app.string.notes_no_matches') })
     }
-    ForEach(filterNotes(this.model.items, this.model.notebook, this.model.tag, this.model.query), (item: NoteSummary): void => {
+    ForEach(filterNotes(this.model.items, this.model.notebook, this.model.tag, this.model.query, this.model.tags), (item: NoteSummary): void => {
       Button(item.title).type(ButtonType.Normal).width('100%').constraintSize({ minHeight: 56 }).borderRadius(16)
         .backgroundColor($r('app.color.workbench_surface')).onClick((): void => {
           this.linkError = ''; this.model.select(item);

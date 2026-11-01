@@ -54,10 +54,12 @@ test('note detail navigation follows selection across window changes and closes 
 
 test('note lists use separate notebook and tag identities and title-only filtering', () => {
   assert.equal(p.decodeNotebooks({ notebooks: [{ object_id: 'book-id', title: '笔记本' }] })[0].id, 'book-id');
-  assert.equal(p.decodeNoteTags({ tags: [{ tag_name: '标签', note_count: 1 }] })[0].id, '标签');
+  const tags = p.decodeNoteTags({ tags: [{ tag_id: '标签@1024', title: '标签', items: ['note-id'] }] });
+  assert.deepEqual(plain(tags[0]), { id: '标签@1024', title: '标签' });
   const page = p.decodeNotes({ notes: [note], total: 1 }, 0);
-  assert.equal(p.filterNotes(page.items, 'book-id', '标签', '示例').length, 1);
-  assert.equal(p.filterNotes(page.items, '', '', '正文').length, 0);
+  assert.equal(p.filterNotes(page.items, 'book-id', '标签@1024', '示例', tags).length, 1);
+  assert.equal(p.filterNotes(page.items, '', '', '正文', tags).length, 0);
+  assert.equal(p.filterNotes(page.items, '', 'unknown-id', '', tags).length, 0);
   assert.throws(() => p.decodeNotes({ notes: [note, note] }, 0));
   assert.throws(() => p.decodeNoteDetail(note, 'other'));
   const missing = p.decodeNoteDetail({ object_id: 'empty', brief: '摘要不是正文' }, 'empty');
@@ -67,7 +69,7 @@ test('note lists use separate notebook and tag identities and title-only filteri
 
 test('notes accept direct list data and scalar tags without masking malformed records', () => {
   assert.equal(p.decodeNotebooks([{ object_id: 'book-id', title: '笔记本' }])[0].id, 'book-id');
-  assert.equal(p.decodeNoteTags([{ tag_name: '标签' }])[0].id, '标签');
+  assert.equal(p.decodeNoteTags([{ tag_id: '标签@1024', title: '标签' }])[0].id, '标签@1024');
   for (const tag of [undefined, null, '', [], '标签', ['标签']]) {
     const page = p.decodeNotes([{ ...note, tag }], 0);
     assert.deepEqual(plain(page.items[0].tags), tag === '标签' || Array.isArray(tag) && tag.length ? ['标签'] : []);
@@ -126,6 +128,23 @@ test('notes share the primary session and keep their fixed read methods', async 
   assert.doesNotMatch(f.calls.map(x => x[1]).join(' '), /method=(?:init|set|create|delete|edit|check)/);
 });
 
+test('note refresh accepts the official tag_id and title catalog and filters notes by tag title', async () => {
+  const f = await fixture();
+  f.replies.push(ok({ notes: [note], total: 1 }), ok({ notebooks: [{ object_id: 'book-id', title: '笔记本' }] }),
+    ok({ tags: [{ tag_id: '标签@1024', title: '标签', items: ['note-id'] }], offset: 0, total: 1 }));
+  const { NoteModel } = load('NoteModel.ets'), model = new NoteModel();
+  model.attach(f.connector, undefined, async () => {}); model.setVisible(true); await tick();
+  assert.equal(model.loaded, true); assert.equal(model.loading, false);
+  assert.equal(model.errorText, ''); assert.equal(model.notebookError, ''); assert.equal(model.tagError, '');
+  assert.equal(model.tags[0].id, '标签@1024'); assert.equal(model.tags[0].title, '标签');
+  assert.equal(p.filterNotes(model.items, '', model.tags[0].id, '', model.tags)[0].id, note.object_id);
+  assert.equal(f.connector.capabilitySnapshots().find(x => x.feature === 'noteTags').state, 'available');
+  assert.equal(f.calls.length, 4);
+  assert.throws(() => p.decodeNoteTags({ tags: [{ title: '标签' }] }), x => x.kind === dsm.NasErrorKind.Protocol);
+  assert.throws(() => p.decodeNoteTags({ tags: [{ tag_id: 'tag-id', title: '' }] }), x => x.kind === dsm.NasErrorKind.Protocol);
+  model.reset();
+});
+
 test('direct note list envelopes reach the module decoder with exact identifiers and normal error classification', async () => {
   const f = await fixture();
   f.replies.push({ status: 200, text: '{"success":true,"data":[{"object_id":9007199254740993,"title":"笔记","tag":"标签"}]}' });
@@ -135,8 +154,8 @@ test('direct note list envelopes reach the module decoder with exact identifiers
   assert.equal(f.calls.length, 2);
   f.replies.push(ok([{ object_id: 'book-id', title: '笔记本' }]));
   assert.equal((await f.connector.readNotes('notebooks', '', 0, p.decodeNotebooks))[0].id, 'book-id');
-  f.replies.push(ok([{ tag_name: '标签' }]));
-  assert.equal((await f.connector.readNotes('tags', '', 0, p.decodeNoteTags))[0].id, '标签');
+  f.replies.push(ok([{ tag_id: '标签@1024', title: '标签' }]));
+  assert.equal((await f.connector.readNotes('tags', '', 0, p.decodeNoteTags))[0].id, '标签@1024');
   f.replies.push(ok([note]));
   await assert.rejects(f.connector.readNotes('detail', note.object_id, 0, x => p.decodeNoteDetail(x, note.object_id)), error => error.kind === dsm.NasErrorKind.Protocol);
   const arrayReply = JSON.stringify({ success: true, data: [] });

@@ -20,7 +20,9 @@ export function decodeNotebooks(data: Object): NoteFolder[] {
 }
 export function decodeNoteTags(data: Object): NoteFolder[] {
   const result = readArray(Array.isArray(data) ? data : data['tags']).map((value: Object): NoteFolder => {
-    const row = nasRecord(value), name = readId(row['tag_name']); return { id: name, title: name };
+    const row = nasRecord(value), title = readText(row['title']);
+    if (title.length === 0) { throw new NasFailure(NasErrorKind.Protocol, '服务器返回的标签名称无效。'); }
+    return { id: readId(row['tag_id']), title };
   }); unique(result.map((row: NoteFolder): string => row.id)); return result;
 }
 function summary(row: Record<string, Object>): NoteSummary {
@@ -65,9 +67,11 @@ export function assertNoteAttachment(detail: NoteDetail, attachment: NoteAttachm
     throw new NasFailure(NasErrorKind.Protocol, '笔记或附件已变化，请刷新笔记后重试。');
   }
 }
-export function filterNotes(items: NoteSummary[], notebook: string, tag: string, query: string): NoteSummary[] {
+/** 标签列表保留独立编号，笔记关联与群晖的标签查询均使用名称。 */
+export function filterNotes(items: NoteSummary[], notebook: string, tag: string, query: string, tags: NoteFolder[]): NoteSummary[] {
+  const selectedTag = tags.find((item: NoteFolder): boolean => item.id === tag);
   return items.filter((item: NoteSummary): boolean => (notebook.length === 0 || item.notebook === notebook) &&
-    (tag.length === 0 || item.tags.includes(tag)) && item.title.toLowerCase().includes(query.trim().toLowerCase()));
+    (tag.length === 0 || selectedTag !== undefined && item.tags.includes(selectedTag.title)) && item.title.toLowerCase().includes(query.trim().toLowerCase()));
 }
 export function noteLink(value: string): string {
   return /^https?:\/\/[^\s\u0000-\u001f<>"']+$/i.test(value) ? value : '';
