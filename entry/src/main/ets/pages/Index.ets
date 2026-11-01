@@ -46,6 +46,7 @@ import { CloudSyncPage } from '../features/cloudsync/CloudSyncPage';
 import { SystemLogPage } from '../features/systemlogs/SystemLogPage';
 import { NoteStationPage } from '../features/notes/NoteStationPage';
 import { NoteDetailPane } from '../features/notes/NoteDetailPane';
+import { NoteAttachment } from '../features/notes/NoteProtocol';
 import { NasTelemetrySummary, NasTelemetryStorageCard, NasTelemetryDashboard } from '../features/telemetry/TelemetryDashboard';
 import { photoTakenDate, workbenchBytes, workbenchShortcutColumns,
   workbenchCanUseDestination, workbenchBottomInset,
@@ -140,6 +141,9 @@ struct Index {
   @Local private systemControlOpened: boolean = false;
   @Local private extensionsOpened: boolean = false;
   @Local private packageDestination: string = '';
+  @Local private notePreviewAttachment: NoteAttachment | undefined = undefined;
+  @Local private notePreviewUri: string = '';
+  @Local private notePreviewError: string = '';
   @Local private downloadsVisible: boolean = false;
   @Local private downloadsRefreshRevision: number = 0;
   /** 半模态内容滚动控制器：既供嵌套滚动使用，也绑定给 HDS 半模态标题栏。 */
@@ -359,6 +363,7 @@ struct Index {
       this.pickerMode = '';
       this.extensionsOpened = false; this.downloadsVisible = false;
       this.packageDestination = '';
+      this.notePreviewAttachment = undefined; this.notePreviewUri = ''; this.notePreviewError = '';
       this.rootTasks = new TaskPageState('root'); this.fileTasks = new TaskPageState('files');
       this.photoTasks = new TaskPageState('photos'); this.driveTasks = new TaskPageState('drive');
       this.taskDestination = ''; this.downloadSnackBar?.dismiss();
@@ -705,7 +710,7 @@ struct Index {
     this.model.cloudSync.setVisible(this.pageActive && this.foreground && this.model.authenticated && this.packageDestination === 'cloud-sync');
     this.model.systemLogs.setVisible(this.pageActive && this.foreground && this.model.authenticated && this.packageDestination === 'system-logs');
     this.model.notes.setVisible(this.pageActive && this.foreground && this.model.authenticated &&
-      (this.packageDestination === 'notes' || this.packageDestination === 'note-detail'));
+      (this.packageDestination === 'notes' || this.packageDestination === 'note-detail' || this.packageDestination === 'note-image'));
     if (!this.pageActive || !this.foreground || !this.model.authenticated) {
       this.model.packages.hideList(); this.model.packages.hideDetail(); return;
     }
@@ -726,6 +731,12 @@ struct Index {
       this.packageDestination = 'notes';
       this.navStack.pop();
     }
+  }
+
+  private openNoteImage(item: NoteAttachment, uri: string): void {
+    this.notePreviewAttachment = item; this.notePreviewUri = uri; this.notePreviewError = '';
+    this.packageDestination = 'note-image';
+    this.navStack.pushPathByName('note-image', undefined);
   }
 
   private openPackageDetail(item: InstalledPackage): void {
@@ -2655,6 +2666,7 @@ struct Index {
       HdsNavDestination() {
         NoteStationPage({ model: this.model.notes, scroller: this.notesScroller, detailScroller: this.notesDetailScroller,
           wide: this.windowWidth >= 840, bottomInset: this.navigationInset + 16,
+          onPreview: (item: NoteAttachment, uri: string): void => { this.openNoteImage(item, uri); },
           onManagement: (): void => { this.openPackageManagement(); }, onOpenDetail: (): void => { this.openNoteDetail(); } })
       }
         .backgroundColor($r('app.color.workbench_background'))
@@ -2671,6 +2683,7 @@ struct Index {
       HdsNavDestination() {
         NoteDetailPane({ model: this.model.notes, scroller: this.notesDetailScroller, bottomInset: this.navigationInset + 16,
           activeAttachmentKey: this.model.notes.attachments.activeKey,
+          onPreview: (item: NoteAttachment, uri: string): void => { this.openNoteImage(item, uri); },
           onManagement: (): void => { this.openPackageManagement(); } })
       }
         .backgroundColor($r('app.color.workbench_background'))
@@ -2683,6 +2696,29 @@ struct Index {
         .onShown((): void => { this.packageDestination = 'note-detail'; this.updatePackageVisibility(); this.updateTelemetryMode(); this.syncNoteLayout(); })
         .onHidden((): void => { if (this.packageDestination === 'note-detail') { this.packageDestination = ''; } this.updatePackageVisibility(); this.updateTelemetryMode(); })
         .onDisAppear((): void => { if (this.windowWidth < 840) { this.model.notes.back(); } })
+    } else if (name === 'note-image') {
+      HdsNavDestination() {
+        ImagePreview({ source: this.notePreviewUri, name: this.notePreviewAttachment?.name ?? '', original: true,
+          fullscreen: true, controlsVisible: this.photoControlsVisible, navigationInset: this.navigationInset,
+          canDownload: false, canDelete: false, canShare: false, errorText: this.notePreviewError,
+          onDecodeError: (): void => { this.notePreviewError = this.previewText($r('app.string.preview_decode_failed')); },
+          onToggleControls: (): void => { this.photoControlsVisible = !this.photoControlsVisible; this.updatePhotoPreviewWindow(); },
+          onDismiss: (): void => { this.navStack.pop(); } })
+      }.backgroundColor(Color.Transparent).hideTitleBar(!this.photoControlsVisible)
+        .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL },
+          title: { mainTitle: this.notePreviewAttachment?.name ?? '' } }, style: { systemMaterialEffect: this.navigationMaterial } })
+        .onShown((): void => {
+          this.packageDestination = 'note-image'; this.updatePackageVisibility(); this.updateTelemetryMode();
+          this.photoPreviewOpened = true; this.photoControlsVisible = true; this.updatePhotoPreviewWindow();
+        })
+        .onHidden((): void => {
+          this.photoPreviewOpened = false; this.photoControlsVisible = true; this.updatePhotoPreviewWindow();
+          if (this.packageDestination === 'note-image') { this.packageDestination = ''; }
+          if (!this.navStack.getAllPathName().includes('note-image')) {
+            this.notePreviewAttachment = undefined; this.notePreviewUri = ''; this.notePreviewError = '';
+          }
+          this.updatePackageVisibility(); this.updateTelemetryMode();
+        })
     } else if (name === 'official-web') {
       HdsNavDestination() { OfficialWebPage({ model: this.model.officialWeb }) }
         .backgroundColor($r('app.color.workbench_background'))

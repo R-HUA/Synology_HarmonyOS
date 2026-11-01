@@ -19,6 +19,7 @@ export struct NoteDetailPane {
   @Param showInlineTitle: boolean = false;
   @Param activeAttachmentKey: string = '';
   @Event onManagement: () => void = (): void => {};
+  @Event onPreview: (item: NoteAttachment, uri: string) => void = (): void => {};
   @Local private refreshing: boolean = false;
   @Local private linkFailed: boolean = false;
 
@@ -57,6 +58,11 @@ export struct NoteDetailPane {
       Image(this.imagePath(block.attachmentId)).width('100%').constraintSize({ maxHeight: 480 }).objectFit(ImageFit.Contain)
         .borderRadius(WorkbenchMetrics.innerRadius)
         .accessibilityText(this.attachment(block.attachmentId)?.name ?? '')
+        .focusable(true)
+        .onClick((): void => {
+          const item = this.attachment(block.attachmentId), uri = this.imagePath(block.attachmentId);
+          if (item !== undefined && uri.length > 0) { this.onPreview(item, uri); }
+        })
     } else {
       // 未下载的图片就地占位，提供加载入口；下载走现有附件缓存，完成后同一位置显示图片。
       Row({ space: 12 }) {

@@ -1,5 +1,6 @@
 import { ComponentAppear } from '@kit.ArkUI';
 import { NoteModel } from './NoteModel';
+import { NoteAttachment } from './NoteProtocol';
 import { NoteRowView } from './NotePresentation';
 import { NoteListPane } from './NoteListPane';
 import { NoteDetailPane } from './NoteDetailPane';
@@ -19,6 +20,7 @@ export struct NoteStationPage {
   @Event onManagement: () => void = (): void => {};
   /** 手机单栏下请求 Index 压入 'note-detail'；Index 负责去重。 */
   @Event onOpenDetail: () => void = (): void => {};
+  @Event onPreview: (item: NoteAttachment, uri: string) => void = (): void => {};
   private detailStack: NavPathStack = new NavPathStack();
 
   @ComponentAppear
@@ -52,6 +54,7 @@ export struct NoteStationPage {
       NavDestination() {
         NoteDetailPane({ model: this.model, scroller: this.detailScroller, bottomInset: this.bottomInset, showInlineTitle: true,
           activeAttachmentKey: this.model.attachments.activeKey,
+          onPreview: (item: NoteAttachment, uri: string): void => { this.onPreview(item, uri); },
           onManagement: (): void => { this.onManagement(); } })
       }.hideTitleBar(true).backgroundColor($r('app.color.workbench_background'))
         .onBackPressed((): boolean => this.model.back())
