@@ -2670,6 +2670,7 @@ struct Index {
     } else if (name === 'note-detail') {
       HdsNavDestination() {
         NoteDetailPane({ model: this.model.notes, scroller: this.notesDetailScroller, bottomInset: this.navigationInset + 16,
+          activeAttachmentKey: this.model.notes.attachments.activeKey,
           onManagement: (): void => { this.openPackageManagement(); } })
       }
         .backgroundColor($r('app.color.workbench_background'))

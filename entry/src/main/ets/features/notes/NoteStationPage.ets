@@ -51,6 +51,7 @@ export struct NoteStationPage {
     if (name === 'detail') {
       NavDestination() {
         NoteDetailPane({ model: this.model, scroller: this.detailScroller, bottomInset: this.bottomInset, showInlineTitle: true,
+          activeAttachmentKey: this.model.attachments.activeKey,
           onManagement: (): void => { this.onManagement(); } })
       }.hideTitleBar(true).backgroundColor($r('app.color.workbench_background'))
         .onBackPressed((): boolean => this.model.back())

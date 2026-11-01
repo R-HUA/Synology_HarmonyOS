@@ -16,6 +16,7 @@ interface SavedNoteAttachment { key: string; path: string; bytes: number; }
 export class NoteAttachmentStore {
   @Trace files: SavedNoteAttachment[] = [];
   @Trace busy: boolean = false;
+  @Trace activeKey: string = '';
   @Trace errorText: string = '';
   @Trace notice: string = '';
   private context: common.UIAbilityContext | undefined = undefined;
@@ -47,12 +48,12 @@ export class NoteAttachmentStore {
     this.tail = this.tail.then(async (): Promise<void> => { for (const directory of Array.from(this.owned)) { await this.remove(directory); } })
       .catch((error: Error): void => { this.cleanupFailure(error, ticket); });
   }
-  cancel(): void { this.ticket++; this.signal?.cancel(); this.signal = undefined; this.busy = false; }
+  cancel(): void { this.ticket++; this.signal?.cancel(); this.signal = undefined; this.busy = false; this.activeKey = ''; }
   path(item: NoteAttachment): string { return this.files.find((file: SavedNoteAttachment): boolean => file.key === noteAttachmentKey(item))?.path || ''; }
   async download(item: NoteAttachment): Promise<void> {
     const context = this.context, repository = this.repository;
     if (context === undefined || repository === undefined || this.busy || this.path(item).length > 0) { return; }
-    const ticket = this.ticket, signal = new NasTransferCancellation(); this.signal = signal; this.busy = true; this.errorText = ''; this.notice = '';
+    const ticket = this.ticket, signal = new NasTransferCancellation(); this.signal = signal; this.busy = true; this.activeKey = noteAttachmentKey(item); this.errorText = ''; this.notice = '';
     const directory = context.cacheDir + '/note-attachment-' + util.generateRandomUUID();
     const job = async (): Promise<void> => {
       let retained = false;
@@ -73,7 +74,7 @@ export class NoteAttachmentStore {
         }
       } finally {
         if (!retained && this.owned.has(directory)) { await this.remove(directory); }
-        if (ticket === this.ticket) { this.busy = false; this.signal = undefined; }
+        if (ticket === this.ticket) { this.busy = false; this.activeKey = ''; this.signal = undefined; }
       }
     };
     this.tail = this.tail.then(job).catch((error: Error): void => { this.cleanupFailure(error, ticket); }); await this.tail;
@@ -81,7 +82,7 @@ export class NoteAttachmentStore {
   async save(item: NoteAttachment): Promise<void> {
     const context = this.context, file = this.files.find((value: SavedNoteAttachment): boolean => value.key === noteAttachmentKey(item));
     if (context === undefined || file === undefined || this.busy) { return; }
-    const ticket = this.ticket; this.busy = true; this.errorText = ''; this.notice = '';
+    const ticket = this.ticket; this.busy = true; this.activeKey = noteAttachmentKey(item); this.errorText = ''; this.notice = '';
     let destination = '', copied = false;
     try {
       const options = new picker.DocumentSaveOptions(); options.newFileNames = [item.name.replace(/[\\/\u0000-\u001f]/g, '_')];
@@ -95,7 +96,7 @@ export class NoteAttachmentStore {
         catch (cleanup) { hilog.error(0, 'NasNoteAttachment', 'operation=export_cleanup code=%{public}d', (cleanup as BusinessError).code ?? -1); }
       }
       if (ticket === this.ticket) { this.errorText = error instanceof NasFailure ? error.message : '附件另存失败，请重试。'; }
-    } finally { if (ticket === this.ticket) { this.busy = false; } }
+    } finally { if (ticket === this.ticket) { this.busy = false; this.activeKey = ''; } }
   }
   private check(ticket: number): void { if (ticket !== this.ticket) { throw new NasFailure(NasErrorKind.Cancelled, '附件读取已取消。'); } }
   private async remove(directory: string): Promise<void> {
@@ -105,6 +106,6 @@ export class NoteAttachmentStore {
   }
   private cleanupFailure(error: Error, ticket: number): void {
     hilog.error(0, 'NasNoteAttachment', 'operation=cleanup code=%{public}d', (error as BusinessError).code ?? -1);
-    if (ticket === this.ticket) { this.ready = false; this.busy = false; this.errorText = '附件临时文件清理失败，请退出账号后重试。'; }
+    if (ticket === this.ticket) { this.ready = false; this.busy = false; this.activeKey = ''; this.errorText = '附件临时文件清理失败，请退出账号后重试。'; }
   }
 }

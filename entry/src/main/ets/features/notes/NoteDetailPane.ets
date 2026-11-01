@@ -17,10 +17,6 @@ export struct NoteDetailPane {
   @Param bottomInset: number = 16;
   /** 宽屏右栏没有独立标题栏，需要在正文顶部显示笔记标题；手机标题在标题栏中，不重复。 */
   @Param showInlineTitle: boolean = false;
-  /**
-   * 正在下载／另存的附件键（noteAttachmentKey）。NoteAttachmentStore 目前只有全局 busy，没有逐项键；
-   * 为空串时回退为全局进度提示，store 提供 activeKey 后由调用方传入即可启用逐行进度。
-   */
   @Param activeAttachmentKey: string = '';
   @Event onManagement: () => void = (): void => {};
   @Local private refreshing: boolean = false;
@@ -68,9 +64,13 @@ export struct NoteDetailPane {
         Text(this.attachment(block.attachmentId)?.name || this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.notes_image').id))
           .fontSize(14).fontColor($r('sys.color.font_secondary')).layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         if (this.attachment(block.attachmentId) !== undefined) {
-          Button($r('app.string.notes_load_image')).buttonStyle(ButtonStyleMode.NORMAL).controlSize(ControlSize.SMALL)
+          if (this.rowBusy(this.attachment(block.attachmentId)!)) {
+            LoadingProgress().width(24).height(24)
+          } else {
+            Button($r('app.string.notes_load_image')).buttonStyle(ButtonStyleMode.NORMAL).controlSize(ControlSize.SMALL)
             .constraintSize({ minHeight: 40 }).enabled(!this.model.attachments.busy)
             .onClick((): void => { const item = this.attachment(block.attachmentId); if (item !== undefined) { this.model.attachments.download(item); } })
+          }
         }
       }.width('100%').padding(12).borderRadius(WorkbenchMetrics.innerRadius).backgroundColor($r('app.color.workbench_subtle'))
     }
@@ -145,10 +145,6 @@ export struct NoteDetailPane {
           ForEach(this.model.detail.attachments, (item: NoteAttachment): void => { this.attachmentRow(item) },
             (item: NoteAttachment): string => item.fileId)
         }.width('100%').borderRadius(WorkbenchMetrics.cardRadius).backgroundColor($r('app.color.workbench_surface'))
-        if (this.model.attachments.busy && this.activeAttachmentKey.length === 0) {
-          // 兼容现有全局 busy：没有逐项键时只显示一个总进度。
-          LoadingProgress().width(24).height(24)
-        }
         if (this.model.attachments.errorText.length > 0) {
           WorkbenchServiceError({ message: this.model.attachments.errorText, title: $r('app.string.notes_attachment_unavailable'),
             retryable: false, onManagement: this.onManagement })

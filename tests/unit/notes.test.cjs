@@ -271,11 +271,35 @@ test('attachment download failures and account switches clean private files whil
   }, async detail() { return detail; } };
   store.attach({ cacheDir: '/cache' }, repository, async () => {}); await store.tail;
   await store.download(attachment); assert.equal(store.files.length, 0); assert.equal(removed.length, 1); assert.match(store.errorText, /断网/);
+  assert.equal(store.activeKey, ''); assert.equal(store.busy, false);
   fail = false; await store.download(attachment); assert.equal(store.files.length, 1);
   await store.save(attachment); assert.deepEqual(exported, ['user://saved.png']);
+  assert.equal(store.activeKey, '');
   store.reset(); await store.tail; assert.equal(store.files.length, 0); assert.equal(removed.includes('user://saved.png'), false);
   let complete; repository.download = async (item, target) => { target.onDirectoryCreated(); return new Promise(resolve => { complete = () => resolve({ path: target.directory + '/file', bytes: 4 }); }); };
   store.attach({ cacheDir: '/cache' }, repository, async () => {}); await store.tail;
   const pending = store.download(attachment); await tick(); store.reset(); complete(); await pending; await store.tail;
   assert.equal(store.files.length, 0); assert.equal(store.path(attachment), '');
+});
+
+test('attachment cancellation cannot clear the next operation progress when an old download completes', async () => {
+  let finishDownload, finishSave;
+  const ports = { files: { fileIo: { async listFile() { return []; }, async rmdir() {} },
+    picker: { DocumentSaveOptions: class {}, DocumentViewPicker: class { save() { return new Promise(resolve => { finishSave = resolve; }); } } } } };
+  const { NoteAttachmentStore } = load('NoteAttachmentStore.ets', ports), store = new NoteAttachmentStore();
+  store.attach({ cacheDir: '/cache' }, {
+    download: async (_item, target) => { target.onDirectoryCreated(); return new Promise(resolve => { finishDownload = () => resolve({ path: target.directory + '/file', bytes: 4 }); }); },
+    detail: async () => detail
+  }, async () => {});
+  await store.tail;
+  const first = store.download(attachment); await tick();
+  assert.equal(store.busy, true); assert.equal(store.activeKey, p.noteAttachmentKey(attachment));
+  store.cancel(); assert.equal(store.busy, false); assert.equal(store.activeKey, '');
+  const other = { ...attachment, fileId: 'other' };
+  store.files = [{ key: p.noteAttachmentKey(other), path: '/cache/local/file', bytes: 4 }];
+  const second = store.save(other);
+  finishDownload(); await first;
+  assert.equal(store.busy, true); assert.equal(store.activeKey, p.noteAttachmentKey(other));
+  finishSave([]); await second;
+  assert.equal(store.busy, false); assert.equal(store.activeKey, '');
 });
