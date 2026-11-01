@@ -45,6 +45,7 @@ import { ContainerPage } from '../features/containers/ContainerPage';
 import { CloudSyncPage } from '../features/cloudsync/CloudSyncPage';
 import { SystemLogPage } from '../features/systemlogs/SystemLogPage';
 import { NoteStationPage } from '../features/notes/NoteStationPage';
+import { NoteDetailPane } from '../features/notes/NoteDetailPane';
 import { NasTelemetrySummary, NasTelemetryStorageCard, NasTelemetryDashboard } from '../features/telemetry/TelemetryDashboard';
 import { photoTakenDate, workbenchBytes, workbenchShortcutColumns,
   workbenchCanUseDestination, workbenchBottomInset,
@@ -703,12 +704,28 @@ struct Index {
     this.model.containers.setVisible(this.pageActive && this.foreground && this.model.authenticated && this.packageDestination === 'containers');
     this.model.cloudSync.setVisible(this.pageActive && this.foreground && this.model.authenticated && this.packageDestination === 'cloud-sync');
     this.model.systemLogs.setVisible(this.pageActive && this.foreground && this.model.authenticated && this.packageDestination === 'system-logs');
-    this.model.notes.setVisible(this.pageActive && this.foreground && this.model.authenticated && this.packageDestination === 'notes');
+    this.model.notes.setVisible(this.pageActive && this.foreground && this.model.authenticated &&
+      (this.packageDestination === 'notes' || this.packageDestination === 'note-detail'));
     if (!this.pageActive || !this.foreground || !this.model.authenticated) {
       this.model.packages.hideList(); this.model.packages.hideDetail(); return;
     }
     if (this.packageDestination === 'packages') { this.model.packages.showList(); }
     else if (this.packageDestination === 'package-detail') { this.model.packages.showDetail(); }
+  }
+
+  /** 手机单栏：笔记详情作为独立页面压栈；先占用 packageDestination，避免列表页 onHidden 期间取消详情加载。 */
+  private openNoteDetail(): void {
+    if (this.windowWidth >= 840 || this.navStack.getAllPathName().slice(-1)[0] === 'note-detail') { return; }
+    this.packageDestination = 'note-detail';
+    this.navStack.pushPathByName('note-detail', undefined);
+  }
+
+  @Monitor('windowWidth')
+  private syncNoteLayout(): void {
+    if (this.windowWidth >= 840 && this.navStack.getAllPathName().slice(-1)[0] === 'note-detail') {
+      this.packageDestination = 'notes';
+      this.navStack.pop();
+    }
   }
 
   private openPackageDetail(item: InstalledPackage): void {
@@ -2634,16 +2651,33 @@ struct Index {
       HdsNavDestination() {
         NoteStationPage({ model: this.model.notes, scroller: this.notesScroller, detailScroller: this.notesDetailScroller,
           wide: this.windowWidth >= 840, bottomInset: this.navigationInset + 16,
-          onManagement: (): void => { this.openPackageManagement(); } })
+          onManagement: (): void => { this.openPackageManagement(); }, onOpenDetail: (): void => { this.openNoteDetail(); } })
       }
         .backgroundColor($r('app.color.workbench_background'))
         .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL },
           title: { mainTitle: $r('app.string.more_feature_notes'), subTitle: this.serviceSubtitle('notes') }, menu: { value: this.serviceMenu('notes') } },
           style: { systemMaterialEffect: this.navigationMaterial, scrollEffectOpts: { enableScrollEffect: true, scrollEffectType: ScrollEffectType.GRADIENT_BLUR } } })
         .bindToScrollable([this.notesScroller, this.notesDetailScroller])
+        // 末项避让由滚动内容负责，避免系统安全区再次抬高可视区域。
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.BOTTOM])
         .onBackPressed((): boolean => this.model.notes.back())
         .onShown((): void => { this.packageDestination = 'notes'; this.updatePackageVisibility(); this.updateTelemetryMode(); })
-        .onHidden((): void => { this.model.notes.setVisible(false); if (this.packageDestination === 'notes') { this.packageDestination = ''; } this.updateTelemetryMode(); })
+        .onHidden((): void => { if (this.packageDestination === 'notes') { this.packageDestination = ''; } this.updatePackageVisibility(); this.updateTelemetryMode(); })
+    } else if (name === 'note-detail') {
+      HdsNavDestination() {
+        NoteDetailPane({ model: this.model.notes, scroller: this.notesDetailScroller, bottomInset: this.navigationInset + 16,
+          onManagement: (): void => { this.openPackageManagement(); } })
+      }
+        .backgroundColor($r('app.color.workbench_background'))
+        .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL },
+          title: { mainTitle: this.model.notes.detail?.item.title || this.model.notes.selected?.title || '' }, menu: { value: this.serviceMenu('notes') } },
+          style: { systemMaterialEffect: this.navigationMaterial, scrollEffectOpts: { enableScrollEffect: true, scrollEffectType: ScrollEffectType.GRADIENT_BLUR } } })
+        .bindToScrollable([this.notesDetailScroller])
+        // 末项避让由滚动内容负责，避免系统安全区再次抬高可视区域。
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.BOTTOM])
+        .onShown((): void => { this.packageDestination = 'note-detail'; this.updatePackageVisibility(); this.updateTelemetryMode(); this.syncNoteLayout(); })
+        .onHidden((): void => { if (this.packageDestination === 'note-detail') { this.packageDestination = ''; } this.updatePackageVisibility(); this.updateTelemetryMode(); })
+        .onDisAppear((): void => { if (this.windowWidth < 840) { this.model.notes.back(); } })
     } else if (name === 'official-web') {
       HdsNavDestination() { OfficialWebPage({ model: this.model.officialWeb }) }
         .backgroundColor($r('app.color.workbench_background'))

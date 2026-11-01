@@ -41,35 +41,49 @@ test('note detail navigation follows selection across window changes and closes 
     compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None }
   }).outputText);
   const paths = [];
-  const state = { wide: false, model: { selected: { id: 'note-one' } }, detailStack: {
+  let opened = 0;
+  const state = { wide: false, onOpenDetail: () => { opened++; }, model: { selected: { id: 'note-one' } }, detailStack: {
     size: () => paths.length, clear: () => { paths.length = 0; }, pushPathByName: name => paths.push(name)
   } };
-  sync.call(state); assert.deepEqual(paths, []);
+  sync.call(state); assert.deepEqual(paths, []); assert.equal(opened, 1);
   state.wide = true; sync.call(state); assert.deepEqual(paths, ['detail']);
   state.model.selected = { id: 'note-two' }; sync.call(state); assert.deepEqual(paths, ['detail']);
-  state.wide = false; sync.call(state); assert.deepEqual(paths, ['detail']);
+  state.wide = false; sync.call(state); assert.deepEqual(paths, []); assert.equal(opened, 2);
   state.wide = true; sync.call(state); assert.deepEqual(paths, ['detail']);
   state.model.selected = undefined; sync.call(state); assert.deepEqual(paths, []);
+  const index = fs.readFileSync(path.join(__dirname, '../../entry/src/main/ets/pages/Index.ets'), 'utf8');
+  const wideBody = index.match(/private syncNoteLayout\(\): void \{([\s\S]*?)\n  \}/)[1];
+  const widen = vm.runInNewContext(ts.transpileModule(`(function() { ${wideBody} })`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None }
+  }).outputText);
+  const outerPaths = ['notes', 'note-detail'];
+  const outer = { windowWidth: 839, packageDestination: 'note-detail', navStack: {
+    getAllPathName: () => outerPaths, pop: () => outerPaths.pop()
+  } };
+  widen.call(outer); assert.deepEqual(outerPaths, ['notes', 'note-detail']);
+  outer.windowWidth = 840; widen.call(outer);
+  assert.deepEqual(outerPaths, ['notes']); assert.equal(outer.packageDestination, 'notes');
+  widen.call(outer); assert.deepEqual(outerPaths, ['notes']);
 });
 
 test('pull refresh keeps list and detail activity separate and releases each indicator', async () => {
-  const page = fs.readFileSync(path.join(__dirname, '../../entry/src/main/ets/features/notes/NoteStationPage.ets'), 'utf8');
-  const body = page.match(/private async refreshContent\(detail: boolean\): Promise<void> \{([\s\S]*?)\n  \}/)[1];
-  const refresh = vm.runInNewContext(ts.transpileModule(`(async function(detail) { ${body} })`, {
-    compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None }
-  }).outputText);
-  const calls = []; let finishList, finishDetail;
-  const state = { listRefreshing: false, detailRefreshing: false, model: {
-    refresh: () => { calls.push('list'); return new Promise(resolve => { finishList = resolve; }); },
-    refreshDetail: () => { calls.push('detail'); return new Promise(resolve => { finishDetail = resolve; }); }
-  } };
-  const detail = refresh.call(state, true); assert.equal(state.detailRefreshing, true); assert.equal(state.listRefreshing, false);
-  await refresh.call(state, true); assert.deepEqual(calls, ['detail']);
-  const list = refresh.call(state, false); assert.equal(state.listRefreshing, true);
-  finishDetail(); await detail; assert.equal(state.detailRefreshing, false); assert.equal(state.listRefreshing, true);
-  finishList(); await list; assert.equal(state.listRefreshing, false);
-  state.model.refreshDetail = async () => { throw Error('failed'); };
-  await assert.rejects(refresh.call(state, true), /failed/); assert.equal(state.detailRefreshing, false);
+  const panes = ['NoteListPane.ets', 'NoteDetailPane.ets'].map(name => {
+    const page = fs.readFileSync(path.join(__dirname, '../../entry/src/main/ets/features/notes', name), 'utf8');
+    const body = page.match(/private async refresh\(\): Promise<void> \{([\s\S]*?)\n  \}/)[1];
+    return vm.runInNewContext(ts.transpileModule(`(async function() { ${body} })`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None }
+    }).outputText);
+  });
+  for (let i = 0; i < panes.length; i++) {
+    let finish; const calls = [], state = { refreshing: false, model: {
+      [i ? 'refreshDetail' : 'refresh']: () => { calls.push('read'); return new Promise(resolve => { finish = resolve; }); }
+    } };
+    const pending = panes[i].call(state); assert.equal(state.refreshing, true);
+    await panes[i].call(state); assert.deepEqual(calls, ['read']);
+    finish(); await pending; assert.equal(state.refreshing, false);
+    state.model[i ? 'refreshDetail' : 'refresh'] = async () => { throw Error('failed'); };
+    await assert.rejects(panes[i].call(state), /failed/); assert.equal(state.refreshing, false);
+  }
 });
 
 test('selecting a loaded note reads its body without refreshing the list', async () => {
