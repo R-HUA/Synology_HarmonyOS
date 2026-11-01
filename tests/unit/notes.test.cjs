@@ -52,6 +52,37 @@ test('note detail navigation follows selection across window changes and closes 
   state.model.selected = undefined; sync.call(state); assert.deepEqual(paths, []);
 });
 
+test('pull refresh keeps list and detail activity separate and releases each indicator', async () => {
+  const page = fs.readFileSync(path.join(__dirname, '../../entry/src/main/ets/features/notes/NoteStationPage.ets'), 'utf8');
+  const body = page.match(/private async refreshContent\(detail: boolean\): Promise<void> \{([\s\S]*?)\n  \}/)[1];
+  const refresh = vm.runInNewContext(ts.transpileModule(`(async function(detail) { ${body} })`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None }
+  }).outputText);
+  const calls = []; let finishList, finishDetail;
+  const state = { listRefreshing: false, detailRefreshing: false, model: {
+    refresh: () => { calls.push('list'); return new Promise(resolve => { finishList = resolve; }); },
+    refreshDetail: () => { calls.push('detail'); return new Promise(resolve => { finishDetail = resolve; }); }
+  } };
+  const detail = refresh.call(state, true); assert.equal(state.detailRefreshing, true); assert.equal(state.listRefreshing, false);
+  await refresh.call(state, true); assert.deepEqual(calls, ['detail']);
+  const list = refresh.call(state, false); assert.equal(state.listRefreshing, true);
+  finishDetail(); await detail; assert.equal(state.detailRefreshing, false); assert.equal(state.listRefreshing, true);
+  finishList(); await list; assert.equal(state.listRefreshing, false);
+  state.model.refreshDetail = async () => { throw Error('failed'); };
+  await assert.rejects(refresh.call(state, true), /failed/); assert.equal(state.detailRefreshing, false);
+});
+
+test('selecting a loaded note reads its body without refreshing the list', async () => {
+  const { NoteModel } = load('NoteModel.ets'), model = new NoteModel(), calls = [];
+  model.visible = true; model.loaded = true; model.items = [detail.item];
+  model.repository = { async list() { calls.push('list'); throw Error('unexpected list refresh'); },
+    async detail(id) { calls.push(id); return p.decodeNoteDetail(note, id); } };
+  model.select(model.items[0]); await tick();
+  assert.deepEqual(calls, ['note-id']); assert.equal(model.selected.id, 'note-id'); assert.equal(model.detailLoading, false);
+  assert.equal(model.detail.bodyProvided, true); assert.equal(model.detail.body.blocks[0].spans[0].text, '正文');
+  assert.equal(model.back(), true); assert.equal(model.selected, undefined); assert.equal(model.items.length, 1);
+});
+
 test('note lists use separate notebook and tag identities and title-only filtering', () => {
   assert.equal(p.decodeNotebooks({ notebooks: [{ object_id: 'book-id', title: '笔记本' }] })[0].id, 'book-id');
   const tags = p.decodeNoteTags({ tags: [{ tag_id: '标签@1024', title: '标签', items: ['note-id'] }] });

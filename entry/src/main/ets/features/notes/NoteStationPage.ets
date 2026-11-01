@@ -15,6 +15,8 @@ export struct NoteStationPage {
   @Param detailScroller: Scroller = new Scroller();
   private detailStack: NavPathStack = new NavPathStack();
   @Local linkError: string = '';
+  @Local private listRefreshing: boolean = false;
+  @Local private detailRefreshing: boolean = false;
   @Event onManagement: () => void = (): void => {};
 
   @ComponentAppear
@@ -38,6 +40,16 @@ export struct NoteStationPage {
   private imagePath(id: string): string {
     const item = this.attachment(id), path = item === undefined ? '' : this.model.attachments.path(item);
     return path.length > 0 ? fileUri.getUriFromPath(path) : '';
+  }
+  /** 点击笔记的详情加载不应触发下拉刷新，更不能重读列表。 */
+  private async refreshContent(detail: boolean): Promise<void> {
+    if (detail ? this.detailRefreshing : this.listRefreshing) { return; }
+    if (detail) { this.detailRefreshing = true; } else { this.listRefreshing = true; }
+    try {
+      if (detail) { await this.model.refreshDetail(); } else { await this.model.refresh(); }
+    } finally {
+      if (detail) { this.detailRefreshing = false; } else { this.listRefreshing = false; }
+    }
   }
   @Builder
   list() {
@@ -74,6 +86,7 @@ export struct NoteStationPage {
     }
     ForEach(filterNotes(this.model.items, this.model.notebook, this.model.tag, this.model.query, this.model.tags), (item: NoteSummary): void => {
       Button(item.title).type(ButtonType.Normal).width('100%').constraintSize({ minHeight: 56 }).borderRadius(16)
+        .buttonStyle(ButtonStyleMode.NORMAL).fontColor($r('sys.color.font_primary'))
         .backgroundColor($r('app.color.workbench_surface')).onClick((): void => {
           this.linkError = ''; this.model.select(item);
         })
@@ -132,7 +145,7 @@ export struct NoteStationPage {
   @Builder
   content(showDetail: boolean) {
     Row() {
-      Refresh({ refreshing: this.model.loading || this.model.detailLoading }) {
+      Refresh({ refreshing: showDetail ? this.detailRefreshing : this.listRefreshing }) {
       Scroll(showDetail ? this.detailScroller : this.scroller) {
         Column({ space: 12 }) {
           if (showDetail && this.model.selected !== undefined) { this.detail() } else { this.list() }
@@ -140,9 +153,9 @@ export struct NoteStationPage {
             Button($r('app.string.package_open_management')).buttonStyle(ButtonStyleMode.NORMAL).onClick(this.onManagement)
           }
         }.width('100%').alignItems(HorizontalAlign.Start).padding({ top: 12, left: 16, right: 16, bottom: this.bottomInset })
-      }.width('100%').height('100%').constraintSize({ maxWidth: 960 }).align(Alignment.Top)
+      }.width('100%').height('100%').constraintSize({ maxWidth: 960 }).align(Alignment.TopStart)
       }.width('100%').height('100%').onRefreshing((): void => {
-        if (showDetail) { this.model.refreshDetail(); } else { this.model.refresh(); }
+        this.refreshContent(showDetail);
       })
     }.width('100%').height('100%').justifyContent(FlexAlign.Center)
   }
@@ -157,6 +170,7 @@ export struct NoteStationPage {
     if (this.wide) {
       Navigation(this.detailStack) { this.content(false) }.mode(NavigationMode.Auto).navBarWidth('40%')
         .hideTitleBar(true).hideToolBar(true).navDestination(this.noteDetail).width('100%').height('100%')
-    } else { this.content(this.model.selected !== undefined) }
+    } else if (this.model.selected !== undefined) { this.content(true) }
+    else { this.content(false) }
   }
 }
