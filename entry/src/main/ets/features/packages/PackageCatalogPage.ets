@@ -69,7 +69,8 @@ struct PackageCatalogRow {
         SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([$r('sys.color.icon_secondary')])
           .accessibilityLevel('no')
       }.width('100%').padding(16)
-    }.type(ButtonType.Normal).width('100%').backgroundColor($r('app.color.workbench_surface'))
+    }.type(ButtonType.Normal).buttonStyle(ButtonStyleMode.NORMAL).fontColor($r('sys.color.font_primary'))
+      .width('100%').backgroundColor($r('app.color.workbench_surface'))
       .borderRadius(WorkbenchMetrics.cardRadius).onClick((): void => { this.onDetail(this.item); })
   }
 }

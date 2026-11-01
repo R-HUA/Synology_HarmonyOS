@@ -25,7 +25,8 @@ export struct CloudSyncPage {
           WorkbenchInfoRow({ label: item.name, value: item.status })
           WorkbenchInfoRow({ label: item.provider, value: item.account })
         }.padding(16).width('100%')
-      }.type(ButtonType.Normal).width('100%').backgroundColor($r('app.color.workbench_surface')).borderRadius(16)
+      }.type(ButtonType.Normal).buttonStyle(ButtonStyleMode.NORMAL).fontColor($r('sys.color.font_primary'))
+        .width('100%').backgroundColor($r('app.color.workbench_surface')).borderRadius(16)
         .onClick((): void => { this.model.select(item); })
     }, (item: CloudConnection): string => item.id)
   }

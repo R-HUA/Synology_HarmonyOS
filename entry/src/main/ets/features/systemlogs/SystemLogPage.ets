@@ -40,11 +40,12 @@ export struct SystemLogPage {
     ForEach(filterSystemLogs(this.model.items, this.model.query, this.model.level, this.model.source, this.model.hours, this.model.checkedAt), (item: SystemLogRecord): void => {
       Button() {
         Column({ space: 6 }) {
-          Text(item.source + '，' + item.level).fontWeight(FontWeight.Medium)
-          Text(item.message || '未提供日志内容').maxLines(3).textOverflow({ overflow: TextOverflow.Ellipsis })
-          Text(item.time || '未提供时间').fontSize(14)
+          Text(item.source + '，' + item.level).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_primary'))
+          Text(item.message || '未提供日志内容').maxLines(3).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('sys.color.font_primary'))
+          Text(item.time || '未提供时间').fontSize(14).fontColor($r('sys.color.font_secondary'))
         }.width('100%').alignItems(HorizontalAlign.Start).padding(16)
-      }.type(ButtonType.Normal).width('100%').borderRadius(16).backgroundColor($r('app.color.workbench_surface'))
+      }.type(ButtonType.Normal).buttonStyle(ButtonStyleMode.NORMAL).fontColor($r('sys.color.font_primary'))
+        .width('100%').borderRadius(16).backgroundColor($r('app.color.workbench_surface'))
         .onClick((): void => { this.copyText = ''; this.model.selected = item; })
     }, (item: SystemLogRecord): string => JSON.stringify(item))
     if (this.model.more) { Button('加载更多').enabled(!this.model.loading).onClick((): void => { this.model.refresh(true); }) }

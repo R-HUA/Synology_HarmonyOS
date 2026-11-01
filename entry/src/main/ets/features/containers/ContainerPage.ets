@@ -53,7 +53,8 @@ export struct ContainerPage {
           WorkbenchInfoRow({ label: item.name, value: stateLabel(item.state), copyable: false })
           Text(item.image || '未提供镜像').fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
         }.padding(16).width('100%')
-      }.type(ButtonType.Normal).width('100%').borderRadius(WorkbenchMetrics.cardRadius)
+      }.type(ButtonType.Normal).buttonStyle(ButtonStyleMode.NORMAL).fontColor($r('sys.color.font_primary'))
+        .width('100%').borderRadius(WorkbenchMetrics.cardRadius)
         .backgroundColor($r('app.color.workbench_surface')).onClick((): void => { this.model.select(item); })
     }, (item: ContainerItem): string => item.id)
   }
