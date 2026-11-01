@@ -22,6 +22,7 @@ function load(name, ports = {}) {
       if (id === '@kit.CoreFileKit') return ports.files || {};
       if (id === '@kit.ArkTS') return { util: { generateRandomUUID: () => '00000000-0000-4000-8000-000000000000' } };
       if (id === '../transfers/TransferQueueFiles') return { copyTransferFile: ports.copy || (async () => {}) };
+      if (id === '../workbench/WorkbenchPresentation') return load('../workbench/WorkbenchPresentation.ts', ports);
       if (id.startsWith('./')) return load(id.slice(2) + (id.endsWith('Store') ? '.ets' : '.ts'), ports);
       throw Error(id);
     }
@@ -148,6 +149,33 @@ test('attachment ownership includes note, file, version and metadata', () => {
   assert.notEqual(p.noteAttachmentKey(attachment), p.noteAttachmentKey({ ...attachment, noteId: 'other' }));
 });
 
+test('note modification times retain protocol seconds and reject malformed external values', () => {
+  const seconds = new Date(2010, 0, 2, 12).getTime() / 1000;
+  assert.equal(p.decodeNotes([{ ...note, mtime: seconds }], 0).items[0].modified, seconds);
+  assert.equal(p.decodeNoteDetail({ ...note, mtime: seconds }, note.object_id).item.modified, seconds);
+  assert.equal(p.decodeNotes([note], 0).items[0].modified, undefined);
+  for (const mtime of ['2010-01-02', -1, 8640000000001]) {
+    assert.throws(() => p.decodeNotes([{ ...note, mtime }], 0), error => error.kind === dsm.NasErrorKind.Protocol);
+  }
+});
+
+test('note row subtitles omit absent metadata and preserve stable note and body identities', () => {
+  const v = load('NotePresentation.ts'), books = [{ id: 'book-id', title: '笔记本' }], tags = [{ id: 'tag-id', title: '标签' }];
+  const item = detail.item, modified = new Date(2010, 0, 2, 12).getTime() / 1000;
+  assert.equal(v.noteSubtitle(item, books, tags), '笔记本  标签');
+  assert.equal(v.noteSubtitle(item, [], []), '');
+  assert.equal(v.noteSubtitle({ ...item, modified }, books, tags), '笔记本  标签  2010/01/02');
+  assert.equal(v.folderTitle(books, 'book-id'), '笔记本');
+  assert.equal(v.folderTitle(books, 'missing'), ''); assert.equal(v.folderTitle(books, ''), '');
+  const rows = v.noteRows([item], books, tags);
+  assert.equal(rows[0].id, item.id); assert.equal(rows[0].item, item); assert.equal(rows[0].title, item.title);
+  assert.equal(rows[0].subtitle, '笔记本  标签');
+  assert.equal(v.noteBlockKey('note', 'v1', 0), v.noteBlockKey('note', 'v1', 0));
+  assert.notEqual(v.noteBlockKey('note', 'v1', 0), v.noteBlockKey('other', 'v1', 0));
+  assert.notEqual(v.noteBlockKey('note', 'v1', 0), v.noteBlockKey('note', 'v2', 0));
+  assert.notEqual(v.noteBlockKey('note', 'v1', 0), v.noteBlockKey('note', 'v1', 1));
+});
+
 async function fixture(binary) {
   const calls = [], replies = [], descriptors = {};
   for (const name of ['SYNO.API.Auth', 'SYNO.DSM.Info', 'SYNO.FileStation.List', 'SYNO.NoteStation.Note', 'SYNO.NoteStation.Notebook', 'SYNO.NoteStation.Tag']) {
@@ -164,6 +192,8 @@ test('notes share the primary session and keep their fixed read methods', async 
   const f = await fixture(); assert.equal(f.calls.length, 1);
   f.replies.push(ok({ notes: [note] })); await f.connector.readNotes('list', '', 0, x => p.decodeNotes(x, 0));
   assert.equal(f.calls.at(-1)[2].sid, 'main-sid'); assert.equal(new URLSearchParams(f.calls.at(-1)[1]).get('version'), '3');
+  assert.equal(JSON.parse(new URLSearchParams(f.calls.at(-1)[1]).get('sort_by')), 'mtime');
+  assert.equal(JSON.parse(new URLSearchParams(f.calls.at(-1)[1]).get('sort_direction')), 'desc');
   assert.equal(f.connector.capabilitySnapshots().find(x => x.feature === 'noteDetail').state, 'unverified');
   f.replies.push(ok(note)); await f.connector.readNotes('detail', note.object_id, 0, x => p.decodeNoteDetail(x, note.object_id));
   assert.equal(JSON.parse(new URLSearchParams(f.calls.at(-1)[1]).get('object_id')), note.object_id);

@@ -523,6 +523,10 @@ export class NasConnector implements DriveKernelPort, DriveTransferKernelPort {
     const descriptor = selectNasApi(this.capabilities, api, [version]);
     const fields: NasFormField[] = operation === 'detail' ? [{ name: 'object_id', content: descriptor.jsonParameters ? JSON.stringify(objectId) : objectId }] :
       [{ name: 'offset', content: offset.toString() }, { name: 'limit', content: '100' }];
+    if (operation === 'list') {
+      fields.push({ name: 'sort_by', content: descriptor.jsonParameters ? JSON.stringify('mtime') : 'mtime' },
+        { name: 'sort_direction', content: descriptor.jsonParameters ? JSON.stringify('desc') : 'desc' });
+    }
     const feature = operation === 'notebooks' ? 'noteNotebooks' : operation === 'tags' ? 'noteTags' : operation === 'detail' ? 'noteDetail' : 'noteList';
     return this.readSuite(feature, api, operation === 'detail' ? 'get' : 'list', fields, decode, version);
   }

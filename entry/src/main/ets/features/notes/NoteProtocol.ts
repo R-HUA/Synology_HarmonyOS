@@ -2,7 +2,7 @@ import { nasRecord, NasFailure, NasErrorKind } from '../../core/domain/DsmProtoc
 import { readArray, readId, readText, readNumber, readableLog } from '../../core/domain/ReadOnlyProtocol';
 
 export interface NoteFolder { id: string; title: string; }
-export interface NoteSummary { id: string; title: string; notebook: string; tags: string[]; }
+export interface NoteSummary { id: string; title: string; notebook: string; tags: string[]; modified?: number; }
 export interface NotePage { items: NoteSummary[]; received: number; more: boolean; }
 export interface NoteAttachment { noteId: string; version: string; fileId: string; name: string; bytes: number | undefined; type: string; ref: string; }
 export interface NoteSpan { text: string; bold: boolean; italic: boolean; href: string; }
@@ -26,10 +26,13 @@ export function decodeNoteTags(data: Object): NoteFolder[] {
   }); unique(result.map((row: NoteFolder): string => row.id)); return result;
 }
 function summary(row: Record<string, Object>): NoteSummary {
-  const tag = row['tag'];
+  const tag = row['tag'], modified = readNumber(row['mtime']);
+  if (modified !== undefined && (modified < 0 || modified > 8640000000000)) {
+    throw new NasFailure(NasErrorKind.Protocol, '笔记修改时间无效。');
+  }
   return { id: readId(row['object_id']), title: readText(row['title']) || '未命名笔记',
     notebook: row['parent_id'] === undefined ? '' : readId(row['parent_id']),
-    tags: tag === undefined || tag === null || tag === '' ? [] : (Array.isArray(tag) ? tag : [tag]).map((value: Object): string => readId(value)) };
+    tags: tag === undefined || tag === null || tag === '' ? [] : (Array.isArray(tag) ? tag : [tag]).map((value: Object): string => readId(value)), modified };
 }
 export function decodeNotes(data: Object, offset: number): NotePage {
   const rows = readArray(Array.isArray(data) ? data : data['notes']);
