@@ -71,6 +71,11 @@ import type { PhotoLibrarySection } from '../features/photos/PhotoLibrary';
 
 type FileSelectionAction = 'share' | 'copy' | 'move' | 'delete' | 'download';
 
+/** 转交分栏后的退出动画不能清理仍在阅读的笔记。 */
+class NoteDetailRoute {
+  keepSelection: boolean = false;
+}
+
 class TitleMenuItem {
   id: string;
   label: string;
@@ -722,12 +727,14 @@ struct Index {
   private openNoteDetail(): void {
     if (this.windowWidth >= 840 || this.navStack.getAllPathName().slice(-1)[0] === 'note-detail') { return; }
     this.packageDestination = 'note-detail';
-    this.navStack.pushPathByName('note-detail', undefined);
+    this.navStack.pushPathByName('note-detail', new NoteDetailRoute());
   }
 
   @Monitor('windowWidth')
   private syncNoteLayout(): void {
     if (this.windowWidth >= 840 && this.navStack.getAllPathName().slice(-1)[0] === 'note-detail') {
+      const route = this.navStack.getParamByIndex(this.navStack.size() - 1) as NoteDetailRoute;
+      route.keepSelection = true;
       this.packageDestination = 'notes';
       this.navStack.pop();
     }
@@ -2695,7 +2702,7 @@ struct Index {
         .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.BOTTOM])
         .onShown((): void => { this.packageDestination = 'note-detail'; this.updatePackageVisibility(); this.updateTelemetryMode(); this.syncNoteLayout(); })
         .onHidden((): void => { if (this.packageDestination === 'note-detail') { this.packageDestination = ''; } this.updatePackageVisibility(); this.updateTelemetryMode(); })
-        .onDisAppear((): void => { if (this.windowWidth < 840) { this.model.notes.back(); } })
+        .onDisAppear((): void => { if (!(parameter as NoteDetailRoute).keepSelection) { this.model.notes.back(); } })
     } else if (name === 'note-image') {
       HdsNavDestination() {
         ImagePreview({ source: this.notePreviewUri, name: this.notePreviewAttachment?.name ?? '', original: true,

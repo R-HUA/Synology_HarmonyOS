@@ -58,13 +58,22 @@ test('note detail navigation follows selection across window changes and closes 
     compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None }
   }).outputText);
   const outerPaths = ['notes', 'note-detail'];
+  const route = { keepSelection: false };
   const outer = { windowWidth: 839, packageDestination: 'note-detail', navStack: {
-    getAllPathName: () => outerPaths, pop: () => outerPaths.pop()
+    getAllPathName: () => outerPaths, pop: () => outerPaths.pop(), size: () => outerPaths.length, getParamByIndex: () => route
   } };
   widen.call(outer); assert.deepEqual(outerPaths, ['notes', 'note-detail']);
   outer.windowWidth = 840; widen.call(outer);
   assert.deepEqual(outerPaths, ['notes']); assert.equal(outer.packageDestination, 'notes');
   widen.call(outer); assert.deepEqual(outerPaths, ['notes']);
+  const leaveBody = index.match(/\.onDisAppear\(\(\): void => \{ ([^\n]*keepSelection[^\n]*?) \}\)/)[1];
+  const leave = vm.runInNewContext(ts.transpileModule(`(function(parameter) { ${leaveBody} })`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None }
+  }).outputText);
+  let cleared = 0; const stateAfterTransition = { model: { notes: { back: () => { cleared++; } } } };
+  outer.windowWidth = 839;
+  leave.call(stateAfterTransition, route); assert.equal(cleared, 0);
+  leave.call(stateAfterTransition, { keepSelection: false }); assert.equal(cleared, 1);
 });
 
 test('pull refresh keeps list and detail activity separate and releases each indicator', async () => {
