@@ -133,7 +133,7 @@ export struct PackageCatalogPage {
           }, (item: InstalledPackage): string => item.id)
         }
       }.width('100%').constraintSize({ maxWidth: 960 }).height('100%')
-        .padding({ top: 12, left: 16, right: 16, bottom: this.bottomInset }).clip(true)
+        .padding({ top: 12, left: 16, right: 16 }).contentEndOffset(this.bottomInset).clip(true)
     }.width('100%').height('100%').justifyContent(FlexAlign.Center)
   }
 }

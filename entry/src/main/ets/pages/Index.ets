@@ -2606,6 +2606,7 @@ struct Index {
           title: { mainTitle: $r('app.string.more_features') } },
           style: { systemMaterialEffect: this.navigationMaterial } })
         .bindToScrollable([this.moreFeaturesScroller])
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.BOTTOM])
         .onShown((): void => { this.packageDestination = 'more-features'; this.updateTelemetryMode(); })
         .onHidden((): void => { if (this.packageDestination === 'more-features') { this.packageDestination = ''; } this.updateTelemetryMode(); })
     } else if (name === 'containers') {
@@ -2618,6 +2619,7 @@ struct Index {
           title: { mainTitle: $r('app.string.more_feature_containers'), subTitle: this.serviceSubtitle('containers') }, menu: { value: this.serviceMenu('containers') } },
           style: { systemMaterialEffect: this.navigationMaterial, scrollEffectOpts: { enableScrollEffect: true, scrollEffectType: ScrollEffectType.GRADIENT_BLUR } } })
         .bindToScrollable([this.containersScroller])
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.BOTTOM])
         .onBackPressed((): boolean => this.model.containers.back())
         .onShown((): void => { this.packageDestination = 'containers'; this.updatePackageVisibility(); this.updateTelemetryMode(); })
         .onHidden((): void => { this.model.containers.setVisible(false); if (this.packageDestination === 'containers') { this.packageDestination = ''; } this.updateTelemetryMode(); })
@@ -2631,6 +2633,7 @@ struct Index {
           title: { mainTitle: $r('app.string.more_feature_cloud_sync'), subTitle: this.serviceSubtitle('cloud-sync') }, menu: { value: this.serviceMenu('cloud-sync') } },
           style: { systemMaterialEffect: this.navigationMaterial, scrollEffectOpts: { enableScrollEffect: true, scrollEffectType: ScrollEffectType.GRADIENT_BLUR } } })
         .bindToScrollable([this.cloudSyncScroller])
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.BOTTOM])
         .onBackPressed((): boolean => this.model.cloudSync.back())
         .onShown((): void => { this.packageDestination = 'cloud-sync'; this.updatePackageVisibility(); this.updateTelemetryMode(); })
         .onHidden((): void => { this.model.cloudSync.setVisible(false); if (this.packageDestination === 'cloud-sync') { this.packageDestination = ''; } this.updateTelemetryMode(); })
@@ -2644,6 +2647,7 @@ struct Index {
           title: { mainTitle: $r('app.string.more_feature_system_logs'), subTitle: this.serviceSubtitle('system-logs') }, menu: { value: this.serviceMenu('system-logs') } },
           style: { systemMaterialEffect: this.navigationMaterial, scrollEffectOpts: { enableScrollEffect: true, scrollEffectType: ScrollEffectType.GRADIENT_BLUR } } })
         .bindToScrollable([this.systemLogsScroller])
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.BOTTOM])
         .onBackPressed((): boolean => this.model.systemLogs.back())
         .onShown((): void => { this.packageDestination = 'system-logs'; this.updatePackageVisibility(); this.updateTelemetryMode(); })
         .onHidden((): void => { this.model.systemLogs.setVisible(false); if (this.packageDestination === 'system-logs') { this.packageDestination = ''; } this.updateTelemetryMode(); })
@@ -2694,6 +2698,7 @@ struct Index {
         .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL },
           title: { mainTitle: $r('app.string.package_catalog') } } })
         .bindToScrollable([this.packagesScroller])
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.BOTTOM])
         .onShown((): void => { this.packageDestination = 'packages'; this.updatePackageVisibility(); this.updateTelemetryMode(); })
         .onHidden((): void => { this.model.packages.hideList(); if (this.packageDestination === 'packages') { this.packageDestination = ''; } this.updateTelemetryMode(); })
     } else if (name === 'package-detail') {
@@ -2706,6 +2711,7 @@ struct Index {
         .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL },
           title: { mainTitle: $r('app.string.package_detail') } } })
         .bindToScrollable([this.packageDetailScroller])
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.BOTTOM])
         .onShown((): void => { this.packageDestination = 'package-detail'; this.updatePackageVisibility(); this.updateTelemetryMode(); })
         .onHidden((): void => { this.model.packages.hideDetail(); if (this.packageDestination === 'package-detail') { this.packageDestination = ''; } this.updateTelemetryMode(); })
     } else if (name === 'share-links') {
@@ -2723,6 +2729,7 @@ struct Index {
         .titleBar({ enableComponentSafeArea: true, content: { backIcon: { icon: this.navigationBackSymbol(), type: IconStyleMode.SMALL },
           title: { mainTitle: name === 'files-tasks' ? $r('app.string.task_file_title') : name === 'drive-tasks' ? $r('app.string.task_drive_title') : $r('app.string.task_photo_title') } } })
         .bindToScrollable([name === 'files-tasks' ? this.fileTasksScroller : name === 'drive-tasks' ? this.driveTasksScroller : this.photoTasksScroller])
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.BOTTOM])
         .onShown((): void => { this.taskDestination = name === 'drive-tasks' ? 'drive' : name === 'files-tasks' ? 'files' : 'photos'; this.updateTelemetryMode(); })
         .onHidden((): void => { this.taskDestination = ''; this.taskOverlayVisible = false; this.updateTelemetryMode(); })
     } else if (name === 'nas-downloads') {
@@ -2736,6 +2743,7 @@ struct Index {
           title: { mainTitle: $r('app.string.task_remote_title'), subTitle: this.model.extensions.downloadsLoaded ? $r('app.string.task_remote_total', this.model.extensions.downloadTotal) : '' },
           menu: { value: this.remoteDownloadMenus() } } })
         .bindToScrollable([this.downloadsScroller])
+        .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.BOTTOM])
         .onShown((): void => { this.downloadsVisible = true; this.extensionsOpened = true; this.updateTelemetryMode();
           if (!this.model.extensions.downloadsLoaded) { this.model.extensions.refreshDownloads(); } })
         .onHidden((): void => { this.downloadsVisible = false; this.extensionsOpened = false; this.model.extensions.deactivateDownloads(); this.updateTelemetryMode(); })
